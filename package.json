@@ -4,7 +4,6 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "test": "echo \"No tests specified yet\""
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
