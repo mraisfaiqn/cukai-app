@@ -1,4 +1,5 @@
 import MainHeader from './components/MainHeader'
+import PageHeader from './components/PageHeader'
 import './App.css'
 
 function App() {
@@ -6,6 +7,7 @@ function App() {
   return (
     <>
       <MainHeader />
+      <PageHeader />
     </>
   )
 }
