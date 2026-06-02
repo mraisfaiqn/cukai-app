@@ -1,3 +1,4 @@
+import {NavLink} from 'react-router-dom';
 import cukaiLogo from '../assets/cukai-logo.png';
 
 const PricingIcon = () => (
@@ -44,20 +45,20 @@ function MainHeader() {
         {/* Navigation Link */}
         <nav className="flex items-center gap-1">
           {navLinks.map(({ href, label, Icon }) => (
-            <a key={label} href={href} className="flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium text-[#0F172A] transition-colors duration-150 hover:bg-[#f0fdf9] hover:text-[#0D9488]">
+            <NavLink key={label} to={href} className={({ isActive }) => `flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}>
               <Icon />
               {label}
-            </a>
+            </NavLink>
           ))}
         </nav>
         {/* Login and Get Started */}
         <div className="flex items-center gap-2">
-          <a href="/auth" className="rounded-lg border-[1.5px] border-[#0F172A] px-[18px] py-2 text-sm font-medium text-[#0F172A] transition-colors duration-150 hover:bg-[#0F172A] hover:text-white">
+          <NavLink to="/login" className={({ isActive }) => `rounded-lg border-[1.5px] px-[18px] py-2 text-sm font-medium transition-colors duration-150 ${isActive ? 'border-[#0F172A] bg-[#0F172A] text-white' : 'border-[#0F172A] text-[#0F172A] hover:bg-[#0F172A] hover:text-white'}`}>
             Login
-          </a>
-          <a href="/demo" className="rounded-lg border-[1.5px] border-[#10B981] bg-[#10B981] px-[18px] py-2 text-sm font-medium text-white transition-colors duration-150 hover:bg-[#0D9488] hover:border-[#0D9488]">
-            Demo
-          </a>
+          </NavLink>
+          <NavLink to="/getstarted" className={({ isActive }) => `rounded-lg border-[1.5px] px-[18px] py-2 text-sm font-medium transition-colors duration-150 ${isActive ? 'border-[#0D9488] bg-[#0D9488] text-white' : 'border-[#10B981] bg-[#10B981] text-white hover:bg-[#0D9488] hover:border-[#0D9488]'}`}>
+            Get Started
+          </NavLink>
         </div>
 
       </div>
