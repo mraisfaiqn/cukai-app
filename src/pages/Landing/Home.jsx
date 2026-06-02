@@ -1,10 +1,10 @@
-function Dashboard() {
+function Home() {
   return (
     <div>
-      <h2>Dashboard</h2>
+      <h2>Home Page</h2>
       <p>Lorem Ipsum Lorem Ipsum Lorem Ipsum Lorem Ipsum</p>
     </div>
   );
 }
 
-export default Dashboard;
+export default Home;

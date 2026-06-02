@@ -1,10 +1,10 @@
-function Dashboard() {
+function Docs() {
   return (
     <div>
-      <h2>Dashboard</h2>
+      <h2>User Manual (High-Level) / About Our Team / FAQ</h2>
       <p>Lorem Ipsum Lorem Ipsum Lorem Ipsum Lorem Ipsum</p>
     </div>
   );
 }
 
-export default Dashboard;
+export default Docs;
