@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 import { useState } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import MainHeader from './components/MainHeader'
@@ -17,6 +18,10 @@ import UserDocs from './pages/UserDocs'
 import UserProfile from './pages/Account/UserProfile'
 import AccountManager from './pages/Account/AccountManager'
 import TermsConditions from './pages/Account/TermsConditions'
+=======
+import PageHeader from './components/PageHeader'
+import Dashboard from './pages/Dashboard'
+>>>>>>> Stashed changes
 import './App.css'
 
 function App() {
@@ -24,6 +29,7 @@ function App() {
 
   return (
     <>
+<<<<<<< Updated upstream
       <Router>
         {isAuthenticated ? (
           <>
@@ -58,6 +64,10 @@ function App() {
           </>
         )}
       </Router>
+=======
+      <PageHeader />
+      <Dashboard />
+>>>>>>> Stashed changes
     </>
   )
 }

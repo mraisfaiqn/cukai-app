@@ -1,6 +1,47 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Plus+Jakarta+Sans:wght@400;600;700&display=swap');
 
 @import 'tailwindcss';
+
+/* ── Design system tokens ──────────────────────────────────────
+   Single source of truth: DESIGN_TRAFFIC_LIGHT_WARNING.md
+   Registering these here makes the semantic utility classes
+   (bg-primary, text-headings, bg-warning-bg, font-headings, …)
+   available across the app — never hardcode hex in components. */
+@theme {
+  /* Brand */
+  --color-primary: #0F6E56;
+  --color-primary-hover: #1D9E75;
+  --color-primary-tint: #E1F5EE;
+
+  /* Surfaces & text */
+  --color-background: #F7F6F2;
+  --color-surface: #FFFFFF;
+  --color-border: #E8E6E0;
+  --color-headings: #2C2C2A;
+  --color-body-text: #444441;
+  --color-muted: #5F5E5A;
+
+  /* Status tiers */
+  --color-success: #0F6E56;
+  --color-success-bg: #E1F5EE;
+  --color-warning: #BA7517;
+  --color-warning-bg: #FAEEDA;
+  --color-critical: #E24B4A;
+  --color-critical-bg: #FCEBEB;
+
+  /* AI suggestion highlight */
+  --color-ai-highlight: #FFF9E6;
+
+  /* Data-viz accent — violet used by the Literacy score ring (not a brand
+     color; lives here so components reference text-literacy, never raw hex) */
+  --color-literacy: #8B7FE8;
+  --color-literacy-track: #EBE8FB;
+
+  /* Fonts */
+  --font-headings: 'Plus Jakarta Sans', sans-serif;
+  --font-body: 'Inter', sans-serif;
+}
+
 /* ── Root & Reset ──────────────────────────────────────────── */
 :root {
   font-family: "Inter", sans-serif;
