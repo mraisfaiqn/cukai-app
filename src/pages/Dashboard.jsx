@@ -1,15 +1,3 @@
-<<<<<<< Updated upstream
-function Dashboard() {
-  return (
-    <div>
-      <h2>Dashboard</h2>
-      <p>Lorem Ipsum Lorem Ipsum Lorem Ipsum Lorem Ipsum</p>
-    </div>
-  );
-}
-
-export default Dashboard;
-=======
 // Dashboard — composes the dashboard from presentational components,
 // feeding each its slice of data from dashboardData.js. The greeting is
 // derived from the current hour here (the only render-time computation);
@@ -79,4 +67,4 @@ function Dashboard() {
 }
 
 export default Dashboard;
->>>>>>> Stashed changes
+
