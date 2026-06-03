@@ -23,15 +23,6 @@ const VaultIcon = () => (
   </svg>
 );
 
-const ReportsIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" className="h-[15px] w-[15px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-    <polyline points="14 2 14 8 20 8" />
-    <line x1="8" y1="13" x2="16" y2="13" />
-    <line x1="8" y1="17" x2="16" y2="17" />
-  </svg>
-);
-
 const BellIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
@@ -136,13 +127,13 @@ function Dropdown({ trigger, items, navLinks = false }) {
 
 // ── Dropdown content ──────────────────────────────────────────────────────────
 
-const notificationItems = [
+const insightsAIItems = [
   { label: 'Tax filing deadline soon', badge: 'New' },
   { label: 'Receipt #1042 processed' },
   { label: 'E-invoice generated' },
 ];
 
-function NotificationsDropdown({ trigger }) {
+function InsightsAIDropdown({ trigger }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -161,7 +152,7 @@ function NotificationsDropdown({ trigger }) {
         <div className="absolute right-0 top-full mt-2 w-64 rounded-xl border border-slate-100 bg-white py-1 shadow-lg z-50">
           <p className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-[#64748B]">Notifications</p>
           <div className="my-1 border-t border-slate-100" />
-          {notificationItems.map((item, i) => (
+          {insightsAIItems.map((item, i) => (
             <div key={i} className="flex items-start gap-2.5 px-4 py-2">
               <span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#10B981]" />
               <span className="text-sm text-[#0F172A] leading-snug">{item.label}</span>
@@ -172,11 +163,11 @@ function NotificationsDropdown({ trigger }) {
           ))}
           <div className="my-1 border-t border-slate-100" />
           <NavLink
-            to="/usernotifications"
+            to="/insightsinbox"
             onClick={() => setOpen(false)}
             className={({ isActive }) => `flex items-center justify-center px-4 py-2 text-sm font-medium transition-colors duration-150 ${isActive ? 'text-[#0D9488]' : 'text-[#0D9488] hover:bg-[#f0fdf9]'}`}
           >
-            View all notifications
+            View all insights
           </NavLink>
         </div>
       )}
@@ -261,8 +252,7 @@ function SettingsDropdown({ trigger }) {
 const accountItems = [
   { heading: true, label: 'My Account' },
   { divider: true },
-  { label: 'Edit Profile', href: '/userprofile' },
-  { label: 'Manage Account', href: '/accountmanager' },
+  { label: 'Manage Account', href: '/manageaccount' },
   { label: 'Terms & Conditions', href: '/termsconditions' },
   { divider: true },
   { label: 'Log out', href: '/logout' },
@@ -273,7 +263,6 @@ const accountItems = [
 const navLinks = [
   { href: '/overview', label: 'Overview', Icon: OverviewIcon },
   { href: '/vault', label: 'Vault', Icon: VaultIcon },
-  { href: '/reports', label: 'Reports', Icon: ReportsIcon },
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -310,8 +299,8 @@ function PageHeader() {
         {/* Right icons */}
         <div className="flex items-center gap-1">
 
-          {/* Notifications */}
-          <NotificationsDropdown
+          {/* AI Insights */}
+          <InsightsAIDropdown
             trigger={(open) => (
               <button className={`relative flex h-9 w-9 items-center justify-center rounded-lg text-[#64748B] transition-colors duration-150 hover:bg-[#f0fdf9] hover:text-[#0D9488] ${open ? 'bg-[#f0fdf9] text-[#0D9488]' : ''}`}>
                 <BellIcon />

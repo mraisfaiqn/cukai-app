@@ -4,18 +4,16 @@ import MainHeader from './components/MainHeader'
 import PageHeader from './components/PageHeader'
 import Home from './pages/Landing/Home'
 import Pricing from './pages/Landing/Pricing'
-import AppFeatures from './pages/Landing/AppFeatures'
-import Docs from './pages/Landing/Docs'
+import AppTools from './pages/Landing/AppTools'
+import AboutUs from './pages/Landing/AboutUs'
 import Login from './pages/Landing/Login'
 import GetStarted from './pages/Landing/GetStarted'
 import Dashboard from './pages/Dashboard'
-import ReceiptVault from './pages/ReceiptVault'
-import ReportGeneration from './pages/ReportGeneration'
+import CukaiVault from './pages/CukaiVault'
 import CukaiBot from './pages/CukaiBot'
-import UserNotifications from './pages/UserNotifications'
+import InsightsInbox from './pages/InsightsInbox'
 import UserDocs from './pages/UserDocs'
-import UserProfile from './pages/Account/UserProfile'
-import AccountManager from './pages/Account/AccountManager'
+import ManageAccount from './pages/Account/ManageAccount'
 import TermsConditions from './pages/Account/TermsConditions'
 import './App.css'
 
@@ -30,13 +28,11 @@ function App() {
             <PageHeader />
             <Routes>
               <Route path="/overview" element={<Dashboard />} />
-              <Route path="/vault" element={<ReceiptVault />} />
-              <Route path="/reports" element={<ReportGeneration />} />
+              <Route path="/vault" element={<CukaiVault />} />
               <Route path="/cukaibot" element={<CukaiBot />} />
-              <Route path="/usernotifications" element={<UserNotifications />} />
+              <Route path="/insightsinbox" element={<InsightsInbox />} />
               <Route path="/userdocs" element={<UserDocs />} />
-              <Route path="/userprofile" element={<UserProfile />} />
-              <Route path="/accountmanager" element={<AccountManager />} />
+              <Route path="/manageaccount" element={<ManageAccount />} />
               <Route path="/termsconditions" element={<TermsConditions />} />
               {/* Catch-all: redirect any other path to overview when logged in */}
               <Route path="*" element={<Navigate to="/overview" replace />} />
@@ -48,8 +44,8 @@ function App() {
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/pricing" element={<Pricing />} />
-              <Route path="/features" element={<AppFeatures />} />
-              <Route path="/docs" element={<Docs />} />
+              <Route path="/tools" element={<AppTools />} />
+              <Route path="/about" element={<AboutUs />} />
               <Route path="/login" element={<Login onLogin={() => setIsAuthenticated(true)} />} />
               <Route path="/getstarted" element={<GetStarted />} />
               {/* Catch-all: redirect any other path to home when logged out */}
