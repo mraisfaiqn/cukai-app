@@ -192,119 +192,121 @@ function UserProfile() {
   const activeTab = 'Profile & Entities';
 
   return (
-    <div className="w-full space-y-8 py-4">
-      {/* Page Title Header block */}
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight text-[#0F172A]">Account Settings</h1>
-        <p className="text-sm text-[#64748B] mt-1">Manage your business entities, team members, and interface preferences.</p>
-      </div>
+    <main className="min-h-screen bg-background font-body">
+      <div className="mx-auto max-w-7xl space-y-6 px-6 py-8">
+        {/* Page Title Header block */}
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-[#0F172A]">Account Settings</h1>
+          <p className="text-sm text-[#64748B] mt-1">Manage your business entities, team members, and interface preferences.</p>
+        </div>
 
-      {/* Primary Tab Navigation Control matching PageHeader anchors */}
-      <nav className="flex items-center gap-1 border-b border-slate-100 pb-px">
-        {tabs.map((tab) => {
-          const isActive = tab === activeTab;
-          return (
-            <button
-              key={tab}
-              className={`relative px-4 py-2.5 text-sm font-medium transition-all duration-150 ${
-                isActive 
-                  ? 'text-[#0D9488] font-semibold' 
-                  : 'text-[#64748B] hover:text-[#0F172A]'
-              }`}
-            >
-              {tab}
-              {isActive && (
-                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#10B981]" />
-              )}
+        {/* Primary Tab Navigation Control matching PageHeader anchors */}
+        <nav className="flex items-center gap-1 border-b border-slate-100 pb-px">
+          {tabs.map((tab) => {
+            const isActive = tab === activeTab;
+            return (
+              <button
+                key={tab}
+                className={`relative px-4 py-2.5 text-sm font-medium transition-all duration-150 ${
+                  isActive 
+                    ? 'text-[#0D9488] font-semibold' 
+                    : 'text-[#64748B] hover:text-[#0F172A]'
+                }`}
+              >
+                {tab}
+                {isActive && (
+                  <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#10B981]" />
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+
+
+
+        {/* Info Context Alert banner box */}
+        <div className="flex gap-3.5 rounded-xl border border-slate-100 bg-[#f0fdf9] p-4 text-sm text-[#64748B]">
+          <InfoIcon />
+          <div className="space-y-1">
+            <h4 className="font-semibold text-[#0F172A]">Entity Switcher Guide</h4>
+            <p className="leading-relaxed">
+              Switching entities lets you file Form P (Partnership) and Form B (Self-Employed/Sole Prop) from the same account. 
+              All data remains siloed per entity for audit compliance.
+            </p>
+          </div>
+        </div>
+
+        {/* Workspace Business Entity Segment */}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-bold text-[#0F172A]">Your Managed Entities</h2>
+            <button className="inline-flex items-center gap-1.5 rounded-lg bg-[#0D9488] px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#0f766e] transition-colors duration-150">
+              <PlusIcon />
+              Create New Entity
             </button>
-          );
-        })}
-      </nav>
+          </div>
 
-
-
-
-      {/* Info Context Alert banner box */}
-      <div className="flex gap-3.5 rounded-xl border border-slate-100 bg-[#f0fdf9] p-4 text-sm text-[#64748B]">
-        <InfoIcon />
-        <div className="space-y-1">
-          <h4 className="font-semibold text-[#0F172A]">Entity Switcher Guide</h4>
-          <p className="leading-relaxed">
-            Switching entities lets you file Form P (Partnership) and Form B (Self-Employed/Sole Prop) from the same account. 
-            All data remains siloed per entity for audit compliance.
-          </p>
-        </div>
-      </div>
-
-      {/* Workspace Business Entity Segment */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-bold text-[#0F172A]">Your Managed Entities</h2>
-          <button className="inline-flex items-center gap-1.5 rounded-lg bg-[#0D9488] px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#0f766e] transition-colors duration-150">
-            <PlusIcon />
-            Create New Entity
-          </button>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <EntityCard 
+              Icon={BuildingIcon}
+              name="Hafiz Printing & Design" 
+              type="Sole Proprietorship" 
+              ssmNo="202103145678 (TR02145)" 
+              tin="IG 8823415601" 
+              active 
+            />
+            <EntityCard 
+              Icon={UsersIcon}
+              name="Urban Brew Partners" 
+              type="General Partnership" 
+              ssmNo="202301982734" 
+              tin="D 1109283745" 
+              actionText="Switch to Entity" 
+            />
+          </div>
         </div>
 
+        {/* Team Access Allocation Control Segment */}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-bold text-[#0F172A]">Team Access — Hafiz Printing</h2>
+            <button className="inline-flex items-center gap-1.5 rounded-lg border border-slate-100 bg-white px-3.5 py-2 text-xs font-semibold text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488] transition-colors duration-150">
+              <PlusIcon />
+              Invite Member
+            </button>
+          </div>
+          <TeamTable />
+        </div>
+
+        {/* Informative Promotional Widget cards layout matching custom designs */}
         <div className="grid gap-4 sm:grid-cols-2">
-          <EntityCard 
-            Icon={BuildingIcon}
-            name="Hafiz Printing & Design" 
-            type="Sole Proprietorship" 
-            ssmNo="202103145678 (TR02145)" 
-            tin="IG 8823415601" 
-            active 
-          />
-          <EntityCard 
-            Icon={UsersIcon}
-            name="Urban Brew Partners" 
-            type="General Partnership" 
-            ssmNo="202301982734" 
-            tin="D 1109283745" 
-            actionText="Switch to Entity" 
-          />
-        </div>
-      </div>
-
-      {/* Team Access Allocation Control Segment */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-bold text-[#0F172A]">Team Access — Hafiz Printing</h2>
-          <button className="inline-flex items-center gap-1.5 rounded-lg border border-slate-100 bg-white px-3.5 py-2 text-xs font-semibold text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488] transition-colors duration-150">
-            <PlusIcon />
-            Invite Member
-          </button>
-        </div>
-        <TeamTable />
-      </div>
-
-      {/* Informative Promotional Widget cards layout matching custom designs */}
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="flex gap-4 rounded-xl border border-slate-100 bg-gradient-to-br from-[#0F172A] to-[#1E293B] p-6 text-white relative overflow-hidden">
-          <div className="space-y-2 flex-1">
-            <h3 className="text-lg font-bold tracking-tight">Automated Filing Beta</h3>
-            <p className="text-xs text-slate-300 leading-relaxed">
-              Your entities are being synchronized with LHDN e-Filing protocols. Ensure your digital certificate is updated in the "Tax Documents" tab.
-            </p>
+          <div className="flex gap-4 rounded-xl border border-slate-100 bg-gradient-to-br from-[#0F172A] to-[#1E293B] p-6 text-white relative overflow-hidden">
+            <div className="space-y-2 flex-1">
+              <h3 className="text-lg font-bold tracking-tight">Automated Filing Beta</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Your entities are being synchronized with LHDN e-Filing protocols. Ensure your digital certificate is updated in the "Tax Documents" tab.
+              </p>
+            </div>
+            <div className="opacity-20 shrink-0 self-center">
+              <ShieldCheckIcon />
+            </div>
           </div>
-          <div className="opacity-20 shrink-0 self-center">
-            <ShieldCheckIcon />
-          </div>
-        </div>
 
-        <div className="flex gap-4 rounded-xl border border-slate-100 bg-[#f0fdf9]/30 p-6 relative overflow-hidden">
-          <div className="space-y-2 flex-1">
-            <h3 className="text-lg font-bold tracking-tight text-[#0F172A]">AI Co-Pilot</h3>
-            <p className="text-xs text-[#64748B] leading-relaxed">
-              Optimizing entity structures for maximum tax relief eligibility seamlessly with standard accounting procedures.
-            </p>
-          </div>
-          <div className="shrink-0 self-center">
-            <SparklesIcon />
+          <div className="flex gap-4 rounded-xl border border-slate-100 bg-[#f0fdf9]/30 p-6 relative overflow-hidden">
+            <div className="space-y-2 flex-1">
+              <h3 className="text-lg font-bold tracking-tight text-[#0F172A]">AI Co-Pilot</h3>
+              <p className="text-xs text-[#64748B] leading-relaxed">
+                Optimizing entity structures for maximum tax relief eligibility seamlessly with standard accounting procedures.
+              </p>
+            </div>
+            <div className="shrink-0 self-center">
+              <SparklesIcon />
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </main>
   );
 }
 

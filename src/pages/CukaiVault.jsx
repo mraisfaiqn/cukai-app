@@ -630,7 +630,7 @@ function ModalShell({ title, subtitle, children, onClose, size = 'max-w-xl' }) {
   );
 }
 
-function ReportVault() {
+function CukaiVault() {
   // Controls which Cukai Vault tab is displayed.
   // This keeps Reports, Generate Report, Linked Receipts, OCR Evidence, and Source Documents inside one route.
   const [activeTab, setActiveTab] = useState('reports');
@@ -2286,4 +2286,4 @@ function Checkbox({ label, checked, onChange }) {
   );
 }
 
-export default ReportVault;
+export default CukaiVault;
