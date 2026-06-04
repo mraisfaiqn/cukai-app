@@ -34,6 +34,7 @@ function OpportunitiesCard({ opportunities }) {
           // mis-paired updates. Using the array index instead would break on reorder.
           <OpportunityRow
             key={opp.id}
+            id={opp.id}
             title={opp.title}
             provision={opp.provision}
             amount={opp.amount}

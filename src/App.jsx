@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, Outlet } from 'react-router-dom'
 import MainHeader from './components/MainHeader'
 import PageHeader from './components/PageHeader'
 import Home from './pages/Landing/Home'
 import Login from './pages/Landing/Login'
 import GetStarted from './pages/Landing/GetStarted'
 import Dashboard from './pages/Dashboard'
+import OpportunityDetail from './pages/OpportunityDetail'
 import CukaiVault from './pages/CukaiVault'
 import CukaiBot from './pages/CukaiBot'
 import InsightsInbox from './pages/InsightsInbox'
@@ -21,6 +22,17 @@ function ConditionalMainHeader() {
   if (pathname === '/') return null
   return <MainHeader />
 }
+// App shell for authenticated pages: renders the PageHeader nav once, and the
+// matched child route fills the <Outlet />. Every logged-in page lives inside
+// this shell so they all share the same in-app top nav.
+function AppShell() {
+  return (
+    <>
+      <PageHeader />
+      <Outlet />
+    </>
+  )
+}
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
@@ -29,10 +41,12 @@ function App() {
     <>
       <Router>
         {isAuthenticated ? (
-          <>
-            <PageHeader />
             <Routes>
+            {/* Every logged-in page shares the PageHeader shell via this layout route. */}
+            <Route element={<AppShell />}>
               <Route path="/overview" element={<Dashboard />} />
+              {/* ":id" is a dynamic segment, read on the page via useParams. */}
+              <Route path="/opportunities/:id" element={<OpportunityDetail />} />
               <Route path="/vault" element={<CukaiVault />} />
               <Route path="/cukaibot" element={<CukaiBot />} />
               <Route path="/insightsinbox" element={<InsightsInbox />} />
@@ -41,8 +55,8 @@ function App() {
               <Route path="/termsconditions" element={<TermsConditions />} />
               {/* Catch-all: redirect any other path to overview when logged in */}
               <Route path="*" element={<Navigate to="/overview" replace />} />
+            </Route>
             </Routes>
-          </>
         ) : (
           <>
             <ConditionalMainHeader />
