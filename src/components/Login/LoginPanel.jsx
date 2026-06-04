@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, NavLink } from "react-router-dom";
 import cukaiLogo from '../../assets/cukai-logo.png';
 
 
@@ -145,12 +145,12 @@ export default function LoginPanel({ onLogin }) {
         {/* Sign up link */}
         <p className="text-center text-[13px] text-[#64748B]">
           New to Cukai.AI?{" "}
-          <a
-            href="#"
+          <NavLink
+            to="/getstarted"
             className="text-[#0F172A] font-semibold underline underline-offset-2 hover:text-[#0D9488] transition-colors"
           >
             Create an account.
-          </a>
+          </NavLink>
         </p>
       </div>
     </div>

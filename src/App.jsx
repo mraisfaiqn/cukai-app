@@ -50,7 +50,7 @@ function App() {
         <Route element={<PublicLayout isAuthenticated={isAuthenticated} />}>
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login onLogin={() => setIsAuthenticated(true)} />} />
-          <Route path="/getstarted" element={<GetStarted />} />
+          <Route path="/getstarted" element={<GetStarted onLogin={() => setIsAuthenticated(true)} />} />
         </Route>
 
         {/* PROTECTED ROUTES (Accessible only when logged in) */}

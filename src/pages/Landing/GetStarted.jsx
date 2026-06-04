@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom"; // Hook imported
 import cukaiLogo from '../../assets/cukai-logo.png';
 
 const BrandLogo = () => (
@@ -116,7 +117,6 @@ const InfoIcon = () => (
   <span title="More info" className="inline-flex items-center justify-center w-4 h-4 rounded-full border border-[#CBD5E1] text-[#94A3B8] text-[9px] font-bold ml-1 cursor-help">i</span>
 );
 
-// Password strength
 const getStrength = (pw) => {
   let score = 0;
   if (pw.length >= 8) score++;
@@ -292,11 +292,6 @@ function Step2_Income({ data, setData, onBack, onNext }) {
   const isSelf = data.employment === "self-employed" || data.employment === "both";
   const isSalaried = data.employment === "salaried" || data.employment === "both";
 
-  const fmt = (val) => {
-    const n = parseFloat(val);
-    return isNaN(n) ? "" : n.toFixed(2);
-  };
-
   return (
     <Card>
       <h2 className="text-xl font-bold text-[#0F172A] mb-1">
@@ -469,7 +464,6 @@ function Step4_Savings({ data, setData, onBack, onNext }) {
 }
 
 function Step5_BusinessProfile({ data, setData, onBack, onNext }) {
-  // Extra step specifically valuable for solopreneurs
   const industries = [
     "Consulting / Advisory", "Freelance Creative (Design, Writing, Video)",
     "Tech / Software", "E-commerce / Retail", "Food & Beverage",
@@ -583,7 +577,7 @@ function StepUpload({ onBack, onNext }) {
         onDragOver={e => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={e => { e.preventDefault(); setDragging(false); }}
-        className={`border-2 border-dashed rounded-2xl p-8 text-center transition-all duration-150 cursor-pointer ${
+        className={`border-2 border-dashed rounded-2xl p-8 text-center transition-all duration-150 ${
           dragging ? "border-[#10B981] bg-[#F0FDF9]" : "border-[#CBD5E1] hover:border-[#10B981] bg-[#F8FAFC]"
         }`}
       >
@@ -609,6 +603,7 @@ function StepUpload({ onBack, onNext }) {
       </div>
 
       <div className="mt-6 flex justify-center">
+        {/* FIX: Trigger explicit onNext parameter inside StepUpload layout block */}
         <button onClick={onNext} className="text-sm text-[#94A3B8] hover:text-[#64748B] transition-colors">
           Skip for now
         </button>
@@ -618,7 +613,6 @@ function StepUpload({ onBack, onNext }) {
 }
 
 function StepSavings({ data, onNext }) {
-  // Rough estimate from profile
   const base = 660;
   const extra = (data.epf ? 150 : 0) + (data.prs ? 100 : 0) + (data.lifeInsurance ? 80 : 0)
     + (data.medInsurance ? 60 : 0) + (data.sspn ? 40 : 0) + (data.hasChildren ? 120 : 0)
@@ -647,94 +641,84 @@ function StepSavings({ data, onNext }) {
 
 // ─── MAIN COMPONENT ──────────────────────────────────────────────────────────
 
-export default function GetStarted() {
+export default function GetStarted({ onLogin }) {
   const [step, setStep] = useState(0);
   const [data, setData] = useState({});
-
-  // Step indices:
-  // 0 = Account, 1 = Employment, 2 = Income, 3 = Personal, 4 = Savings/Insurance
-  // 5 = Business Profile (only if self-employed), 6 = Upload Receipt, 7 = Summary
+  const navigate = useNavigate();
 
   const showBizProfile = data.employment === "self-employed" || data.employment === "both";
+  const totalProgressSteps = showBizProfile ? 6 : 5;
 
-  const getMaxSteps = () => showBizProfile ? 6 : 5;
-  const progressStep = step + 1;
-  const totalProgressSteps = getMaxSteps();
+  // FIX: Statically assign each step a concrete placement order inside the array
+  const WIZARD_STEPS = [];
 
-  const WIZARD_STEPS = [
-    // step 0 — Account (no progress bar)
-    (
-      <Step0_Account
-        data={data}
-        setData={setData}
-        onNext={() => setStep(1)}
-      />
-    ),
-    // step 1 — Employment
-    (
-      <>
-        <ProgressBar current={1} total={totalProgressSteps} />
-        <Step1_Employment data={data} setData={setData} onBack={() => setStep(0)} onNext={() => setStep(2)} />
-      </>
-    ),
-    // step 2 — Income
-    (
-      <>
-        <ProgressBar current={2} total={totalProgressSteps} />
-        <Step2_Income data={data} setData={setData} onBack={() => setStep(1)} onNext={() => setStep(3)} />
-      </>
-    ),
-    // step 3 — Personal & Family
-    (
-      <>
-        <ProgressBar current={3} total={totalProgressSteps} />
-        <Step3_Personal data={data} setData={setData} onBack={() => setStep(2)} onNext={() => setStep(4)} />
-      </>
-    ),
-    // step 4 — Savings & Insurance
-    (
+  WIZARD_STEPS[0] = (
+    <Step0_Account data={data} setData={setData} onNext={() => setStep(1)} />
+  );
+  WIZARD_STEPS[1] = (
+    <>
+      <ProgressBar current={1} total={totalProgressSteps} />
+      <Step1_Employment data={data} setData={setData} onBack={() => setStep(0)} onNext={() => setStep(2)} />
+    </>
+  );
+  WIZARD_STEPS[2] = (
+    <>
+      <ProgressBar current={2} total={totalProgressSteps} />
+      <Step2_Income data={data} setData={setData} onBack={() => setStep(1)} onNext={() => setStep(3)} />
+    </>
+  );
+  WIZARD_STEPS[3] = (
+    <>
+      <ProgressBar current={3} total={totalProgressSteps} />
+      <Step3_Personal data={data} setData={setData} onBack={() => setStep(2)} onNext={() => setStep(4)} />
+    </>
+  );
+
+  if (!showBizProfile) {
+    // Salaried Employee sequence route mappings
+    WIZARD_STEPS[4] = (
       <>
         <ProgressBar current={4} total={totalProgressSteps} />
-        <Step4_Savings
-          data={data}
-          setData={setData}
-          onBack={() => setStep(3)}
-          onNext={() => showBizProfile ? setStep(5) : setStep(6)}
-        />
+        <Step4_Savings data={data} setData={setData} onBack={() => setStep(3)} onNext={() => setStep(5)} />
       </>
-    ),
-  ];
-
-  if (showBizProfile) {
-    WIZARD_STEPS.push(
-      // step 5 — Business Profile
-      (
-        <>
-          <ProgressBar current={5} total={totalProgressSteps} />
-          <Step5_BusinessProfile data={data} setData={setData} onBack={() => setStep(4)} onNext={() => setStep(6)} />
-        </>
-      )
+    );
+    WIZARD_STEPS[5] = (
+      <StepUpload onBack={() => setStep(4)} onNext={() => setStep(6)} />
+    );
+    WIZARD_STEPS[6] = (
+      <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />
+    );
+  } else {
+    // Self-Employed or Both sequence route mappings
+    WIZARD_STEPS[4] = (
+      <>
+        <ProgressBar current={4} total={totalProgressSteps} />
+        <Step4_Savings data={data} setData={setData} onBack={() => setStep(3)} onNext={() => setStep(5)} />
+      </>
+    );
+    WIZARD_STEPS[5] = (
+      <>
+        <ProgressBar current={5} total={totalProgressSteps} />
+        <Step5_BusinessProfile data={data} setData={setData} onBack={() => setStep(4)} onNext={() => setStep(6)} />
+      </>
+    );
+    WIZARD_STEPS[6] = (
+      <StepUpload onBack={() => setStep(5)} onNext={() => setStep(7)} />
+    );
+    WIZARD_STEPS[7] = (
+      <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />
     );
   }
-
-  WIZARD_STEPS.push(
-    // step 6 — Upload Receipt
-    <StepUpload onBack={() => setStep(showBizProfile ? 5 : 4)} onNext={() => setStep(WIZARD_STEPS.length)} />,
-    // step 7 — Savings Summary
-    <StepSavings data={data} onNext={() => alert("Navigating to dashboard...")} />
-  );
 
   const currentView = WIZARD_STEPS[step];
 
   return (
     <div className="min-h-screen bg-[#F1F5F9] px-4 py-8 font-sans">
       <div className="max-w-md mx-auto">
-        {/* Header */}
         <div className="mb-6 flex items-center justify-between">
           <BrandLogo />
         </div>
 
-        {/* Page title (shown for steps 1+) */}
         {step > 0 && step < WIZARD_STEPS.length - 1 && (
           <div className="mb-5">
             <h1 className="text-2xl font-bold text-[#0F172A]">Let's get you set up</h1>
@@ -742,12 +726,10 @@ export default function GetStarted() {
           </div>
         )}
 
-        {/* Wizard step content */}
         <div className="transition-all duration-300">
           {currentView}
         </div>
 
-        {/* Footer note */}
         <p className="text-center text-xs text-[#94A3B8] mt-6">
           🔒 Your data is encrypted and never shared with third parties.
         </p>
