@@ -75,8 +75,8 @@ function LandingNav() {
           {[
             { label: 'Features', id: 'features' },
             { label: 'How It Works', id: 'how-it-works' },
-            { label: 'Pricing', id: 'pricing' },
             { label: 'Cukai Bot', id: 'cukaibot' },
+            { label: 'Pricing', id: 'pricing' },
             { label: 'FAQ', id: 'faq' },
           ].map(({ label, id }) => (
             <button
@@ -125,8 +125,8 @@ function LandingNav() {
             {[
               { label: 'Features', id: 'features' },
               { label: 'How It Works', id: 'how-it-works' },
-              { label: 'Pricing', id: 'pricing' },
               { label: 'Cukai Bot', id: 'cukaibot' },
+              { label: 'Pricing', id: 'pricing' },
               { label: 'FAQ', id: 'faq' },
             ].map(({ label, id }) => (
               <button key={id} onClick={() => scrollTo(id)} className="text-[#0F172A] font-medium py-2 border-b border-slate-100 text-left">
@@ -438,7 +438,7 @@ function Features() {
           </FeatureCard>
 
           {/* Card 3: CukaiBot */}
-          <FeatureCard delay={240} id="cukaibot" className="flex flex-col justify-between">
+          <FeatureCard delay={240} className="flex flex-col justify-between">
             <div>
               <AiBadge>✦ CukaiBot</AiBadge>
               <h3 className="text-[#0F172A] mb-2 mt-2 text-xl font-semibold">Ask in EN, BM, or Mandarin</h3>
@@ -625,7 +625,7 @@ function ProductShowcase() {
   return (
     <>
       {/* Block 1: CukaiBot */}
-      <section className="py-20 px-4 md:px-12 bg-[#F8FAFC] relative overflow-hidden">
+      <section id="cukaibot" className="py-20 px-4 md:px-12 bg-[#F8FAFC] relative overflow-hidden">
         <div className="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-l from-[#EFF4FF] to-transparent opacity-50 pointer-events-none" />
         <div className="max-w-[1280px] mx-auto grid grid-cols-1 lg:grid-cols-2 gap-20 items-center relative z-10">
           {/* Text */}
