@@ -32,7 +32,7 @@ function App() {
               <Route path="/cukaibot" element={<CukaiBot />} />
               <Route path="/insightsinbox" element={<InsightsInbox />} />
               <Route path="/userdocs" element={<UserDocs />} />
-              <Route path="/manageaccount" element={<ManageAccount />} />
+              <Route path="/manageaccount/*" element={<ManageAccount />} />
               <Route path="/termsconditions" element={<TermsConditions />} />
               {/* Catch-all: redirect any other path to overview when logged in */}
               <Route path="*" element={<Navigate to="/overview" replace />} />
