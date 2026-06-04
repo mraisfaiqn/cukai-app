@@ -25,50 +25,50 @@ const EyeIcon = () => (
 );
 
 
-export default function LoginPanel() {
+export default function LoginPanel({ onLogin }) {
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [loading,  setLoading]  = useState(false);
   const navigate = useNavigate();
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
-    setTimeout(() => {
+    try {
+      // 1. Fake API call or actual auth logic here
+      await new Promise((resolve) => setTimeout(resolve, 1500)); 
+      // 2. Trigger the parent state change (setIsAuthenticated(true))
+      onLogin(); 
+      // 3. Redirect to the overview page now that they are logged in
+      navigate("/overview"); 
+    } catch (error) {
+      console.error("Login failed", error);
+    } finally {
       setLoading(false);
-      navigate("/dashboard");
-    }, 1000);
+    }
   };
 
   return (
     <div className="w-[42%] h-screen bg-[#E8ECF4] flex items-center justify-center px-8 flex-shrink-0">
-
       <div className="w-full max-w-[340px] bg-white rounded-[20px] shadow-[0_4px_32px_rgba(15,23,42,0.10)] px-9 py-10 flex flex-col">
-
-       
-    {/* Logo and heading */}
-  <div className="flex items-center justify-center gap-3 mb-2">
-  <img
-    src={cukaiLogo}
-    alt="Cukai.ai logo"
-    className="h-10 w-10 shrink-0"
-  />
-  <span className="select-none text-xl font-bold tracking-tight text-[#0F172A]">
-    cukai
-    <span className="text-[#10B981]">.</span>
-    <span className="font-light text-[#64748B]">ai</span>
-  </span>
-</div>
-
-      
+        {/* Logo and heading */}
+        <div className="flex items-center justify-center gap-3 mb-2">
+          <img
+            src={cukaiLogo}
+            alt="Cukai.ai logo"
+            className="h-10 w-10 shrink-0"
+          />
+          <span className="select-none text-xl font-bold tracking-tight text-[#0F172A]">
+            cukai
+          <span className="text-[#10B981]">.</span>
+          <span className="font-light text-[#64748B]">ai</span>
+          </span>
+        </div>
         <p className="text-center text-[13px] text-[#94A3B8] mb-8 mt-3">
           Sign in to continue
         </p>
-
-        
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-
           {/* Email/username */}
           <div>
             <label className="block text-[11px] font-semibold tracking-[0.06em] uppercase text-[#6B7280] mb-2">
@@ -83,7 +83,6 @@ export default function LoginPanel() {
               className="w-full px-4 py-3 rounded-xl border-[1.5px] border-[#E2E8F0] text-[13.5px] text-[#0F172A] bg-white outline-none focus:border-[#10B981] transition-colors placeholder-[#D1D5DB]"
             />
           </div>
-
           {/* Password */}
           <div>
             <div className="flex items-center justify-between mb-2">
@@ -115,7 +114,7 @@ export default function LoginPanel() {
               </button>
             </div>
           </div>
-              {/* Remember Me */}
+          {/* Remember Me */}
           <div className="flex items-center gap-2.5">
             <input
               type="checkbox"
@@ -129,7 +128,6 @@ export default function LoginPanel() {
               Remember Me
             </label>
           </div>
-
           {/* Sign in button */}
           <button
             type="submit"
@@ -138,16 +136,12 @@ export default function LoginPanel() {
           >
             {loading ? "Signing in…" : "Sign in"}
           </button>
-
         </form>
         {/*form closes/}
-
         {/* Spacer that push bottom part down and makes card taller */}
         <div className="flex-1 min-h-[48px]" />
-
         {/* Divider */}
         <div className="border-t border-[#F1F5F9] mb-5" />
-
         {/* Sign up link */}
         <p className="text-center text-[13px] text-[#64748B]">
           New to Cukai.AI?{" "}
@@ -158,11 +152,7 @@ export default function LoginPanel() {
             Create an account.
           </a>
         </p>
-
       </div>
-
-
     </div>
-
   );
 }
