@@ -61,6 +61,7 @@ function App() {
           <Route path="/insightsinbox" element={<InsightsInbox />} />
           <Route path="/userdocs" element={<UserDocs />} />
           <Route path="/manageaccount/*" element={<ManageAccount />} />
+          <Route path="/opportunities/:id" element={<OpportunityDetail />} />
           <Route path="/termsconditions" element={<TermsConditions />} />
         </Route>
 
