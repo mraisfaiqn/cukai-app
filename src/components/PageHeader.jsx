@@ -1,5 +1,11 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
-import {NavLink} from 'react-router-dom';
+// To integrate the logout functionality seamlessly, we need to make adjustments in three specific areas of your file:
+
+// 1. **The `Dropdown` Component:** It needs to check if an item contains an `onClick` callback (for the logout button) instead of blindly assuming every item is a link.
+// 2. **The `PageHeader` Component:** It must accept the `onLogout` prop from `App.jsx` and use React Router's `useNavigate` to handle the redirection.
+// 3. **The `accountItems` Array:** It needs to be moved *inside* the `PageHeader` component so it can access the `onLogout` logic directly.
+
+import { useState, useRef, useEffect } from 'react';
+import { NavLink, useNavigate } from 'react-router-dom'; // 1. Added useNavigate here
 import cukaiLogo from '../assets/cukai-logo.png';
 import cukaiBot from '../assets/cukaibot-icon.png';
 
@@ -67,7 +73,6 @@ const DocsIcon = () => (
   </svg>
 );
 
-
 const ChevronDown = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="6 9 12 15 18 9" />
@@ -98,10 +103,23 @@ function Dropdown({ trigger, items, navLinks = false }) {
               ? <div key={i} className="my-1 border-t border-slate-100" />
               : item.heading
               ? (
-                // Section title — not clickable, no hover
                 <p key={i} className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-[#64748B]">
                   {item.label}
                 </p>
+              )
+              : item.onClick
+              ? (
+                <button
+                  key={i}
+                  onClick={() => {
+                    item.onClick();
+                    setOpen(false);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-4 py-2 text-sm text-[#0F172A] hover:bg-red-50 hover:text-red-600 transition-colors duration-150 text-left bg-transparent border-none cursor-pointer"
+                >
+                  {item.icon && <span className="text-[#64748B]">{item.icon}</span>}
+                  {item.label}
+                </button>
               )
               : navLinks
               ? (
@@ -177,8 +195,8 @@ function InsightsAIDropdown({ trigger }) {
 
 function SettingsDropdown({ trigger }) {
   const [open, setOpen] = useState(false);
-  const [lang, setLang] = useState('EN'); // 'EN' | 'BM'
-  const [theme, setTheme] = useState('Light'); // 'Light' | 'Dark'
+  const [lang, setLang] = useState('EN'); 
+  const [theme, setTheme] = useState('Light'); 
   const ref = useRef(null);
 
   useEffect(() => {
@@ -194,7 +212,6 @@ function SettingsDropdown({ trigger }) {
       <div onClick={() => setOpen(o => !o)}>{trigger(open)}</div>
       {open && (
         <div className="absolute right-0 top-full mt-2 w-52 rounded-xl border border-slate-100 bg-white py-1 shadow-lg z-50">
-          {/* Heading */}
           <p className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-[#64748B]">Settings</p>
           <div className="my-1 border-t border-slate-100" />
 
@@ -249,14 +266,7 @@ function SettingsDropdown({ trigger }) {
   );
 }
 
-const accountItems = [
-  { heading: true, label: 'My Account' },
-  { divider: true },
-  { label: 'Manage Account', href: '/manageaccount' },
-  { label: 'Terms & Conditions', href: '/termsconditions' },
-  { divider: true },
-  { label: 'Log out', href: '/logout' },
-];
+/* 3. MOVED: Removed static accountItems from here and placed inside PageHeader below */
 
 // ── Nav links ─────────────────────────────────────────────────────────────────
 
@@ -267,7 +277,25 @@ const navLinks = [
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-function PageHeader() {
+// 4. UPDATED: Added { onLogout } prop to the main PageHeader component
+function PageHeader({ onLogout }) {
+  const navigate = useNavigate(); // 5. Added initialization hook
+
+  const handleLogout = () => {
+    onLogout();     // Changes isAuthenticated state to false
+    navigate('/');  // Sends user back to landing page
+  };
+
+  // 6. MOVED & UPDATED: Added accountItems dynamically inside the component to use handleLogout
+  const accountItems = [
+    { heading: true, label: 'My Account' },
+    { divider: true },
+    { label: 'Manage Account', href: '/manageaccount' },
+    { label: 'Terms & Conditions', href: '/termsconditions' },
+    { divider: true },
+    { label: 'Log out', onClick: handleLogout }, // <-- Assigned onClick callback here
+  ];
+
   return (
     <header className="sticky top-0 z-40 w-full border-b border-slate-100 bg-white">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">

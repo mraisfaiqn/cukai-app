@@ -15,14 +15,16 @@ import TermsConditions from './pages/Account/TermsConditions'
 import './App.css'
 
 // 1. A wrapper that protects internal pages
-function ProtectedLayout({ isAuthenticated }) {
+// FIX: Accepted the 'onLogout' prop here in the function parameters
+function ProtectedLayout({ isAuthenticated, onLogout }) {
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />
   }
 
   return (
     <>
-      <PageHeader />
+      {/* FIX: Passed the 'onLogout' prop down to the PageHeader component */}
+      <PageHeader onLogout={onLogout} />
       <main className="app-content"> {/* Optional wrapper for your CSS styling */}
         <Outlet /> {/* This renders whatever sub-route the user is on */}
       </main>
@@ -52,7 +54,7 @@ function App() {
         </Route>
 
         {/* PROTECTED ROUTES (Accessible only when logged in) */}
-        <Route element={<ProtectedLayout isAuthenticated={isAuthenticated} />}>
+        <Route element={<ProtectedLayout isAuthenticated={isAuthenticated} onLogout={() => setIsAuthenticated(false)}/>}>
           <Route path="/overview" element={<Dashboard />} />
           <Route path="/vault" element={<CukaiVault />} />
           <Route path="/cukaibot" element={<CukaiBot />} />
