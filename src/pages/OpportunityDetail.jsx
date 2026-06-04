@@ -40,7 +40,7 @@ function OpportunityDetail() {
         <div className="mx-auto max-w-7xl px-6 py-16 text-center">
           <h1 className="font-headings text-2xl font-bold text-headings">Opportunity not found</h1>
           <p className="mt-2 text-sm text-muted">No details available for &ldquo;{id}&rdquo;.</p>
-          <Link to="/" className="mt-4 inline-block text-sm font-medium text-primary hover:text-primary-hover">
+          <Link to="/overview" className="mt-4 inline-block text-sm font-medium text-primary hover:text-primary-hover">
             ← Back to Dashboard
           </Link>
         </div>
@@ -49,7 +49,7 @@ function OpportunityDetail() {
           {/* Breadcrumb strip */}
           <div className="border-b border-border bg-surface">
             <nav className="mx-auto flex max-w-7xl items-center gap-2 px-6 py-3 text-sm">
-              <Link to="/" className="font-medium text-muted transition-colors hover:text-primary">
+              <Link to="/overview" className="font-medium text-muted transition-colors hover:text-primary">
                 Dashboard
               </Link>
               <span className="text-muted" aria-hidden="true">›</span>
@@ -113,6 +113,13 @@ function OpportunityDetail() {
               <span>Audit Trail Active</span>
               <span>Updated {detail.legalReference.act.includes('1967') ? 'ITA 1967 (2024 Edition)' : detail.legalReference.act}</span>
             </div>
+
+            <Link
+              to="/overview"
+              className="mt-6 inline-flex rounded-lg border border-border bg-surface px-4 py-2 text-sm font-medium text-headings transition-colors hover:bg-primary-tint"
+            >
+              Back to Overview
+            </Link>
           </main>
         </>
       )}
