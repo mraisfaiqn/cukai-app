@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, Outlet } from 'react-router-dom'
-import MainHeader from './components/MainHeader'
 import PageHeader from './components/PageHeader'
 import Home from './pages/Landing/Home'
 import Login from './pages/Landing/Login'
@@ -15,62 +14,61 @@ import ManageAccount from './pages/Account/ManageAccount'
 import TermsConditions from './pages/Account/TermsConditions'
 import './App.css'
 
-// MainHeader is hidden on the landing home page because Home.jsx renders its own
-// full-featured landing nav (with section anchors, language switcher, etc.)
-function ConditionalMainHeader() {
-  const { pathname } = useLocation()
-  if (pathname === '/') return null
-  return <MainHeader />
-}
-// App shell for authenticated pages: renders the PageHeader nav once, and the
-// matched child route fills the <Outlet />. Every logged-in page lives inside
-// this shell so they all share the same in-app top nav.
-function AppShell() {
+// 1. A wrapper that protects internal pages
+function ProtectedLayout({ isAuthenticated }) {
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />
+  }
+
   return (
     <>
       <PageHeader />
-      <Outlet />
+      <main className="app-content"> {/* Optional wrapper for your CSS styling */}
+        <Outlet /> {/* This renders whatever sub-route the user is on */}
+      </main>
     </>
   )
+}
+
+// 2. A wrapper that stops logged-in users from seeing public pages (like /login)
+function PublicLayout({ isAuthenticated }) {
+  if (isAuthenticated) {
+    return <Navigate to="/overview" replace />
+  }
+  return <Outlet />
 }
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
 
   return (
-    <>
-      <Router>
-        {isAuthenticated ? (
-            <Routes>
-            {/* Every logged-in page shares the PageHeader shell via this layout route. */}
-            <Route element={<AppShell />}>
-              <Route path="/overview" element={<Dashboard />} />
-              {/* ":id" is a dynamic segment, read on the page via useParams. */}
-              <Route path="/opportunities/:id" element={<OpportunityDetail />} />
-              <Route path="/vault" element={<CukaiVault />} />
-              <Route path="/cukaibot" element={<CukaiBot />} />
-              <Route path="/insightsinbox" element={<InsightsInbox />} />
-              <Route path="/userdocs" element={<UserDocs />} />
-              <Route path="/manageaccount/*" element={<ManageAccount />} />
-              <Route path="/termsconditions" element={<TermsConditions />} />
-              {/* Catch-all: redirect any other path to overview when logged in */}
-              <Route path="*" element={<Navigate to="/overview" replace />} />
-            </Route>
-            </Routes>
-        ) : (
-          <>
-            <ConditionalMainHeader />
-            <Routes>
-              <Route path="/" element={<Home />} />
-              <Route path="/login" element={<Login onLogin={() => setIsAuthenticated(true)} />} />
-              <Route path="/getstarted" element={<GetStarted />} />
-              {/* Catch-all: redirect any other path to home when logged out */}
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </>
-        )}
-      </Router>
-    </>
+    <Router>
+      <Routes>
+        {/* PUBLIC ROUTES (Accessible only when logged out) */}
+        <Route element={<PublicLayout isAuthenticated={isAuthenticated} />}>
+          <Route path="/" element={<Home />} />
+          <Route path="/login" element={<Login onLogin={() => setIsAuthenticated(true)} />} />
+          <Route path="/getstarted" element={<GetStarted />} />
+        </Route>
+
+        {/* PROTECTED ROUTES (Accessible only when logged in) */}
+        <Route element={<ProtectedLayout isAuthenticated={isAuthenticated} />}>
+          <Route path="/overview" element={<Dashboard />} />
+          <Route path="/vault" element={<CukaiVault />} />
+          <Route path="/cukaibot" element={<CukaiBot />} />
+          <Route path="/insightsinbox" element={<InsightsInbox />} />
+          <Route path="/userdocs" element={<UserDocs />} />
+          <Route path="/manageaccount/*" element={<ManageAccount />} />
+          <Route path="/termsconditions" element={<TermsConditions />} />
+        </Route>
+
+        {/* Global Catch-all Fallback */}
+        <Route 
+          path="*" 
+          element={<Navigate to={isAuthenticated ? "/overview" : "/"} replace />} 
+        />
+      </Routes>
+    </Router>
   )
 }
 
