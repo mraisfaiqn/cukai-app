@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import MainHeader from './components/MainHeader'
 import PageHeader from './components/PageHeader'
 import Home from './pages/Landing/Home'
@@ -16,6 +16,14 @@ import UserDocs from './pages/UserDocs'
 import ManageAccount from './pages/Account/ManageAccount'
 import TermsConditions from './pages/Account/TermsConditions'
 import './App.css'
+
+// MainHeader is hidden on the landing home page because Home.jsx renders its own
+// full-featured landing nav (with section anchors, language switcher, etc.)
+function ConditionalMainHeader() {
+  const { pathname } = useLocation()
+  if (pathname === '/') return null
+  return <MainHeader />
+}
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
@@ -40,12 +48,9 @@ function App() {
           </>
         ) : (
           <>
-            <MainHeader />
+            <ConditionalMainHeader />
             <Routes>
               <Route path="/" element={<Home />} />
-              <Route path="/pricing" element={<Pricing />} />
-              <Route path="/tools" element={<AppTools />} />
-              <Route path="/about" element={<AboutUs />} />
               <Route path="/login" element={<Login onLogin={() => setIsAuthenticated(true)} />} />
               <Route path="/getstarted" element={<GetStarted />} />
               {/* Catch-all: redirect any other path to home when logged out */}
