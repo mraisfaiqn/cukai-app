@@ -46,3 +46,49 @@ export const deadlines = [
   { label: 'SST Return', sub: 'Bi-monthly cycle', daysLeft: 38 },
   { label: 'Form C filing', sub: 'YA 2025', daysLeft: 142 },
 ];
+
+// Full detail records for the opportunity detail page, taken from
+// "Opportunity Detail - Capital Allowance.png". Keyed by the same opportunity
+// `id` used on the dashboard rows, so the detail page can do a direct lookup:
+//   opportunityDetails[useParams().id]
+// Currency values are stored preformatted (like the rest of this file) since
+// the components are presentational and only display them.
+export const opportunityDetails = {
+  'capital-allowance': {
+    id: 'capital-allowance',
+    title: 'Capital Allowance: RM45k Cutting Machine',
+    subtitle: 'Reviewing asset purchase for accelerated tax depreciation.',
+    status: 'Action Required',                   // red "ACTION REQUIRED" chip on the provision card
+    provision: 'Capital Allowance (Sch. 3 ITA)', // TAX PROVISION heading
+    provisionNote: 'Eligible for initial and annual allowance for the current assessment year.',
+    estSavings: 'RM 8,160.00',                   // headline "Est. Savings" on the provision card
+
+    // "Why you qualify" — the AI explanation, one string per paragraph.
+    whyYouQualify: [
+      'Our AI analyzed your business profile and detected a mismatch between your registered MSIC Code 1811 (Printing) and unclaimed machinery expenses.',
+      "Under Schedule 3 of the Income Tax Act 1967, the purchase of heavy machinery for manufacturing/printing qualifies for an accelerated Initial Allowance of 20%. Given the asset's classification as 'Plant & Machinery', you are also entitled to a 14% Annual Allowance.",
+    ],
+
+    // Legal reference shown under the explanation and as the compliance source.
+    legalReference: {
+      act: 'Schedule 3, Income Tax Act 1967',
+      ruling: 'Public Ruling No. 12/2014', // the "Reference:" link
+      source: 'LHDN Law (ITA 1967)',        // "COMPLIANCE SOURCE" footnote
+    },
+
+    // Calculation Breakdown panel — rows top to bottom.
+    calculation: {
+      assetCost: 'RM 45,000.00',
+      initialAllowance: { rate: '20%', note: 'One-time claim for year of purchase', amount: '+RM 9,000.00' },
+      annualAllowance: { rate: '14%', note: 'Standard rate for plant & machinery', amount: '+RM 6,300.00' },
+      totalClaimable: 'RM 15,300.00',                               // = 9,000 + 6,300
+      projectedTaxReduction: { rate: '24%', amount: 'RM 3,672.00' }, // = 15,300 × 24%
+    },
+
+    // "Link Supporting Documents" — the invoice Cukai.AI matched from the vault.
+    matchingInvoice: {
+      matchConfidence: '98%',
+      label: 'Invoice #INV-2024-882 (Heidelberg Press)',
+    },
+  },
+};

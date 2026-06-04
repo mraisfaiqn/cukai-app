@@ -22,3 +22,15 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local design docs & instructions (root-level markdown), but keep README
+/*.md
+!/README.md
+
+# Design reference mockups dropped in the project root
+/*.png
+/*.jpg
+/*.jpeg
+
+# Local Claude / preview-server tooling
+.claude/
