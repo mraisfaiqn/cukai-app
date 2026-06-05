@@ -7,7 +7,7 @@ export const account = {
   entity: 'Qafiz Printing & Design',
   msic: 'MSIC 1811',
   assessmentYear: 'YA 2025',
-  deadlineNote: '142 days to Form C',
+  deadlineNote: '142 days to Form B',
 };
 
 // Content for the amber "Action Required" banner.
@@ -17,12 +17,14 @@ export const alert = {
   actionLabel: 'Review',
 };
 
-// Score rings in the "Your Tax Health" card. value is out of 100; `color`
-// is a Tailwind text-color class (from registered tokens) so the ring stays
-// presentational and never holds a raw hex.
+// Score rings in the "Your Tax Health" card. The ring fills by value / max.
+// Omit `max` (defaults to 100) for a percentage-style score that shows just the
+// number; set `max` for a fraction-style score that shows "value/max" (e.g. 7/9).
+// `color` is a Tailwind text-color class (from registered tokens) so the ring
+// stays presentational and never holds a raw hex.
 export const healthScores = [
-  { label: 'Health', value: 78, color: 'text-primary', track: 'text-primary-tint' },
-  { label: 'Literacy', value: 42, color: 'text-literacy', track: 'text-literacy-track' },
+  { label: 'Savings Claimed', value: 6, max: 9, color: 'text-primary', track: 'text-primary-tint' },
+  { label: 'Form Readiness', value: 75, color: 'text-literacy', track: 'text-literacy-track' },
 ];
 
 // Top KPI strip — 4 stat cards
@@ -44,7 +46,7 @@ export const opportunities = [
 export const deadlines = [
   { label: 'PCB Nov', sub: 'Due 15 Dec', daysLeft: 4 },
   { label: 'SST Return', sub: 'Bi-monthly cycle', daysLeft: 38 },
-  { label: 'Form C filing', sub: 'YA 2025', daysLeft: 142 },
+  { label: 'Form B filing', sub: 'YA 2025', daysLeft: 142 },
 ];
 
 // Full detail records for the opportunity detail page, taken from
