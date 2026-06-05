@@ -3,6 +3,7 @@ import UserNavigation from '../../components/UserNavigation';
 import ProfileTab from './ProfileTab';
 import ManagePermission from './ManagePermissions';
 import LanguageDisplayTab from './LanguageDisplay';
+import PersonalDetailsTab from './PersonalDetailsTab';
 
 function ManageAccount() {
   return (
@@ -23,13 +24,13 @@ function ManageAccount() {
       {/* Internal Sub-View Router Mechanism Viewport */}
       <div className="w-full pt-2">
         <Routes>
-          {/* Automatically redirect /manageaccount down to /manageaccount/profile */}
-          <Route index element={<Navigate to="profile" replace />} />
-          
-          {/* Sub-tab view viewport assignments */}
-          <Route path="profile" element={<ProfileTab />} />
-          <Route path="permissions" element={<ManagePermission />} />
-          <Route path="display" element={<LanguageDisplayTab />} />
+        {/* Automatically land users on the Personal Profile view now */}
+            <Route index element={<Navigate to="personal" replace />} />
+
+            <Route path="personal" element={<PersonalDetailsTab />} />
+            <Route path="profile" element={<ProfileTab />} />
+            <Route path="permissions" element={<ManagePermission />} />
+            <Route path="display" element={<LanguageDisplayTab />} />
         </Routes>
       </div>
 
