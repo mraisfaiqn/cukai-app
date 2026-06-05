@@ -4,9 +4,6 @@ import ProfileTab from './ProfileTab';
 import ManagePermission from './ManagePermissions';
 import LanguageDisplayTab from './LanguageDisplay';
 
-// Quick temporary component shells for upcoming tabs
-const NotificationsTab = () => <div className="p-6 bg-white rounded-xl border border-slate-100 text-sm text-[#64748B]">Notifications Settings View Panel</div>;
-
 function ManageAccount() {
   return (
     <main className="min-h-screen bg-background font-body text-leeft">
@@ -32,7 +29,6 @@ function ManageAccount() {
           {/* Sub-tab view viewport assignments */}
           <Route path="profile" element={<ProfileTab />} />
           <Route path="permissions" element={<ManagePermission />} />
-          <Route path="notifications" element={<NotificationsTab />} />
           <Route path="display" element={<LanguageDisplayTab />} />
         </Routes>
       </div>
