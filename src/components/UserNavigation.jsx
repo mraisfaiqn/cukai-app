@@ -4,7 +4,6 @@ function UserNavigation() {
   const tabs = [
     { name: "Profile & Entities", path: "/manageaccount/profile" },
     { name: "Manage Permissions", path: "/manageaccount/permissions" },
-    { name: "Notifications", path: "/manageaccount/notifications" },
     { name: "Language & Display", path: "/manageaccount/display" },
   ];
 
