@@ -20,7 +20,6 @@ function DashboardHeader({
   msic,            // industry classification code, e.g. "MSIC 1811" — shown as plain meta text.
   assessmentYear,  // year of assessment, e.g. "YA 2025" — rendered as a pill chip to stand out.
   deadlineNote,    // headline deadline reminder, e.g. "142 days to Form C".
-                   //   Teal + calendar icon to flag it as time-sensitive; text is prebuilt by the parent.
 }) {
   return (
     <header>

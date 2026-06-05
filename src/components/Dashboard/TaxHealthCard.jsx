@@ -4,10 +4,12 @@
 
 // A single donut ring with the score centered. Stroke color comes from a
 // Tailwind text-color class so this stays free of raw hex.
-function Ring({ value, color, track }) {
+// `max` is the denominator the ring fills against (defaults to 100).
+function Ring({ value, max = 100, color, track }) {
   const radius = 38;
   const circumference = 2 * Math.PI * radius;
-  const offset = circumference * (1 - value / 100); // how much of the ring stays "empty"
+  const ratio = Math.min(Math.max(value / max, 0), 1); // clamp the fill to 0–100%
+  const offset = circumference * (1 - ratio);          // how much of the ring stays "empty"
 
   return (
     <div className="relative h-28 w-28">
@@ -22,9 +24,10 @@ function Ring({ value, color, track }) {
           strokeDasharray={circumference} strokeDashoffset={offset}
         />
       </svg>
-      {/* Score sits on top, upright (outside the rotated svg) */}
+      {/* Score sits on top, upright (outside the rotated svg).
+          Show "value/max" for fraction scores (e.g. 7/9), else just the number. */}
       <span className="absolute inset-0 flex items-center justify-center font-headings text-2xl font-bold text-headings">
-        {value}
+        {max === 100 ? value : `${value}/${max}`}
       </span>
     </div>
   );
@@ -43,7 +46,7 @@ function TaxHealthCard({
           // key = s.label: "Health" / "Literacy" are unique and stable, so React
           // keeps each ring paired with its score across re-renders.
           <div key={s.label} className="flex flex-col items-center gap-2">
-            <Ring value={s.value} color={s.color} track={s.track} />
+            <Ring value={s.value} max={s.max} color={s.color} track={s.track} />
             <span className="text-xs font-semibold uppercase tracking-wide text-muted">{s.label}</span>
           </div>
         ))}
