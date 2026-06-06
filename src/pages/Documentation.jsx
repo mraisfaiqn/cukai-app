@@ -427,7 +427,7 @@ function DocContent({ item }) {
 
 // ── Main Component ─────────────────────────────────────────────────────────────
 
-function UserDocs() {
+function Documentation() {
   const allItems = DOC_SECTIONS.flatMap(s => s.items);
   const [activeId, setActiveId] = useState('overview');
   const [openSections, setOpenSections] = useState({ 'getting-started': true, 'cukai-vault': true, api: true, faq: true });
@@ -449,12 +449,12 @@ function UserDocs() {
 
   return (
     <main className="min-h-screen bg-background font-body">
-      <div className="mx-auto max-w-7xl space-y-6 px-6 py-8">
+      <div className="mx-auto max-w-7xl space-y-6 px-6 py-6">
 
         {/* ── Page Header ── */}
         <div className="mb-6 flex items-start gap-3">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight text-[#0F172A]">Documentation</h1>
+            <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">Documentation</h1>
             <p className="mt-1 text-sm text-[#64748B]">User manual, module guides, API reference, and frequently asked questions.</p>
           </div>
         </div>
@@ -555,4 +555,4 @@ function UserDocs() {
   );
 }
 
-export default UserDocs;
+export default Documentation;

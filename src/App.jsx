@@ -4,12 +4,12 @@ import PageHeader from './components/PageHeader'
 import Home from './pages/Landing/Home'
 import Login from './pages/Landing/Login'
 import GetStarted from './pages/Landing/GetStarted'
-import Dashboard from './pages/Dashboard'
-import OpportunityDetail from './pages/OpportunityDetail'
-import CukaiVault from './pages/CukaiVault'
+import Overview from './pages/Dashboard/Overview'
+import OpportunityDetail from './pages/Dashboard/OpportunityDetail'
+import CukaiStash from './pages/CukaiStash'
 import CukaiBot from './pages/CukaiBot'
 import InsightsInbox from './pages/InsightsInbox'
-import UserDocs from './pages/UserDocs'
+import Documentation from './pages/Documentation'
 import ManageAccount from './pages/Account/ManageAccount'
 import TermsConditions from './pages/Account/TermsConditions'
 import './App.css'
@@ -55,11 +55,11 @@ function App() {
 
         {/* PROTECTED ROUTES (Accessible only when logged in) */}
         <Route element={<ProtectedLayout isAuthenticated={isAuthenticated} onLogout={() => setIsAuthenticated(false)}/>}>
-          <Route path="/overview" element={<Dashboard />} />
-          <Route path="/vault" element={<CukaiVault />} />
+          <Route path="/overview" element={<Overview />} />
+          <Route path="/stash" element={<CukaiStash />} />
           <Route path="/cukaibot" element={<CukaiBot />} />
           <Route path="/insightsinbox" element={<InsightsInbox />} />
-          <Route path="/userdocs" element={<UserDocs />} />
+          <Route path="/documentation" element={<Documentation />} />
           <Route path="/manageaccount/*" element={<ManageAccount />} />
           <Route path="/opportunities/:id" element={<OpportunityDetail />} />
           <Route path="/termsconditions" element={<TermsConditions />} />

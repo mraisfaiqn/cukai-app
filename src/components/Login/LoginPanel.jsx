@@ -66,12 +66,12 @@ export default function LoginPanel({ onLogin }) {
           </span>
         </div>
         <p className="text-center text-[13px] text-[#94A3B8] mb-8 mt-3">
-          Sign in to continue
+          Log In to Continue
         </p>
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           {/* Email/username */}
           <div>
-            <label className="block text-[11px] font-semibold tracking-[0.06em] uppercase text-[#6B7280] mb-2">
+            <label className="block text-[13px] font-semibold tracking-[0.06em] text-[#6B7280] mb-2">
               Username or Email Address
             </label>
             <input
@@ -86,7 +86,7 @@ export default function LoginPanel({ onLogin }) {
           {/* Password */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="text-[11px] font-semibold tracking-[0.06em] uppercase text-[#6B7280]">
+              <label className="text-[13px] font-semibold tracking-[0.06em] text-[#6B7280]">
                 Password
               </label>
               <a
@@ -134,7 +134,7 @@ export default function LoginPanel({ onLogin }) {
             disabled={loading}
             className="w-full py-3.5 rounded-xl bg-[#10B981] hover:bg-[#0D9488] text-white text-[15px] font-bold border-none cursor-pointer shadow-[0_4px_18px_rgba(16,185,129,0.38)] transition-colors disabled:opacity-75 disabled:cursor-not-allowed mt-2"
           >
-            {loading ? "Signing in…" : "Sign in"}
+            {loading ? "Logging in…" : "Log In"}
           </button>
         </form>
         {/*form closes/}
@@ -144,12 +144,12 @@ export default function LoginPanel({ onLogin }) {
         <div className="border-t border-[#F1F5F9] mb-5" />
         {/* Sign up link */}
         <p className="text-center text-[13px] text-[#64748B]">
-          New to Cukai.AI?{" "}
+          New to cukai.ai?{" "}
           <NavLink
             to="/getstarted"
             className="text-[#0F172A] font-semibold underline underline-offset-2 hover:text-[#0D9488] transition-colors"
           >
-            Create an account.
+            Sign Up.
           </NavLink>
         </p>
       </div>

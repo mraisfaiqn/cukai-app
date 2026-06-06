@@ -5,11 +5,11 @@
 // each slice of it to a dedicated card.
 import { useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { opportunityDetails } from '../data/dashboardData';
-import TaxProvisionCard from '../components/OpportunityDetail/TaxProvisionCard';
-import WhyYouQualifyCard from '../components/OpportunityDetail/WhyYouQualifyCard';
-import CalculationBreakdownCard from '../components/OpportunityDetail/CalculationBreakdownCard';
-import SupportingDocumentsCard from '../components/OpportunityDetail/SupportingDocumentsCard';
+import { opportunityDetails } from '../../data/dashboardData';
+import TaxProvisionCard from '../../components/Dashboard/OpportunityDetail/TaxProvisionCard';
+import WhyYouQualifyCard from '../../components/Dashboard/OpportunityDetail/WhyYouQualifyCard';
+import CalculationBreakdownCard from '../../components/Dashboard/OpportunityDetail/CalculationBreakdownCard';
+import SupportingDocumentsCard from '../../components/Dashboard/OpportunityDetail/SupportingDocumentsCard';
 
 const BotIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
