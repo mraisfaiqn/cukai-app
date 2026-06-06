@@ -318,13 +318,13 @@ function InsightsInbox() {
         onDelete={deleteInsight}
       />
 
-      <div className="mx-auto max-w-7xl space-y-6 px-6 py-8">
+      <div className="mx-auto max-w-7xl space-y-6 px-6 py-6">
 
         {/* ── Page Header ── */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <div className="flex items-center gap-2.5">
-              <h1 className="text-2xl font-bold tracking-tight text-[#0F172A]">AI Insights Inbox</h1>
+              <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">AI Insights Inbox</h1>
               {unreadCount > 0 && (
                 <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[#10B981] px-1.5 text-[10px] font-bold text-white">
                   {unreadCount}

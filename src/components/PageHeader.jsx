@@ -20,7 +20,7 @@ const OverviewIcon = () => (
   </svg>
 );
 
-const VaultIcon = () => (
+const StashIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-[15px] w-[15px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M22 12H2" />
     <path d="M5 12V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v6" />
@@ -113,7 +113,7 @@ function Dropdown({ trigger, items, navLinks = false }) {
                   key={i}
                   onClick={() => {
                     item.onClick();
-                    setOpen(false);
+                    setOpen(false); // ✅ Already handles closing correctly
                   }}
                   className="flex w-full items-center gap-2.5 px-4 py-2 text-sm text-[#0F172A] hover:bg-red-50 hover:text-red-600 transition-colors duration-150 text-left bg-transparent border-none cursor-pointer"
                 >
@@ -123,14 +123,24 @@ function Dropdown({ trigger, items, navLinks = false }) {
               )
               : navLinks
               ? (
-                <NavLink key={i} to={item.href || '#'} className={({ isActive }) => `flex items-center gap-2.5 px-4 py-2 text-sm transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}>
+                <NavLink 
+                  key={i} 
+                  to={item.href || '#'} 
+                  onClick={() => setOpen(false)} // 🔥 Added to close dropdown on link click
+                  className={({ isActive }) => `flex items-center gap-2.5 px-4 py-2 text-sm transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}
+                >
                   {item.icon && <span className="text-[#64748B]">{item.icon}</span>}
                   {item.label}
                   {item.badge && <span className="ml-auto rounded-full bg-[#10B981] px-1.5 py-0.5 text-[10px] font-semibold text-white">{item.badge}</span>}
                 </NavLink>
               )
               : (
-                <a key={i} href={item.href || '#'} className="flex items-center gap-2.5 px-4 py-2 text-sm text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488] transition-colors duration-150">
+                <a 
+                  key={i} 
+                  href={item.href || '#'} 
+                  onClick={() => setOpen(false)} // 🔥 Added to close dropdown on anchor click
+                  className="flex items-center gap-2.5 px-4 py-2 text-sm text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488] transition-colors duration-150"
+                >
                   {item.icon && <span className="text-[#64748B]">{item.icon}</span>}
                   {item.label}
                   {item.badge && <span className="ml-auto rounded-full bg-[#10B981] px-1.5 py-0.5 text-[10px] font-semibold text-white">{item.badge}</span>}
@@ -168,7 +178,7 @@ function InsightsAIDropdown({ trigger }) {
       <div onClick={() => setOpen(o => !o)}>{trigger(open)}</div>
       {open && (
         <div className="absolute right-0 top-full mt-2 w-64 rounded-xl border border-slate-100 bg-white py-1 shadow-lg z-50">
-          <p className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-[#64748B]">Notifications</p>
+          <p className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-[#64748B]">AI Insights✨</p>
           <div className="my-1 border-t border-slate-100" />
           {insightsAIItems.map((item, i) => (
             <div key={i} className="flex items-start gap-2.5 px-4 py-2">
@@ -185,7 +195,7 @@ function InsightsAIDropdown({ trigger }) {
             onClick={() => setOpen(false)}
             className={({ isActive }) => `flex items-center justify-center px-4 py-2 text-sm font-medium transition-colors duration-150 ${isActive ? 'text-[#0D9488]' : 'text-[#0D9488] hover:bg-[#f0fdf9]'}`}
           >
-            View all insights
+            View All
           </NavLink>
         </div>
       )}
@@ -256,9 +266,9 @@ function SettingsDropdown({ trigger }) {
           <div className="my-1 border-t border-slate-100" />
 
           {/* Docs link */}
-          <NavLink to="/userdocs" className={({ isActive }) => `flex items-center gap-2.5 px-4 py-2 text-sm transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}>
+          <NavLink to="/documentation" onClick={() => setOpen(false)} className={({ isActive }) => `flex items-center gap-2.5 px-4 py-2 text-sm transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}>
             <span className="text-[#64748B]"><DocsIcon /></span>
-            Docs
+            Documentation
           </NavLink>
         </div>
       )}
@@ -272,7 +282,7 @@ function SettingsDropdown({ trigger }) {
 
 const navLinks = [
   { href: '/overview', label: 'Overview', Icon: OverviewIcon },
-  { href: '/vault', label: 'Vault', Icon: VaultIcon },
+  { href: '/stash', label: 'Stash', Icon: StashIcon },
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -293,7 +303,7 @@ function PageHeader({ onLogout }) {
     { label: 'Manage Account', href: '/manageaccount' },
     { label: 'Terms & Conditions', href: '/termsconditions' },
     { divider: true },
-    { label: 'Log out', onClick: handleLogout }, // <-- Assigned onClick callback here
+    { label: 'Log Out', onClick: handleLogout }, // <-- Assigned onClick callback here
   ];
 
   return (

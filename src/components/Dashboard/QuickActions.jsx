@@ -2,6 +2,8 @@
 // Presentational only, no state. "Ask CukaiBot" is the emphasized (dark) tile.
 // Matches the four tiles in Main_Dashboard_-_Cukai_AI.png.
 
+import cukaiBot from '../../assets/cukaibot-icon.png'; 
+
 // ── Tile icons ────────────────────────────────────────────────────────────────
 const CaptureIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -17,11 +19,14 @@ const InvoiceIcon = () => (
     <line x1="9" y1="17" x2="13" y2="17" />
   </svg>
 );
+// const BotIcon = () => (
+//   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+//     <rect x="4" y="8" width="16" height="12" rx="2" />
+//     <path d="M12 4v4M9 14h.01M15 14h.01" />
+//   </svg>
+// );
 const BotIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="4" y="8" width="16" height="12" rx="2" />
-    <path d="M12 4v4M9 14h.01M15 14h.01" />
-  </svg>
+  <img src={cukaiBot} alt="CukaiBot" className="h-8 w-8 object-contain" />
 );
 const SimulateIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

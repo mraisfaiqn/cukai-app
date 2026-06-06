@@ -134,8 +134,8 @@ function LandingNav() {
               </button>
             ))}
             <div className="pt-4 flex flex-col gap-4">
-              <Link to="/login" className="text-center font-medium text-[#64748B] py-2">Sign In</Link>
-              <Link to="/getstarted" className="bg-[#10B981] text-white text-center font-medium px-5 py-3 rounded-lg shadow-sm">Get Started Free</Link>
+              <Link to="/login" className="text-center font-medium text-[#64748B] py-2">Log In</Link>
+              <Link to="/getstarted" className="bg-[#10B981] text-white text-center font-medium px-5 py-3 rounded-lg shadow-sm">Get Started</Link>
             </div>
           </div>
         </div>

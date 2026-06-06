@@ -220,10 +220,17 @@ function CukaiBot() {
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
-  // Scroll to bottom when new messages arrive
+  // // Scroll to bottom when new messages arrive
+  // useEffect(() => {
+  //   messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  // }, [messages, isTyping]);
+
   useEffect(() => {
+  // Only scroll down automatically if the user has sent new messages
+  if (messages.length > 2) { 
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping]);
+  }
+}, [messages]);
 
   function handleSend(text) {
     const trimmed = (text || inputValue).trim();
@@ -269,12 +276,12 @@ function CukaiBot() {
 
   return (
     <main className="min-h-screen bg-background font-body">
-      <div className="mx-auto max-w-7xl space-y-6 px-6 py-8">
+      <div className="mx-auto max-w-7xl space-y-6 px-6 py-6">
 
         {/* ── Page header (matches ManageAccount / CukaiVault pattern) ── */}
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight text-[#0F172A]">CukaiBot</h1>
+            <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">CukaiBot</h1>
             <p className="mt-1 text-sm text-[#64748B]">
               Ask anything about Malaysian tax regulations, deductions, or e-invoicing — powered by LHDN 2024 Guidelines.
             </p>
@@ -375,7 +382,7 @@ function CukaiBot() {
                     onKeyDown={handleKeyDown}
                     placeholder="Ask about deductions, regulations, or upload a notice..."
                     rows={1}
-                    className="flex-1 resize-none bg-transparent text-sm text-[#0F172A] placeholder-[#94A3B8] outline-none"
+                    className="flex-1 resize-none bg-transparent text-sm text-[#0F172A] placeholder-[#94A3B8] outline-none py-2 align-middle"
                     style={{ maxHeight: '96px' }}
                   />
                   <div className="flex shrink-0 items-center gap-1 pb-0.5">

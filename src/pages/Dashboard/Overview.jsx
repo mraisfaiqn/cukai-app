@@ -2,14 +2,14 @@
 // feeding each its slice of data from dashboardData.js. The greeting is
 // derived from the current hour here (the only render-time computation);
 // every child stays stateless and prop-driven.
-import { stats, opportunities, deadlines, account, alert, healthScores } from '../data/dashboardData';
-import DashboardHeader from '../components/Dashboard/DashboardHeader';
-import ActionBanner from '../components/Dashboard/ActionBanner';
-import StatsGrid from '../components/Dashboard/StatsGrid';
-import OpportunitiesCard from '../components/Dashboard/OpportunitiesCard';
-import QuickActions from '../components/Dashboard/QuickActions';
-import TaxHealthCard from '../components/Dashboard/TaxHealthCard';
-import DeadlinesCard from '../components/Dashboard/DeadlinesCard';
+import { stats, opportunities, deadlines, account, alert, healthScores } from '../../data/dashboardData';
+import DashboardHeader from '../../components/Dashboard/DashboardHeader';
+import ActionBanner from '../../components/Dashboard/ActionBanner';
+import StatsGrid from '../../components/Dashboard/StatsGrid';
+import OpportunitiesCard from '../../components/Dashboard/OpportunitiesCard';
+import QuickActions from '../../components/Dashboard/QuickActions';
+import TaxHealthCard from '../../components/Dashboard/TaxHealthCard';
+import DeadlinesCard from '../../components/Dashboard/DeadlinesCard';
 
 // Time-of-day greeting — computed once at render, not stored in state.
 function timeOfDayGreeting() {
@@ -19,10 +19,10 @@ function timeOfDayGreeting() {
   return 'Good evening';
 }
 
-function Dashboard() {
+function Overview() {
   return (
     <main className="min-h-screen bg-background font-body">
-      <div className="mx-auto max-w-7xl space-y-6 px-6 py-8">
+      <div className="mx-auto max-w-7xl space-y-6 px-6 py-6">
 
         {/* Greeting + entity context */}
         <DashboardHeader
@@ -66,4 +66,4 @@ function Dashboard() {
   );
 }
 
-export default Dashboard;
+export default Overview;
