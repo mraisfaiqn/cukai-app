@@ -22,18 +22,20 @@ const STEPS = [
   { id: 5, label: "Business Profile" },
 ];
 
-const ProgressBar = ({ current, total }) => (
+const ProgressBar = ({ current, total, steps }) => (
   <div className="mb-6">
     <div className="flex justify-between items-center mb-2">
-      <span className="text-sm text-[#64748B] font-medium">Step {current} of {total}</span>
-      <span className="text-sm font-semibold text-[#0F172A]">{STEPS[current - 1]?.label}</span>
+      {/* Step numbers will now cleanly read 1 to 6 (or 7) */}
+      <span className="text-sm text-[#64748B] font-medium">Step {current + 1} of {total}</span>
+      {/* Safely grab the label from the active step list */}
+      <span className="text-sm font-semibold text-[#0F172A]">{steps[current]?.label}</span>
     </div>
     <div className="flex gap-1.5">
       {Array.from({ length: total }).map((_, i) => (
         <div
           key={i}
           className={`h-1.5 flex-1 rounded-full transition-all duration-500 ${
-            i < current ? "bg-[#10B981]" : "bg-[#E2E8F0]"
+            i <= current ? "bg-[#10B981]" : "bg-[#E2E8F0]"
           }`}
         />
       ))}
@@ -434,6 +436,8 @@ function Step3_Personal({ data, setData, onBack, onNext }) {
 
 function Step4_Savings({ data, setData, onBack, onNext }) {
   const toggle = (key) => setData({ ...data, [key]: !data[key] });
+  // Determine if the business profile step is coming up next
+  const showBizProfile = data.employment === "self-employed" || data.employment === "both";
 
   return (
     <Card>
@@ -458,7 +462,12 @@ function Step4_Savings({ data, setData, onBack, onNext }) {
         </div>
       </div>
 
-      <NavButtons onBack={onBack} onNext={onNext} nextLabel="Complete" />
+      {/* Dynamic nextLabel based on showBizProfile state */}
+      <NavButtons 
+        onBack={onBack} 
+        onNext={onNext} 
+        nextLabel={showBizProfile ? "Next" : "Complete"} 
+      />
     </Card>
   );
 }
@@ -537,7 +546,7 @@ function Step5_BusinessProfile({ data, setData, onBack, onNext }) {
         </div>
       </div>
 
-      <NavButtons onBack={onBack} onNext={onNext} nextLabel="See My Savings →" />
+      <NavButtons onBack={onBack} onNext={onNext} nextLabel="Complete" />
     </Card>
   );
 }
@@ -647,29 +656,41 @@ export default function GetStarted({ onLogin }) {
   const navigate = useNavigate();
 
   const showBizProfile = data.employment === "self-employed" || data.employment === "both";
-  const totalProgressSteps = showBizProfile ? 6 : 5;
+  // const totalProgressSteps = showBizProfile ? 6 : 5;
+  const activeStepsConfig = [
+    { label: "Account" },
+    { label: "Employment" },
+    { label: "Income" },
+    { label: "Personal & Family" },
+    { label: "Savings & Insurance" },
+    ...(showBizProfile ? [{ label: "Business Profile" }] : [])
+  ];
 
+  const totalProgressSteps = activeStepsConfig.length;
   // FIX: Statically assign each step a concrete placement order inside the array
   const WIZARD_STEPS = [];
 
   WIZARD_STEPS[0] = (
-    <Step0_Account data={data} setData={setData} onNext={() => setStep(1)} />
+    <>
+      <ProgressBar current={0} total={totalProgressSteps} steps={activeStepsConfig} />
+      <Step0_Account data={data} setData={setData} onNext={() => setStep(1)} />
+    </>
   );
   WIZARD_STEPS[1] = (
     <>
-      <ProgressBar current={1} total={totalProgressSteps} />
+      <ProgressBar current={1} total={totalProgressSteps} steps={activeStepsConfig} />
       <Step1_Employment data={data} setData={setData} onBack={() => setStep(0)} onNext={() => setStep(2)} />
     </>
   );
   WIZARD_STEPS[2] = (
     <>
-      <ProgressBar current={2} total={totalProgressSteps} />
+      <ProgressBar current={2} total={totalProgressSteps} steps={activeStepsConfig} />
       <Step2_Income data={data} setData={setData} onBack={() => setStep(1)} onNext={() => setStep(3)} />
     </>
   );
   WIZARD_STEPS[3] = (
     <>
-      <ProgressBar current={3} total={totalProgressSteps} />
+      <ProgressBar current={3} total={totalProgressSteps} steps={activeStepsConfig} />
       <Step3_Personal data={data} setData={setData} onBack={() => setStep(2)} onNext={() => setStep(4)} />
     </>
   );
@@ -678,35 +699,43 @@ export default function GetStarted({ onLogin }) {
     // Salaried Employee sequence route mappings
     WIZARD_STEPS[4] = (
       <>
-        <ProgressBar current={4} total={totalProgressSteps} />
+        <ProgressBar current={4} total={totalProgressSteps} steps={activeStepsConfig} />
         <Step4_Savings data={data} setData={setData} onBack={() => setStep(3)} onNext={() => setStep(5)} />
       </>
     );
     WIZARD_STEPS[5] = (
-      <StepUpload onBack={() => setStep(4)} onNext={() => setStep(6)} />
+      <>
+        <StepUpload onBack={() => setStep(4)} onNext={() => setStep(6)} />
+      </>
     );
     WIZARD_STEPS[6] = (
-      <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />
+      <>
+        <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />
+      </>
     );
   } else {
     // Self-Employed or Both sequence route mappings
     WIZARD_STEPS[4] = (
       <>
-        <ProgressBar current={4} total={totalProgressSteps} />
+        <ProgressBar current={4} total={totalProgressSteps} steps={activeStepsConfig} />
         <Step4_Savings data={data} setData={setData} onBack={() => setStep(3)} onNext={() => setStep(5)} />
       </>
     );
     WIZARD_STEPS[5] = (
       <>
-        <ProgressBar current={5} total={totalProgressSteps} />
+        <ProgressBar current={5} total={totalProgressSteps} steps={activeStepsConfig} />
         <Step5_BusinessProfile data={data} setData={setData} onBack={() => setStep(4)} onNext={() => setStep(6)} />
       </>
     );
     WIZARD_STEPS[6] = (
-      <StepUpload onBack={() => setStep(5)} onNext={() => setStep(7)} />
+      <>
+        <StepUpload onBack={() => setStep(5)} onNext={() => setStep(7)} />
+      </>
     );
     WIZARD_STEPS[7] = (
-      <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />
+      <>
+        <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />
+      </>
     );
   }
 
@@ -719,7 +748,7 @@ export default function GetStarted({ onLogin }) {
           <BrandLogo />
         </div>
 
-        {step > 0 && step < WIZARD_STEPS.length - 1 && (
+        {step >= 0 && step < WIZARD_STEPS.length - 2 && (
           <div className="mb-5">
             <h1 className="text-2xl font-bold text-[#0F172A]">Let's get you set up</h1>
             <p className="text-sm text-[#64748B]">We'll help you maximise your tax savings for 2025</p>
