@@ -20,7 +20,7 @@ const OverviewIcon = () => (
   </svg>
 );
 
-const StashIcon = () => (
+const AccountIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-[15px] w-[15px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M22 12H2" />
     <path d="M5 12V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v6" />
@@ -282,7 +282,7 @@ function SettingsDropdown({ trigger }) {
 
 const navLinks = [
   { href: '/overview', label: 'Overview', Icon: OverviewIcon },
-  { href: '/stash', label: 'Stash', Icon: StashIcon },
+  { href: '/account', label: 'Account', Icon: AccountIcon },
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -323,13 +323,13 @@ function PageHeader({ onLogout }) {
         {/* Nav links */}
         <nav className="flex items-center gap-1">
           {navLinks.map(({ href, label, Icon }) => (
-            <NavLink key={label} to={href} className={({ isActive }) => `flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}>
+            <NavLink key={label} to={href} className={({ isActive }) => `flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-base font-medium transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}>
               <Icon />
               {label}
             </NavLink>
           ))}
-          <NavLink to="/cukaibot" className={({ isActive }) => `flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}>
-            <img src={cukaiBot} alt="CukaiBot" className="h-[26px] w-[26px] -m-[5px] shrink-0 object-contain" />
+          <NavLink to="/cukaibot" className={({ isActive }) => `flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-base font-medium transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}>
+            <img src={cukaiBot} alt="CukaiBot" className="h-[30px] w-[30px] -m-[5px] shrink-0 object-contain" />
             CukaiBot
           </NavLink>
         </nav>

@@ -1,21 +1,20 @@
 import { useState } from 'react'
-import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, Outlet } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Navigate, Outlet } from 'react-router-dom'
 import PageHeader from './components/PageHeader'
 import Home from './pages/Landing/Home'
 import Login from './pages/Landing/Login'
 import GetStarted from './pages/Landing/GetStarted'
 import Overview from './pages/Dashboard/Overview'
 import OpportunityDetail from './pages/Dashboard/OpportunityDetail'
-import CukaiStash from './pages/CukaiStash'
+import CukaiAccount from './pages/CukaiAccount'
 import CukaiBot from './pages/CukaiBot'
 import InsightsInbox from './pages/InsightsInbox'
 import Documentation from './pages/Documentation'
 import ManageAccount from './pages/Account/ManageAccount'
 import TermsConditions from './pages/Account/TermsConditions'
-import './App.css'
+import * as API from './services/api'
 
 // 1. A wrapper that protects internal pages
-// FIX: Accepted the 'onLogout' prop here in the function parameters
 function ProtectedLayout({ isAuthenticated, onLogout }) {
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />
@@ -42,7 +41,7 @@ function PublicLayout({ isAuthenticated }) {
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
-
+  
   return (
     <Router>
       <Routes>
@@ -56,7 +55,7 @@ function App() {
         {/* PROTECTED ROUTES (Accessible only when logged in) */}
         <Route element={<ProtectedLayout isAuthenticated={isAuthenticated} onLogout={() => setIsAuthenticated(false)}/>}>
           <Route path="/overview" element={<Overview />} />
-          <Route path="/stash" element={<CukaiStash />} />
+          <Route path="/account" element={<CukaiAccount />} />
           <Route path="/cukaibot" element={<CukaiBot />} />
           <Route path="/insightsinbox" element={<InsightsInbox />} />
           <Route path="/documentation" element={<Documentation />} />
@@ -74,5 +73,5 @@ function App() {
     </Router>
   )
 }
-
+API.test() //Delete me
 export default App;

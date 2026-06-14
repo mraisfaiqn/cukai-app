@@ -1,12 +1,11 @@
+@import url("https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200");
 @import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Plus+Jakarta+Sans:wght@400;600;700&display=swap');
-
 @import 'tailwindcss';
 
-/* ── Design system tokens ──────────────────────────────────────
-   Single source of truth: DESIGN_TRAFFIC_LIGHT_WARNING.md
-   Registering these here makes the semantic utility classes
-   (bg-primary, text-headings, bg-warning-bg, font-headings, …)
-   available across the app — never hardcode hex in components. */
+:root {
+  font-family: "Inter", sans-serif;
+}
+
 @theme {
   /* Brand */
   --color-primary: #0F6E56;
@@ -36,13 +35,31 @@
      color; lives here so components reference text-literacy, never raw hex) */
   --color-literacy: #8B7FE8;
   --color-literacy-track: #EBE8FB;
-
-  /* Fonts */
-  --font-headings: 'Plus Jakarta Sans', sans-serif;
-  --font-body: 'Inter', sans-serif;
 }
 
-/* ── Root & Reset ──────────────────────────────────────────── */
-:root {
-  font-family: "Inter", sans-serif;
+/* Landing Page Animations*/
+@keyframes fadeUp {
+  0%   { opacity:0; transform:translateY(20px); }
+  100% { opacity:1; transform:translateY(0); }
+}
+@keyframes fadeInDown {
+  from { opacity:0; transform:translateY(-10px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+@keyframes float {
+  0%,100% { transform:translateY(0px); }
+  50%      { transform:translateY(-10px); }
+}
+@keyframes pulseRadial {
+  0%,100% { transform:scale(1); opacity:.8; }
+  50%      { transform:scale(1.05); opacity:.6; }
+}
+@keyframes marquee {
+  0%   { transform:translateX(0%); }
+  100% { transform:translateX(-50%); }
+}
+@keyframes slideDot {
+  0%   { left:0%; }
+  50%  { left:50%; }
+  100% { left:100%; }
 }

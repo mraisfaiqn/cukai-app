@@ -50,7 +50,7 @@ export default function LoginPanel({ onLogin }) {
   };
 
   return (
-    <div className="w-[42%] h-screen bg-[#E8ECF4] flex items-center justify-center px-8 flex-shrink-0">
+    <div className="w-[50%] h-screen bg-[#E8ECF4] flex items-center justify-center px-8 flex-shrink-0">
       <div className="w-full max-w-[340px] bg-white rounded-[20px] shadow-[0_4px_32px_rgba(15,23,42,0.10)] px-9 py-10 flex flex-col">
         {/* Logo and heading */}
         <div className="flex items-center justify-center gap-3 mb-2">

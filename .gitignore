@@ -1,4 +1,6 @@
-# Logs
+# ==========================================
+# LOGS & DIAGNOSTICS
+# ==========================================
 logs
 *.log
 npm-debug.log*
@@ -7,22 +9,103 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# ==========================================
+# FRONTEND / NODE.JS DEPENDENCIES & BUILDS
+# ==========================================
+node_modules/
+jspm_packages/
+dist/
+dist-ssr/
+build/
+.next/
+.nuxt/
+.out/
+out/
 
-# Editor directories and files
+# ==========================================
+# BACKEND (PYTHON) CACHE & BUILDS
+# ==========================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+htmlcov/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ==========================================
+# PYTHON VIRTUAL ENVIRONMENTS (FOLDERS)
+# ==========================================
+myenv/
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ==========================================
+# SECURITY / ENVIRONMENT VARIABLES
+# ==========================================
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*.local
+*.env
+# Ensure you DO commit the template/example file if you use one
+!.env.example
+
+# ==========================================
+# IDEs, EDITORS, & OS FILES
+# ==========================================
+# VS Code
 .vscode/*
 !.vscode/extensions.json
-.idea
+!.vscode/launch.json
+
+# JetBrains (PyCharm, WebStorm, etc.)
+.idea/
+
+# OS generated files
 .DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Other common editor files
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+*.bak
 
+# ==========================================
+# LOCAL DESIGN & DOCUMENTATION TRASH
+# ==========================================
 # Local design docs & instructions (root-level markdown), but keep README
 /*.md
 !/README.md
@@ -32,5 +115,6 @@ dist-ssr
 /*.jpg
 /*.jpeg
 
-# Local Claude / preview-server tooling
+# Local AI / preview-server tooling
 .claude/
+.copilot/

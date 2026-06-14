@@ -1,0 +1,8 @@
+python-dotenv
+psycopg2
+sqlalchemy
+fastapi
+uvicorn
+pydantic
+cloud-sql-python-connector
+pg8000
