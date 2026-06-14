@@ -18,9 +18,9 @@ const statusOptions = ['Ready', 'Needs Review', 'Draft', 'Archived', 'Failed'];
 const taxYearOptions = ['YA 2026', 'YA 2025', 'YA 2024'];
 const periodOptions = ['May 2026', 'Q2 2026', 'Q1 2026', 'Full Year 2026'];
 
-// Cukai Stash uses tabs to keep related SME report workflows on one page.
+// Cukai Account uses tabs to keep related SME report workflows on one page.
 // No route changes are needed when users move between reports, receipts, OCR, and documents.
-const stashTabs = [
+const accountTabs = [
   { id: 'reports', label: 'Reports' },
   { id: 'generate', label: 'Generate Report' },
   { id: 'receipts', label: 'Linked Supporting Receipts' },
@@ -269,7 +269,7 @@ const initialReports = [
 ];
 
 // Small top-level counts shown above the tab content.
-// These are mock dashboard values for the Cukai Stash prototype.
+// These are mock dashboard values for the Cukai Account prototype.
 const summaryCards = [
   { label: 'Total Reports', value: '24', tone: 'neutral' },
   { label: 'Needs Review', value: '5', tone: 'amber' },
@@ -630,8 +630,8 @@ function ModalShell({ title, subtitle, children, onClose, size = 'max-w-xl' }) {
   );
 }
 
-function CukaiStash() {
-  // Controls which Cukai Stash tab is displayed.
+function CukaiAccount() {
+  // Controls which Cukai Account tab is displayed.
   // This keeps Reports, Generate Report, Linked Receipts, OCR Evidence, and Source Documents inside one route.
   const [activeTab, setActiveTab] = useState('reports');
 
@@ -763,7 +763,7 @@ function CukaiStash() {
     toastTimeoutRef.current = window.setTimeout(() => setToast(''), 2600);
   }
 
-  // Resets every search and filter across all Cukai Stash tabs.
+  // Resets every search and filter across all Cukai Account tabs.
   // This gives users one simple way to recover from a filter combination that returns no results.
   function clearFilters() {
     setSearch('');
@@ -870,7 +870,7 @@ function CukaiStash() {
   }
 
   // Switches to the Generate Report tab from the page CTA.
-  // It keeps navigation inside Cukai Stash without creating another route.
+  // It keeps navigation inside Cukai Account without creating another route.
   function focusGeneratePanel() {
     setActiveTab('generate');
   }
@@ -969,7 +969,7 @@ function CukaiStash() {
       <div className="mx-auto max-w-7xl space-y-6 px-6 py-6">
         <section className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">Cukai Stash</h1>
+            <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">Cukai Account</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[#5F5E5A]">
               Generate, store, review, and export SME tax reports with linked supporting evidence.
             </p>
@@ -1004,7 +1004,7 @@ function CukaiStash() {
           ))}
         </section>
 
-        <StashTabs activeTab={activeTab} onChange={setActiveTab} />
+        <AccountTabs activeTab={activeTab} onChange={setActiveTab} />
 
         {activeTab === 'reports' && (
           <>
@@ -1255,13 +1255,13 @@ function RowAction({ label, onClick, danger = false }) {
   );
 }
 
-// Renders the horizontal Cukai Stash tabs.
+// Renders the horizontal Cukai Account tabs.
 // The active tab is controlled by React state, so switching tabs does not reload the page.
-function StashTabs({ activeTab, onChange }) {
+function AccountTabs({ activeTab, onChange }) {
   return (
     <div className="mb-6 overflow-x-auto border-b border-[#E2E8F0] bg-white/60">
       <div className="flex min-w-max gap-6 px-1">
-        {stashTabs.map((tab) => (
+        {accountTabs.map((tab) => (
           <button
             key={tab.id}
             type="button"
@@ -1294,7 +1294,7 @@ function EvidenceSummaryCards({ cards }) {
 function TabHeader({ title, subtitle }) {
   return (
     <div>
-      <p className="text-xs font-semibold uppercase tracking-[0.05em] text-[#0D9488]">Cukai Stash</p>
+      <p className="text-xs font-semibold uppercase tracking-[0.05em] text-[#0D9488]">Cukai Account</p>
       <h2 className="mt-2 text-2xl font-bold tracking-tight text-[#0F172A]">{title}</h2>
       <p className="mt-2 max-w-3xl text-sm leading-6 text-[#5F5E5A]">{subtitle}</p>
     </div>
@@ -2039,7 +2039,7 @@ function SourceDocumentModal({ document, onClose }) {
         <Meta label="Status" value={document.status} />
       </div>
       <p className="mt-5 rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] p-4 text-sm leading-6 text-[#5F5E5A]">
-        This source document supports the Cukai Stash audit trail and can be included in accountant review packs.
+        This source document supports the Cukai Account audit trail and can be included in accountant review packs.
       </p>
     </ModalShell>
   );
@@ -2099,7 +2099,7 @@ function GenerateReportPanel({ onGenerate }) {
       <p className="text-xs font-semibold uppercase tracking-[0.05em] text-[#0D9488]">Report Generation</p>
       <h2 className="mt-2 text-lg font-bold text-[#0F172A]">Generate SME Report</h2>
       <p className="mt-2 text-sm leading-6 text-[#5F5E5A]">
-        Create a new mock SME report in this stash using selected report sections.
+        Create a new mock SME report in this account using selected report sections.
       </p>
       <form
         className="mt-4 space-y-4"
@@ -2152,7 +2152,7 @@ function UploadReportModal({ onClose, onSave }) {
   }
 
   return (
-    <ModalShell title="Upload Report" subtitle="Add an uploaded SME business report to the mock stash." onClose={onClose}>
+    <ModalShell title="Upload Report" subtitle="Add an uploaded SME business report to the mock account." onClose={onClose}>
       <form
         className="space-y-4"
         onSubmit={(event) => {
@@ -2229,7 +2229,7 @@ function ConfirmDeleteModal({ report, onClose, onDelete }) {
   return (
     <ModalShell title="Delete report?" subtitle="This only removes the mock report from the frontend list." onClose={onClose}>
       <p className="text-sm leading-6 text-[#5F5E5A]">
-        Delete <span className="font-semibold text-[#0F172A]">{report.name}</span> from Cukai Stash?
+        Delete <span className="font-semibold text-[#0F172A]">{report.name}</span> from Cukai Account?
       </p>
       <div className="mt-6 flex justify-end gap-2">
         <button type="button" onClick={onClose} className={secondaryButtonClass()}>Cancel</button>
@@ -2285,4 +2285,4 @@ function Checkbox({ label, checked, onChange }) {
   );
 }
 
-export default CukaiStash;
+export default CukaiAccount;
