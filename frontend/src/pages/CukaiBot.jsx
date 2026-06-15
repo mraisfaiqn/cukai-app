@@ -43,9 +43,18 @@ const CheckCircleIcon = () => (
 );
 
 const ClearIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="1 4 1 10 7 10" />
-    <path d="M3.51 15a9 9 0 1 0 .49-3.5" />
+  <svg 
+    xmlns="http://www.w3.org/2000/svg" 
+    className="h-4 w-4" 
+    viewBox="0 0 24 24" 
+    fill="none" 
+    stroke="currentColor" 
+    strokeWidth="2" 
+    strokeLinecap="round" 
+    strokeLinejoin="round"
+  >
+    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+    <polyline points="3 3 3 8 8 8" />
   </svg>
 );
 
@@ -146,7 +155,7 @@ function AssistantMessage({ message }) {
     <div className="flex gap-3">
       {/* Bot avatar */}
       <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-100 bg-[#f0fdf9] text-[#0D9488]">
-        <BotIcon />
+        <BotIcon className="h-6 w-6 object-contain" />
       </div>
 
       <div className="flex-1 space-y-3">
@@ -199,7 +208,7 @@ function TypingIndicator() {
   return (
     <div className="flex gap-3">
       <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-100 bg-[#f0fdf9] text-[#0D9488]">
-        <BotIcon />
+        <BotIcon className="h-6 w-6 object-contain" />
       </div>
       <div className="flex items-center gap-1.5 rounded-2xl rounded-tl-sm border border-slate-100 bg-white px-4 py-3 shadow-sm">
         <span className="h-2 w-2 animate-bounce rounded-full bg-[#0D9488]" style={{ animationDelay: '0ms' }} />
@@ -220,17 +229,11 @@ function CukaiBot() {
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
-  // // Scroll to bottom when new messages arrive
-  // useEffect(() => {
-  //   messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  // }, [messages, isTyping]);
-
   useEffect(() => {
-  // Only scroll down automatically if the user has sent new messages
-  if (messages.length > 2) { 
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }
-}, [messages]);
+    if (messages.length > 2) { 
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
 
   function handleSend(text) {
     const trimmed = (text || inputValue).trim();
@@ -242,7 +245,6 @@ function CukaiBot() {
     setIsTyping(true);
     setActiveCitations([]);
 
-    // Simulate assistant response
     setTimeout(() => {
       const botMsg = {
         id: Date.now() + 1,
@@ -275,11 +277,11 @@ function CukaiBot() {
   const showEmptyState = messages.length === 0;
 
   return (
-    <main className="min-h-screen bg-background font-body">
-      <div className="mx-auto max-w-7xl space-y-6 px-6 py-6">
+    <main className="h-[calc(100vh-4rem)] bg-background font-body flex flex-col overflow-hidden">
+      <div className="mx-auto w-full max-w-7xl flex flex-col gap-4 px-6 py-5 h-full overflow-hidden">
 
-        {/* ── Page header (matches ManageAccount / CukaiVault pattern) ── */}
-        <div className="flex items-start justify-between">
+        {/* ── Page Header (shrink-0 prevents it from squishing) ── */}
+        <div className="flex items-start justify-between shrink-0">
           <div>
             <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">CukaiBot</h1>
             <p className="mt-1 text-sm text-[#64748B]">
@@ -301,138 +303,140 @@ function CukaiBot() {
           </div>
         </div>
 
-        {/* ── Main two-column layout ── */}
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* ── Master Split Layout Area ── */}
+        <div className="flex flex-1 gap-6 min-h-0 overflow-hidden">
 
-          {/* ── Left: Chat panel (wider) ── */}
-          <div className="flex flex-col lg:col-span-2">
-            <div className="flex flex-1 flex-col rounded-2xl border border-slate-100 bg-white shadow-sm overflow-hidden" style={{ minHeight: '600px' }}>
-
-              {/* Chat header */}
-              <div className="flex items-center gap-3 border-b border-slate-100 px-5 py-4">
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#f0fdf9]">
-                  <BotIcon className="h-5 w-5 object-contain" />
-                </div>
-                <div>
-                  <p className="text-sm font-bold text-[#0F172A]">Tax Advisory Assistant</p>
-                  <p className="text-xs text-[#64748B]">Powered by LHDN 2024 Guidelines</p>
-                </div>
+          {/* ── Left Column: Interactive Chat Stream Area ── */}
+          <div className="flex-1 flex flex-col h-full min-w-0 rounded-2xl border border-slate-100 bg-white shadow-sm overflow-hidden">
+            
+            {/* ── RE-ADDED CHAT HEADER (shrink-0 captures correct layout boundary) ── */}
+            <div className="flex items-center gap-3 border-b border-slate-100 px-5 py-4 shrink-0">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#f0fdf9]">
+                <BotIcon className="h-6 w-6 object-contain" />
               </div>
+              <div>
+                <p className="text-sm font-bold text-[#0F172A]">Tax Advisory Assistant</p>
+                <p className="text-xs text-[#64748B]">Powered by LHDN 2024 Guidelines</p>
+              </div>
+            </div>
 
-              {/* Messages area */}
-              <div className="flex-1 space-y-5 overflow-y-auto px-5 py-6" style={{ maxHeight: '460px' }}>
-
-                {/* Empty / welcome state */}
-                {showEmptyState && (
-                  <div className="flex flex-col items-center justify-center py-10 text-center">
-                    <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[#f0fdf9]">
-                      <BotIcon className="h-9 w-9 object-contain" />
-                    </div>
-                    <h2 className="text-xl font-bold text-[#0F172A]">How can I assist with your taxes today?</h2>
-                    <p className="mt-2 max-w-xs text-sm text-[#64748B]">
-                      Ask me anything about Malaysian tax regulations, deductions, or e-invoicing phases.
-                    </p>
-                    <div className="mt-6 flex flex-wrap justify-center gap-2">
-                      {suggestedPrompts.map((prompt) => (
-                        <button
-                          key={prompt}
-                          onClick={() => handleSend(prompt)}
-                          className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-[#334155] shadow-sm transition-all hover:border-[#0D9488] hover:bg-[#f0fdf9] hover:text-[#0D9488]"
-                        >
-                          {prompt}
-                        </button>
-                      ))}
-                    </div>
+            {/* Scrollable Message Flow Box */}
+            <div className="flex-1 overflow-y-auto min-h-0 px-5 py-6 space-y-5">
+              
+              {/* Empty / welcome state */}
+              {showEmptyState && (
+                <div className="flex flex-col items-center justify-center py-10 text-center">
+                  <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[#f0fdf9]">
+                    <BotIcon className="h-8 w-8 object-contain" />
                   </div>
-                )}
-
-                {/* Messages */}
-                {messages.map((msg) =>
-                  msg.role === 'user'
-                    ? <UserMessage key={msg.id} message={msg} />
-                    : <AssistantMessage key={msg.id} message={msg} />
-                )}
-
-                {isTyping && <TypingIndicator />}
-                <div ref={messagesEndRef} />
-              </div>
-
-              {/* Suggested prompts (shown only when there are no messages yet but hidden via conditional above, and also as contextual chips) */}
-              {!showEmptyState && (
-                <div className="border-t border-slate-50 px-5 py-2.5 flex items-center gap-2 overflow-x-auto scrollbar-none">
-                  {suggestedPrompts.slice(0, 3).map((prompt) => (
-                    <button
-                      key={prompt}
-                      onClick={() => handleSend(prompt)}
-                      className="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-[#64748B] transition-all hover:border-[#0D9488] hover:bg-[#f0fdf9] hover:text-[#0D9488]"
-                    >
-                      {prompt}
-                    </button>
-                  ))}
+                  <h2 className="text-xl font-bold text-[#0F172A]">How can I assist with your taxes today?</h2>
+                  <p className="mt-2 max-w-xs text-sm text-[#64748B]">
+                    Ask me anything about Malaysian tax regulations, deductions, or e-invoicing phases.
+                  </p>
+                  <div className="mt-6 flex flex-wrap justify-center gap-2">
+                    {suggestedPrompts.map((prompt) => (
+                      <button
+                        key={prompt}
+                        onClick={() => handleSend(prompt)}
+                        className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-[#334155] shadow-sm transition-all hover:border-[#0D9488] hover:bg-[#f0fdf9] hover:text-[#0D9488]"
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
 
-              {/* Input bar */}
-              <div className="border-t border-slate-100 px-4 py-4">
-                <div className="flex items-end gap-2 rounded-xl border border-slate-200 bg-slate-50/50 px-3 py-2 transition-all focus-within:border-[#0D9488] focus-within:ring-4 focus-within:ring-[#0D9488]/10">
-                  <textarea
-                    ref={inputRef}
-                    value={inputValue}
-                    onChange={(e) => setInputValue(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder="Ask about deductions, regulations, or upload a notice..."
-                    rows={1}
-                    className="flex-1 resize-none bg-transparent text-sm text-[#0F172A] placeholder-[#94A3B8] outline-none py-2 align-middle"
-                    style={{ maxHeight: '96px' }}
-                  />
-                  <div className="flex shrink-0 items-center gap-1 pb-0.5">
-                    <button className="rounded-lg p-1.5 text-[#64748B] transition-colors hover:bg-slate-200">
-                      <AttachIcon />
-                    </button>
-                    <button
-                      onClick={() => handleSend()}
-                      disabled={!inputValue.trim() || isTyping}
-                      className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#0F172A] text-white shadow-sm transition-all hover:bg-[#1E293B] disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      <SendIcon />
-                    </button>
-                  </div>
-                </div>
-                <p className="mt-2 text-center text-[10px] text-[#94A3B8]">
-                  AI can make mistakes. Always verify with official LHDN resources.
-                </p>
+              {/* Active Messages List */}
+              {(messages || []).map((msg) =>
+                msg.role === 'user'
+                  ? <UserMessage key={msg.id} message={msg} />
+                  : <AssistantMessage key={msg.id} message={msg} />
+              )}
+
+              {isTyping && <TypingIndicator />}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Contextual Chips Tray Container */}
+            {!showEmptyState && (
+              <div className="border-t border-slate-50 px-5 py-2.5 flex items-center gap-2 overflow-x-auto shrink-0 scrollbar-none">
+                {(suggestedPrompts || []).slice(0, 3).map((prompt) => (
+                  <button
+                    key={prompt}
+                    onClick={() => handleSend(prompt)}
+                    className="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-[#64748B] transition-all hover:border-[#0D9488] hover:bg-[#f0fdf9] hover:text-[#0D9488]"
+                  >
+                    {prompt}
+                  </button>
+                ))}
               </div>
+            )}
+
+            {/* Locked Footer Action/Input Tray */}
+            <div className="border-t border-slate-100 p-4 shrink-0">
+              <div className="flex items-end gap-2 rounded-xl border border-slate-200 bg-slate-50/50 px-3 py-2 transition-all focus-within:border-[#0D9488] focus-within:ring-4 focus-within:ring-[#0D9488]/10">
+                <textarea
+                  ref={inputRef}
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Ask about deductions, regulations, or upload a notice..."
+                  rows={1}
+                  className="flex-1 resize-none bg-transparent text-sm text-[#0F172A] placeholder-[#94A3B8] outline-none py-2 align-middle"
+                  style={{ maxHeight: '96px' }}
+                />
+                <div className="flex shrink-0 items-center gap-1 pb-0.5">
+                  <button type="button" className="rounded-lg p-1.5 text-[#64748B] transition-colors hover:bg-slate-200">
+                    <AttachIcon />
+                  </button>
+                  <button
+                    onClick={() => handleSend()}
+                    disabled={!inputValue.trim() || isTyping}
+                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#0F172A] text-white shadow-sm transition-all hover:bg-[#1E293B] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <SendIcon />
+                  </button>
+                </div>
+              </div>
+              <p className="mt-2 text-center text-[10px] text-[#94A3B8]">
+                AI can make mistakes. Always verify with official LHDN resources.
+              </p>
             </div>
           </div>
 
-          {/* ── Right: Citations panel (narrower) ── */}
-          <div className="space-y-4">
-            <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
-              <div className="mb-4 flex items-center gap-2">
+          {/* ── Right Column: Fixed Side Panel ── */}
+          <div className="hidden lg:flex lg:flex-col w-80 shrink-0 h-full min-h-0 gap-4 overflow-hidden">
+            
+            {/* Citation Box */}
+            <div className="flex-1 flex flex-col rounded-2xl border border-slate-100 bg-white p-5 shadow-sm overflow-hidden">
+              <div className="mb-4 flex items-center gap-2 shrink-0">
                 <BookIcon className="text-[#0D9488]" />
                 <h2 className="text-sm font-bold text-[#0F172A]">Active Citations</h2>
               </div>
-              <p className="mb-4 text-xs text-[#64748B]">Sources referenced in the current response.</p>
+              <p className="mb-4 text-xs text-[#64748B] shrink-0">Sources referenced in the current response.</p>
 
-              <div className="space-y-3">
-                {activeCitations.length > 0
-                  ? activeCitations.map((citation, i) => (
-                      <CitationCard key={i} citation={citation} />
-                    ))
-                  : <EmptyCitationsPlaceholder />
-                }
+              {/* Scrollable container strictly within the right panel */}
+              <div className="flex-1 overflow-y-auto min-h-0 space-y-3 pr-1">
+                {(activeCitations || []).length > 0 ? (
+                  activeCitations.map((citation, i) => (
+                    <CitationCard key={i} citation={citation} />
+                  ))
+                ) : (
+                  <EmptyCitationsPlaceholder />
+                )}
               </div>
             </div>
 
-            {/* Disclaimer card */}
-            <div className="rounded-2xl border border-amber-100 bg-amber-50/50 p-4">
+            {/* Disclaimer Notice Block */}
+            <div className="rounded-2xl border border-amber-100 bg-amber-50/50 p-4 shrink-0">
               <p className="text-xs font-semibold text-amber-700">Important Notice</p>
               <p className="mt-1.5 text-xs leading-relaxed text-amber-600">
                 CukaiBot provides guidance based on publicly available LHDN regulations. Always consult a licensed tax agent for filing advice specific to your situation.
               </p>
             </div>
-          </div>
 
+          </div>
         </div>
       </div>
     </main>

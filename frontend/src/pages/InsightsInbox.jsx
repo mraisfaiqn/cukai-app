@@ -164,6 +164,32 @@ const MOCK_INSIGHTS = [
     actionable: false,
     tag: 'YA 2023',
   },
+  {
+    id: 9,
+    title: 'YA 2024 Report Summary Ready',
+    summary: 'Your tax summary for YA 2023 has been compiled. Total reported income: RM182,400. Total deductible expenses: RM41,200. Estimated tax impact: RM28,560. Review is recommended before filing.',
+    category: 'Report',
+    priority: 'low',
+    read: true,
+    archived: true,
+    timestamp: '2025-04-10T09:00:00',
+    source: 'CukaiVault Report',
+    actionable: false,
+    tag: 'YA 2024',
+  },
+  {
+    id: 10,
+    title: 'YA 2025 Report Summary Ready',
+    summary: 'Your tax summary for YA 2023 has been compiled. Total reported income: RM182,400. Total deductible expenses: RM41,200. Estimated tax impact: RM28,560. Review is recommended before filing.',
+    category: 'Report',
+    priority: 'low',
+    read: true,
+    archived: true,
+    timestamp: '2025-04-10T09:00:00',
+    source: 'CukaiVault Report',
+    actionable: false,
+    tag: 'YA 2025',
+  },
 ];
 
 const CATEGORIES = ['All', 'Deduction', 'Compliance', 'Tax Saving', 'Advisory', 'Report'];
@@ -300,8 +326,11 @@ function InsightsInbox() {
     });
 
   return (
-    <main className="min-h-screen bg-background font-body">
-      
+    // ── CHANGED: min-h-screen → h-[calc(100vh-4rem)] + flex flex-col overflow-hidden
+    // This locks the component to exactly the remaining viewport below the h-16 navbar,
+    // preventing the outer page from ever needing to scroll.
+    <main className="h-[calc(100vh-4rem)] bg-background font-body flex flex-col overflow-hidden">
+
       {/* Toast */}
       {toast && (
         <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-xl bg-[#0F172A] px-4 py-3 text-sm font-medium text-white shadow-xl">
@@ -318,10 +347,16 @@ function InsightsInbox() {
         onDelete={deleteInsight}
       />
 
-      <div className="mx-auto max-w-7xl space-y-6 px-6 py-6">
+      {/*
+        ── CHANGED: removed space-y-6, added flex flex-col gap-4 h-full overflow-hidden
+        The container is now a flex column that fills the full height of <main>.
+        overflow-hidden here is essential — without it the container would expand
+        past the viewport and re-introduce outer scrolling.
+      */}
+      <div className="mx-auto w-full max-w-7xl flex flex-col gap-4 px-6 py-5 h-full overflow-hidden">
 
         {/* ── Page Header ── */}
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between shrink-0">
           <div>
             <div className="flex items-center gap-2.5">
               <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">AI Insights Inbox</h1>
@@ -335,40 +370,26 @@ function InsightsInbox() {
               AI-generated tax insights, compliance alerts, and advisory notifications — timestamped and organised.
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowArchived(v => !v)}
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-semibold shadow-sm transition-colors ${showArchived ? 'border-[#0D9488] bg-[#f0fdf9] text-[#0D9488]' : 'border-slate-200 bg-white text-[#64748B] hover:bg-slate-50'}`}
-            >
-              <ArchiveIcon /> {showArchived ? 'View Inbox' : 'Archived'}
-            </button>
-            {!showArchived && unreadCount > 0 && (
-              <button onClick={markAllRead} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-[#64748B] shadow-sm hover:bg-slate-50 hover:text-[#0F172A]">
-                <CheckIcon /> Mark All Read
-              </button>
-            )}
-          </div>
+          {/* ── Stats Strip ── */}
+          {!showArchived && (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 shrink-0">
+              {[
+                { label: 'Unread', value: insights.filter(i => !i.read && !i.archived).length, color: 'text-[#0F172A]' },
+                { label: 'High Priority', value: insights.filter(i => i.priority === 'high' && !i.archived).length, color: 'text-red-500' },
+                { label: 'Actionable', value: insights.filter(i => i.actionable && !i.archived).length, color: 'text-[#0D9488]' },
+                { label: 'Total Insights', value: insights.filter(i => !i.archived).length, color: 'text-[#64748B]' },
+              ].map(s => (
+                <div key={s.label} className="rounded-xl border border-slate-100 bg-white px-4 py-3.5 shadow-sm">
+                  <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
+                  <p className="text-xs text-[#64748B]">{s.label}</p>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* ── Stats Strip ── */}
-        {!showArchived && (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {[
-              { label: 'Unread', value: insights.filter(i => !i.read && !i.archived).length, color: 'text-[#0F172A]' },
-              { label: 'High Priority', value: insights.filter(i => i.priority === 'high' && !i.archived).length, color: 'text-red-500' },
-              { label: 'Actionable', value: insights.filter(i => i.actionable && !i.archived).length, color: 'text-[#0D9488]' },
-              { label: 'Total Insights', value: insights.filter(i => !i.archived).length, color: 'text-[#64748B]' },
-            ].map(s => (
-              <div key={s.label} className="rounded-xl border border-slate-100 bg-white px-4 py-3.5 shadow-sm">
-                <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
-                <p className="text-xs text-[#64748B]">{s.label}</p>
-              </div>
-            ))}
-          </div>
-        )}
-
         {/* ── Search & Sort Bar ── */}
-        <div className="flex flex-col gap-3 sm:flex-row">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch shrink-0">
           <div className="relative flex-1">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94A3B8]"><SearchIcon /></span>
             <input
@@ -378,12 +399,28 @@ function InsightsInbox() {
               className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-4 text-sm text-[#0F172A] placeholder-[#94A3B8] shadow-sm outline-none transition-all focus:border-[#0D9488] focus:ring-2 focus:ring-[#0D9488]/10"
             />
           </div>
-          <div className="relative">
+          <div className="flex h-full gap-2">
+            <button
+              onClick={() => setShowArchived(v => !v)}
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 text-xs font-semibold shadow-sm transition-colors h-full ${showArchived ? 'border-[#0D9488] bg-[#f0fdf9] text-[#0D9488]' : 'border-slate-200 bg-white text-[#64748B] hover:bg-slate-50'}`}
+            >
+              <ArchiveIcon /> {showArchived ? 'View Inbox' : 'Archived'}
+            </button>
+            {!showArchived && unreadCount > 0 && (
+              <button 
+                onClick={markAllRead} 
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-[#64748B] shadow-sm hover:bg-slate-50 hover:text-[#64748B] h-full"
+              >
+                <CheckIcon /> Mark All Read
+              </button>
+            )}
+          </div>
+          <div className="relative h-full">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94A3B8]"><FilterIcon /></span>
             <select
               value={sortBy}
               onChange={e => setSortBy(e.target.value)}
-              className="appearance-none rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-8 text-sm font-medium text-[#0F172A] shadow-sm outline-none transition-all focus:border-[#0D9488]"
+              className="h-full appearance-none rounded-xl border border-slate-200 bg-white pl-9 pr-8 text-xs font-semibold text-[#64748B] shadow-sm outline-none transition-all focus:border-[#0D9488]"
             >
               {SORT_OPTIONS.map(o => <option key={o}>{o}</option>)}
             </select>
@@ -392,7 +429,7 @@ function InsightsInbox() {
         </div>
 
         {/* ── Category Filter Chips ── */}
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 shrink-0">
           {CATEGORIES.map(cat => (
             <button
               key={cat}
@@ -404,67 +441,75 @@ function InsightsInbox() {
           ))}
         </div>
 
-        {/* ── Insight List ── */}
-        <div className="space-y-2">
-          {filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white py-16 text-center">
-              <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-slate-50">
-                <InboxIcon className="h-5 w-5 text-slate-300" />
-              </div>
-              <p className="text-sm font-semibold text-[#0F172A]">No insights found</p>
-              <p className="mt-1 text-xs text-[#64748B]">{showArchived ? 'Nothing archived yet.' : 'All caught up! Try adjusting your filters.'}</p>
-            </div>
-          ) : (
-            filtered.map(insight => {
-              const pr = PRIORITY_COLOR[insight.priority];
-              const cat = CATEGORY_COLOR[insight.category] || 'bg-slate-50 text-slate-600 border-slate-200';
-              return (
-                <div
-                  key={insight.id}
-                  onClick={() => { setSelectedInsight(insight); if (!insight.read) markRead(insight.id); }}
-                  className={`group flex cursor-pointer items-start gap-4 rounded-2xl border bg-white px-5 py-4 shadow-sm transition-all hover:border-[#0D9488]/30 hover:shadow-md ${!insight.read ? 'border-l-4 border-l-[#10B981]' : 'border-slate-100'}`}
-                >
-                  {/* Priority dot */}
-                  <div className="mt-1.5 shrink-0">
-                    <span className={`flex h-2.5 w-2.5 rounded-full ${pr.dot}`} />
-                  </div>
+        {/*
+          ── CHANGED: wrapped insight list + footer note in a scrollable container.
+          flex-1 makes it consume all remaining vertical space after the fixed elements above.
+          min-h-0 is the critical flexbox fix — without it, a flex child won't shrink below
+          its content height, so overflow-y-auto would never actually activate.
+        */}
+        <div className="flex-1 overflow-y-auto min-h-0">
 
-                  {/* Content */}
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2 mb-1.5">
-                      <span className={`inline-flex rounded-full border px-2.5 py-0.5 text-[10px] font-semibold ${cat}`}>{insight.category}</span>
-                      <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-mono text-[#64748B]">{insight.tag}</span>
-                      {insight.actionable && (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-[#0D9488]/20 bg-[#f0fdf9] px-2 py-0.5 text-[10px] font-semibold text-[#0D9488]">
-                          <SparkleIcon className="h-2.5 w-2.5" /> Action Required
-                        </span>
-                      )}
-                    </div>
-                    <p className={`text-sm font-semibold leading-snug ${insight.read ? 'text-[#334155]' : 'text-[#0F172A]'}`}>{insight.title}</p>
-                    <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[#64748B]">{insight.summary}</p>
-                  </div>
-
-                  {/* Meta */}
-                  <div className="shrink-0 text-right space-y-2">
-                    <p className="text-[10px] text-[#94A3B8] whitespace-nowrap">{formatDate(insight.timestamp)}</p>
-                    <p className="text-[10px] font-medium text-[#64748B]">{insight.source}</p>
-                    <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
-                      <button onClick={() => archiveInsight(insight.id)} title="Archive" className="rounded-lg p-1.5 text-[#64748B] hover:bg-slate-100">
-                        <ArchiveIcon />
-                      </button>
-                      <button onClick={() => deleteInsight(insight.id)} title="Delete" className="rounded-lg p-1.5 text-red-400 hover:bg-red-50">
-                        <TrashIcon />
-                      </button>
-                    </div>
-                  </div>
+          {/* ── Insight List ── */}
+          <div className="space-y-2">
+            {filtered.length === 0 ? (
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white py-16 text-center">
+                <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-slate-50">
+                  <InboxIcon className="h-5 w-5 text-slate-300" />
                 </div>
-              );
-            })
-          )}
-        </div>
+                <p className="text-sm font-semibold text-[#0F172A]">No insights found</p>
+                <p className="mt-1 text-xs text-[#64748B]">{showArchived ? 'Nothing archived yet.' : 'All caught up! Try adjusting your filters.'}</p>
+              </div>
+            ) : (
+              filtered.map(insight => {
+                const pr = PRIORITY_COLOR[insight.priority];
+                const cat = CATEGORY_COLOR[insight.category] || 'bg-slate-50 text-slate-600 border-slate-200';
+                return (
+                  <div
+                    key={insight.id}
+                    onClick={() => { setSelectedInsight(insight); if (!insight.read) markRead(insight.id); }}
+                    className={`group flex cursor-pointer items-start gap-4 rounded-2xl border bg-white px-5 py-4 shadow-sm transition-all hover:border-[#0D9488]/30 hover:shadow-md ${!insight.read ? 'border-l-4 border-l-[#10B981]' : 'border-slate-100'}`}
+                  >
+                    {/* Priority dot */}
+                    <div className="mt-1.5 shrink-0">
+                      <span className={`flex h-2.5 w-2.5 rounded-full ${pr.dot}`} />
+                    </div>
 
-        {/* Footer note */}
-        <p className="pb-4 text-center text-[10px] text-[#94A3B8]">
+                    {/* Content */}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                        <span className={`inline-flex rounded-full border px-2.5 py-0.5 text-[10px] font-semibold ${cat}`}>{insight.category}</span>
+                        <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-mono text-[#64748B]">{insight.tag}</span>
+                        {insight.actionable && (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-[#0D9488]/20 bg-[#f0fdf9] px-2 py-0.5 text-[10px] font-semibold text-[#0D9488]">
+                            <SparkleIcon className="h-2.5 w-2.5" /> Action Required
+                          </span>
+                        )}
+                      </div>
+                      <p className={`text-sm font-semibold leading-snug ${insight.read ? 'text-[#334155]' : 'text-[#0F172A]'}`}>{insight.title}</p>
+                      <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[#64748B]">{insight.summary}</p>
+                    </div>
+
+                    {/* Meta */}
+                    <div className="shrink-0 text-right space-y-2">
+                      <p className="text-[10px] text-[#94A3B8] whitespace-nowrap">{formatDate(insight.timestamp)}</p>
+                      <p className="text-[10px] font-medium text-[#64748B]">{insight.source}</p>
+                      <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
+                        <button onClick={() => archiveInsight(insight.id)} title="Archive" className="rounded-lg p-1.5 text-[#64748B] hover:bg-slate-100">
+                          <ArchiveIcon />
+                        </button>
+                        <button onClick={() => deleteInsight(insight.id)} title="Delete" className="rounded-lg p-1.5 text-red-400 hover:bg-red-50">
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>{/* end scrollable region */}
+        {/* ── Footer note (scrolls with the list) ── */}
+        <p className="text-center text-[10px] text-[#94A3B8]">
           AI-generated insights are for advisory purposes only. Always verify with a licensed tax agent or LHDN resources before taking action.
         </p>
       </div>
