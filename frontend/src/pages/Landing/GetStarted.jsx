@@ -705,13 +705,9 @@ export default function GetStarted({ onLogin }) {
   const allStepIndices = Object.keys(WIZARD_STEPS).map(Number);
   const totalSteps = allStepIndices.length;
 
-  // Determine if we are on a "terminal" (non-progress) step
-  const isTerminalStep = [50, 51, 14, 15].includes(step);
-
   return (
     <div className="w-screen h-screen bg-[#E8ECF4] flex items-center justify-center px-4 overflow-hidden">
       <div className="w-full max-w-[440px] bg-white rounded-[20px] shadow-[0_4px_32px_rgba(15,23,42,0.10)] px-7 py-6 flex flex-col">
-
         {/* Logo */}
         <div className="flex items-center justify-center gap-2 mb-1">
           <img src={cukaiLogo} alt="Cukai.ai logo" className="h-8 w-8 shrink-0" />
@@ -719,14 +715,6 @@ export default function GetStarted({ onLogin }) {
             cukai<span className="text-[#10B981]">.</span><span className="font-light text-[#64748B]">ai</span>
           </span>
         </div>
-
-        {/* Subtitle — hide on upload & savings steps */}
-        {!isTerminalStep && (
-          <p className="text-center text-[12px] text-[#94A3B8] mb-4 mt-1">
-            <span className="font-bold text-[14px] text-[#0F172A]">Let's get you set up</span> - maximise your tax savings for 2025.
-          </p>
-        )}
-
         {/* Step content */}
         <div className="transition-all duration-300">
           {currentView}
