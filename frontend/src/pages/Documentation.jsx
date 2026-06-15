@@ -448,24 +448,24 @@ function Documentation() {
     : DOC_SECTIONS;
 
   return (
-    <main className="min-h-screen bg-background font-body">
-      <div className="mx-auto max-w-7xl space-y-6 px-6 py-6">
+    // ── FIXED VIEWPORT FRAME (Matches InsightsInbox.jsx) ──
+    <main className="h-[calc(100vh-4rem)] bg-background font-body flex flex-col overflow-hidden">
+      <div className="mx-auto w-full max-w-7xl flex flex-col gap-4 px-6 py-5 h-full overflow-hidden">
 
-        {/* ── Page Header ── */}
-        <div className="mb-6 flex items-start gap-3">
-          <div>
-            <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">Documentation</h1>
-            <p className="mt-1 text-sm text-[#64748B]">User manual, module guides, API reference, and frequently asked questions.</p>
-          </div>
+        {/* ── Page Header (shrink-0 prevents it from squishing) ── */}
+        <div className="flex flex-col gap-1 shrink-0">
+          <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">Documentation</h1>
+          <p className="text-sm text-[#64748B]">User manual, module guides, API reference, and frequently asked questions.</p>
         </div>
 
-        <div className="flex gap-6">
+        {/* ── Master Split Layout ── */}
+        <div className="flex flex-1 gap-6 min-h-0 overflow-hidden">
 
-          {/* ── Sidebar ── */}
-          <aside className="hidden w-60 shrink-0 lg:block">
-            <div className="sticky top-6 space-y-2">
+          {/* ── Desktop Sidebar (Now independently scrollable) ── */}
+          <aside className="hidden w-60 shrink-0 lg:flex lg:flex-col h-full overflow-y-auto pr-2">
+            <div className="space-y-2">
               {/* Search */}
-              <div className="relative mb-3">
+              <div className="relative mb-3 sticky top-0 bg-background pb-1 z-10">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94A3B8]"><SearchIcon /></span>
                 <input
                   value={search}
@@ -503,11 +503,12 @@ function Documentation() {
             </div>
           </aside>
 
-          {/* ── Content ── */}
-          <div className="min-w-0 flex-1">
-            {/* Mobile: search results as list */}
+          {/* ── Main Content Column ── */}
+          <div className="min-w-0 flex-1 flex flex-col h-full overflow-hidden">
+            
+            {/* Mobile search results view */}
             {search ? (
-              <div className="space-y-2 lg:hidden">
+              <div className="mb-3 max-h-40 overflow-y-auto space-y-2 lg:hidden shrink-0">
                 {filteredSections.flatMap(sec => sec.items).map(item => (
                   <button key={item.id} onClick={() => { setActiveId(item.id); setSearch(''); }} className="block w-full rounded-xl border border-slate-100 bg-white px-4 py-3 text-left shadow-sm hover:border-[#0D9488]/30">
                     <p className="text-sm font-semibold text-[#0F172A]">{item.title}</p>
@@ -517,8 +518,8 @@ function Documentation() {
               </div>
             ) : null}
 
-            {/* Mobile nav chips */}
-            <div className="mb-4 flex flex-wrap gap-2 lg:hidden">
+            {/* Mobile nav horizontal chip tray */}
+            <div className="mb-3 flex flex-wrap gap-2 lg:hidden shrink-0 max-h-24 overflow-y-auto pb-1">
               {allItems.map(item => (
                 <button
                   key={item.id}
@@ -530,12 +531,13 @@ function Documentation() {
               ))}
             </div>
 
-            <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+            {/* ── INDEPENDENTLY SCROLLABLE READING CARD ── */}
+            <div className="flex-1 overflow-y-auto min-h-0 rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
               <DocContent item={activeItem} />
             </div>
 
-            {/* Version note */}
-            <div className="mt-4 flex items-center justify-between">
+            {/* ── Version Footer Sticky Note ── */}
+            <div className="mt-3 flex items-center justify-between shrink-0">
               <p className="text-[10px] text-[#94A3B8]">Fiscal Clarity AI — Documentation v1.0 · More modules will be added as the platform grows.</p>
               <div className="flex items-center gap-1">
                 {allItems.map((item, i) => (
@@ -548,6 +550,7 @@ function Documentation() {
                 ))}
               </div>
             </div>
+
           </div>
         </div>
       </div>
