@@ -54,9 +54,11 @@ function LandingNav() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 60);
-    window.addEventListener('scroll', onScroll);
-    return () => window.removeEventListener('scroll', onScroll);
+    const el = document.getElementById('main-scroll');
+    if (!el) return;
+    const onScroll = () => setScrolled(el.scrollTop > 60);
+    el.addEventListener('scroll', onScroll);
+    return () => el.removeEventListener('scroll', onScroll);
   }, []);
 
   const scrollTo = (id) => {
@@ -67,7 +69,7 @@ function LandingNav() {
   return (
     <nav className={`fixed top-0 w-full z-50 transition-all duration-300 animate-[fadeInDown_0.5s_cubic-bezier(0.16,1,0.3,1)_forwards] ${scrolled ? 'bg-white/90 backdrop-blur-xl border-b border-slate-200' : ''}`}>
       <div className="flex justify-between items-center max-w-[1280px] mx-auto px-4 md:px-12 h-16">
-        <NavLink onClick={() => {window.scrollTo({top: 0, behavior: 'smooth'});}} className="flex items-center gap-2 group">
+        <NavLink onClick={() => { document.getElementById('main-scroll')?.scrollTo({ top: 0, behavior: 'smooth' }); }} className="flex items-center gap-2 group">
           <img src={cukaiLogo} alt="Cukai.ai logo" className="h-10 w-10 shrink-0" />
           <span className="select-none text-xl font-bold tracking-tight text-[#0F172A]">
             cukai<span className="text-[#10B981]">.</span><span className="font-light text-[#64748B]">ai</span>
@@ -132,17 +134,17 @@ function Hero() {
 
   return (
     /* Main wrapper container */
-    <div className="w-full h-[calc(100vh-5rem)] min-h-[calc(100vh-5rem)] max-h-[calc(100vh-5rem)] flex flex-col justify-between overflow-hidden bg-[#F8F9FF] relative bg-[linear-gradient(to_right,rgba(15,23,42,.03)_1px,transparent_1px),linear-gradient(to_bottom,rgba(15,23,42,.03)_1px,transparent_1px)] bg-[size:40px_40px]">
+    <div className="snap-start w-full h-screen flex flex-col justify-between overflow-hidden bg-[#F8F9FF] relative bg-[linear-gradient(to_right,rgba(15,23,42,.03)_1px,transparent_1px),linear-gradient(to_bottom,rgba(15,23,42,.03)_1px,transparent_1px)] bg-[size:40px_40px]">
       {/* Radial glow background asset */}
       <div className="absolute right-0 top-1/2 -translate-y-1/2 w-[800px] h-[800px] rounded-full -z-10 pointer-events-none bg-[rgba(204,251,241,0.4)] blur-[100px] animate-[pulseRadial_8s_ease-in-out_infinite]" />
 
       {/* ── Main Hero Section Box ───────────────────────────── */}
       <section
         id="hero"
-        className="flex-1 flex flex-col justify-between w-full max-w-[1280px] mx-auto px-6 md:px-12 pt-4 pb-4"
+        className="flex-1 flex flex-col justify-center w-full max-w-[1280px] mx-auto px-6 md:px-12 pt-16"
       >
         {/* Upper Column Content Area */}
-        <div className="my-auto w-full">
+        <div className="w-full">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
             
             {/* Left column info deck */}
@@ -357,22 +359,21 @@ function HowItWorks() {
   ];
 
   return (
-    <section id="how-it-works" className="pt-20 pb-12 px-4 md:px-12">
-      <div className="max-w-[1280px] mx-auto">
-        <div ref={ref} className={`flex flex-col items-center text-center max-w-3xl mx-auto mb-6 transition-all duration-700 ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-5'}`}>
+    <section id="how-it-works" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 pt-16 bg-[#F8F9FF] overflow-hidden">
+      <div className="max-w-[1280px] mx-auto w-full flex flex-col gap-6">
+        <div ref={ref} className={`flex flex-col items-center text-center max-w-3xl mx-auto transition-all duration-700 ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-5'}`}>
           <AiBadge>✦ The Process</AiBadge>
-          <h2 className="text-3xl font-bold text-slate-900 mt-4 mb-3 leading-tight tracking-tight">
-            From receipt to filed return - in three steps.
+          <h2 className="text-[clamp(22px,3vw,36px)] font-bold text-slate-900 mt-4 mb-3 leading-tight tracking-tight">
+            From receipt to filed return — in three steps.
           </h2>
-          <p className="text-base leading-relaxed text-slate-600">Most users complete their first tax profile in under 5 minutes.</p>
+          <p className="text-[clamp(13px,1.5vw,16px)] leading-relaxed text-slate-600">Most users complete their first tax profile in under 5 minutes.</p>
         </div>
 
         <div className="relative">
-          {/* connector line — aligned to icon row (num height ~48px + mb-3 ~12px + icon center ~20px = ~80px from card top) */}
-          <div className="hidden md:block absolute top-[104px] left-[calc(16.66%+16px)] right-[calc(16.66%+16px)] h-[2px] z-0">            <svg height="2" width="100%"><line stroke="#E2E8F0" strokeWidth="2" strokeDasharray="10,10" x1="0" x2="100%" y1="1" y2="1" /></svg>
+          <div className="hidden md:block absolute top-[104px] left-[calc(16.66%+16px)] right-[calc(16.66%+16px)] h-[2px] z-0">
+            <svg height="2" width="100%"><line stroke="#E2E8F0" strokeWidth="2" strokeDasharray="10,10" x1="0" x2="100%" y1="1" y2="1" /></svg>
             <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-[#0D9488] rounded-full left-0 shadow-[0_0_10px_#0D9488] animate-[slideDot_6s_infinite_ease-in-out]" />
           </div>
-
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 relative z-10">
             {steps.map(({ num, n, icon, color, title, desc, badge, badgeColor, badgeIcon }, i) => (
               <StepCard key={n} num={num} n={n} icon={icon} color={color} title={title} desc={desc} badge={badge} badgeColor={badgeColor} badgeIcon={badgeIcon} delay={i * 100} />
@@ -407,16 +408,16 @@ function Features() {
   const [ref, visible] = useReveal(0.05);
 
   return (
-    <section id="features" className="pt-20 pb-12 px-6 md:px-12">
-      <div className="max-w-[1280px] mx-auto">
+    <section id="features" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 pt-16 bg-[#F8F9FF] overflow-hidden">
+      <div className="max-w-[1280px] mx-auto w-full flex flex-col gap-6">
 
         {/* header block */}
-        <div ref={ref} className={`text-center max-w-3xl mx-auto mb-6 transition-all duration-700 ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-5'}`}>
+        <div ref={ref} className={`text-center max-w-3xl mx-auto transition-all duration-700 ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-5'}`}>
           <AiBadge>✦ The Features</AiBadge>
-          <h2 className="text-3xl font-bold text-slate-900 mt-4 mb-2 tracking-tight mt-2 leading-tight">
-            Everything you need for tax compliance - in one platform.
+          <h2 className="text-[clamp(22px,3vw,36px)] font-bold text-slate-900 mt-4 mb-2 tracking-tight leading-tight">
+            Everything you need for tax compliance — in one platform.
           </h2>
-          <p className="text-sm leading-relaxed text-slate-800">
+          <p className="text-[clamp(12px,1.4vw,15px)] leading-relaxed text-slate-800">
             Built specifically for Malaysian SMEs for sole proprietors and partnerships. Every feature is grounded in LHDN guidelines and the ITA 1967.
           </p>
         </div>
@@ -529,17 +530,19 @@ function ShowcaseReveal({ children }) {
 
 function CukaiAccountShowcase() {
   return (
-    <section id="cukaiaccount" className="pt-20 pb-30 px-6 md:px-12 bg-[#0F172A] text-white relative overflow-hidden flex flex-col min-h-[calc(100vh-80px)]">
+    <section id="cukaiaccount" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 pt-16 bg-[#0F172A] text-white relative overflow-hidden">
       <div className="absolute inset-0 opacity-10 pointer-events-none bg-[radial-gradient(ellipse_at_center,#86F2E4_0%,transparent_70%)]" />
 
-      <div className="max-w-[1280px] gap-13 mx-auto w-full relative z-10 flex flex-col flex-1">
+      <div className="max-w-[1280px] mx-auto w-full relative z-10 flex flex-col gap-6">
 
         {/* header block */}
-        <div className="text-center max-w-3xl mx-auto mb-6 opacity-0 animate-[fadeUp_0.6s_cubic-bezier(0.16,1,0.3,1)_80ms_forwards]">
+        <div className="text-center max-w-3xl mx-auto opacity-0 animate-[fadeUp_0.6s_cubic-bezier(0.16,1,0.3,1)_80ms_forwards]">
           <AiBadge>✦ Cukai Account</AiBadge>
+          <h2 className="text-[clamp(22px,3vw,36px)] font-bold text-white mt-4 mb-2 leading-tight tracking-tight">Personalise your Cukai Account.</h2>
+          <p className="text-[clamp(12px,1.4vw,15px)] text-[#7C839B]">Audit-ready records, organised by AI — stored for the full 7-year LHDN window.</p>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-stretch flex-1 w-full">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 items-center w-full">
 
           {/* Receipt UI Mockup */}
           <div className="relative w-full flex flex-col justify-center order-2 lg:order-1 opacity-0 animate-[fadeUp_0.6s_cubic-bezier(0.16,1,0.3,1)_160ms_forwards]">
@@ -592,14 +595,8 @@ function CukaiAccountShowcase() {
           </div>
 
           {/* Text */}
-          <div className="flex flex-col justify-center h-full space-y-6 order-1 lg:order-2 opacity-0 animate-[fadeUp_0.6s_cubic-bezier(0.16,1,0.3,1)_320ms_forwards]">
-            <h2 className="text-3xl font-bold text-white leading-tight tracking-tight">
-              Personalise your Cukai Account.
-            </h2>
-            <h4 className="text-xl font-bold text-white leading-tight tracking-tight">
-              Audit-ready records. Organised by AI.
-            </h4>
-            <p className="text-base leading-relaxed text-[#76777D] max-w-lg">
+          <div className="flex flex-col justify-center h-full space-y-4 order-1 lg:order-2 opacity-0 animate-[fadeUp_0.6s_cubic-bezier(0.16,1,0.3,1)_320ms_forwards]">
+            <p className="text-[clamp(13px,1.4vw,16px)] leading-relaxed text-[#76777D] max-w-lg">
               Never fear an LHDN audit again. Just scan and upload your receipts and documents. Our AI automatically extracts data, categorises expenses, calculates deductibility and stores a compliant PDF in your cukai account for the legally required 7 years.
             </p>
             <ul className="space-y-2.5 text-sm text-[#76777D] leading-relaxed">
@@ -628,25 +625,24 @@ function CukaiBotShowcase() {
   return (
     <>
       {/* Block 1: CukaiBot */}
-      <section id="cukaibot" className="pt-20 pb-32 px-6 md:px-12 bg-[#F8FAFC] relative overflow-hidden flex flex-col min-h-[calc(100vh-80px)]">
+      <section id="cukaibot" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 pt-16 bg-[#F8FAFC] relative overflow-hidden">
         <div className="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-l from-[#EFF4FF] to-transparent opacity-50 pointer-events-none" />
 
-        <div className="max-w-[1280px] mx-auto w-full relative z-10 flex flex-col flex-1">
+        <div className="max-w-[1280px] mx-auto w-full relative z-10 flex flex-col gap-6">
 
           {/* header block */}
-          <div className="text-center max-w-3xl mx-auto mb-6 opacity-0 animate-[fadeUp_0.6s_cubic-bezier(0.16,1,0.3,1)_80ms_forwards]">
+          <div className="text-center max-w-3xl mx-auto opacity-0 animate-[fadeUp_0.6s_cubic-bezier(0.16,1,0.3,1)_80ms_forwards]">
             <AiBadge>✦ Cukai Bot</AiBadge>
+            <h2 className="text-[clamp(22px,3vw,36px)] font-bold text-slate-900 mt-4 mb-2 leading-tight tracking-tight">Ask your tax questions in any language.</h2>
+            <p className="text-[clamp(12px,1.4vw,15px)] text-slate-600">Grounded strictly in ITA 1967 — accurate, source-cited answers in seconds.</p>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 mt-4 gap-20 items-stretch flex-1 w-full">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-center w-full">
 
             {/* Text */}
             <ShowcaseReveal>
               <div className="flex flex-col justify-center h-full space-y-4">
-                <h2 className="text-4xl font-bold text-slate-900 leading-tight tracking-tight">
-                  Ask your tax questions in any language.
-                </h2>
-                <p className="text-base leading-relaxed text-slate-600 max-w-lg">
+                <p className="text-[clamp(13px,1.4vw,16px)] leading-relaxed text-slate-600 max-w-lg">
                   Meet CukaiBot, your dedicated tax assistant. Grounded strictly in ITA 1967 and current LHDN guidelines, it provides accurate source-cited answers to complex queries in seconds.
                 </p>
                 <ul className="space-y-2.5 py-2 text-sm text-slate-600 leading-relaxed">
@@ -816,17 +812,16 @@ function Pricing() {
   const [ref, visible] = useReveal(0.1);
 
   return (
-    // Outer section wrappers remain untouched
-    <section id="pricing" className="pt-20 pb-12 px-6 md:px-12">
-      <div className="max-w-[1280px] mx-auto">
+    <section id="pricing" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 pt-16 bg-[#F8F9FF] overflow-hidden">
+      <div className="max-w-[1280px] mx-auto w-full flex flex-col gap-5">
         
-        {/* Title Group - Shifted mb-10 down to mb-6 to gain screen space */}
-        <div ref={ref} className={`flex flex-col items-center text-center max-w-3xl mx-auto mb-6 transition-all duration-700 ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-3'}`}>
+        {/* Title Group */}
+        <div ref={ref} className={`flex flex-col items-center text-center max-w-3xl mx-auto transition-all duration-700 ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-3'}`}>
           <AiBadge>✦ The Pricing</AiBadge>
-          <h2 className="text-3xl font-bold text-slate-900 mt-6 mb-1.5 leading-tight tracking-tight">
+          <h2 className="text-[clamp(22px,3vw,36px)] font-bold text-slate-900 mt-6 mb-1.5 leading-tight tracking-tight">
             Simple, transparent pricing
           </h2>
-          <p className="text-sm text-slate-600">Built for Malaysian SMEs, freelancers, and growing teams.</p>
+          <p className="text-[clamp(12px,1.4vw,14px)] text-slate-600">Built for Malaysian SMEs, freelancers, and growing teams.</p>
           
           {/* Toggle Switch */}
           <div className="inline-flex items-center mt-3 p-1 bg-[#E2E8F0] rounded-full border border-slate-200/60">
@@ -845,15 +840,15 @@ function Pricing() {
           </div>
         </div>
 
-        {/* Layout Grid Layout - Tightened layout gap metrics and lowered card margins to mb-6 */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-stretch w-full max-w-6xl mx-auto relative z-10 mb-6">
+        {/* Pricing Cards Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-stretch w-full max-w-6xl mx-auto relative z-10">
           <PriceCard plan="free" annual={annual} index={0} />
           <PriceCard plan="pro" annual={annual} featured index={1} />
           <PriceCard plan="enterprise" annual={annual} index={2} />
         </div>
 
-        {/* Cleaned Footer Layout with micro adjustments */}
-        <div className="text-center flex items-center justify-center gap-1.5 text-[#64748B] font-medium text-[11px] tracking-wide mt-4">
+        {/* Footer note */}
+        <div className="text-center flex items-center justify-center gap-1.5 text-[#64748B] font-medium text-[11px] tracking-wide">
           <Icon name="lock" className="text-xs" />
           <span>No credit card required. Cancel anytime. 100% PDPA compliant.</span>
         </div>
@@ -870,21 +865,19 @@ function FAQ() {
   const right = faqs.slice(3);
 
   return (
-    // Hardening the section container to block out other sections and isolate the view
-    <section id="faq" className="pt-20 pb-12 px-6 md:px-12">
-      <div className="max-w-[1280px] mx-auto">
+    <section id="faq" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 pt-16 bg-[#F8F9FF] overflow-hidden">
+      <div className="max-w-[1280px] mx-auto w-full flex flex-col gap-6">
         
-        {/* Title Group - Shifted mb-10 down to mb-6 to gain screen space */}
-        <div ref={ref} className={`flex flex-col items-center text-center max-w-3xl mx-auto mb-6 transition-all duration-700 ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-3'}`}>
+        {/* Title Group */}
+        <div ref={ref} className={`flex flex-col items-center text-center max-w-3xl mx-auto transition-all duration-700 ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-3'}`}>
           <AiBadge>✦ Support & FAQ</AiBadge>
-          {/* Symmetrical typography with fixed spacing scales */}
-          <h2 className="text-3xl font-bold text-slate-900 mt-7 mb-2 leading-tight tracking-tight">
+          <h2 className="text-[clamp(22px,3vw,36px)] font-bold text-slate-900 mt-7 mb-2 leading-tight tracking-tight">
             Everything you need to know about AI-powered compliance.
           </h2>
-          <p className="text-sm text-slate-600">Common questions from Malaysian SMEs and business owners.</p>
+          <p className="text-[clamp(12px,1.4vw,14px)] text-slate-600">Common questions from Malaysian SMEs and business owners.</p>
         </div>
-        {/* FAQ Layout Grid - Centered cleanly with structured element spacing */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-6xl mx-auto w-full relative z-10 pb-16">
+        {/* FAQ Layout Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-6xl mx-auto w-full relative z-10">
           {[left, right].map((col, ci) => (
             <div key={ci} className="space-y-4">
               {col.map((item, idx) => {
@@ -924,7 +917,7 @@ function FinalCTA() {
   const [ref, visible] = useReveal(0.1);
 
   return (
-    <section className="py-20 pb-12 px-6 md:px-12 max-w-[1280px] mx-auto relative overflow-hidden">
+    <section className="px-6 md:px-12 py-12 max-w-[1280px] mx-auto relative overflow-hidden">
       <div className="bg-[#131b2e] rounded-[24px] relative overflow-hidden shadow-2xl">
         <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_0%_0%,rgba(107,216,203,0.15)_0%,transparent_50%),radial-gradient(circle_at_100%_100%,rgba(78,222,163,0.1)_0%,transparent_50%)]" />
         <div ref={ref} className={`relative z-10 py-10 px-4 md:px-12 flex flex-col items-center text-center max-w-4xl mx-auto transition-all duration-700 ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-5'}`}>
@@ -995,7 +988,7 @@ function Home() {
   return (
     <>
       <LandingNav />
-      <div className="bg-[#F8F9FF] min-h-screen text-[#0b1c30] antialiased overflow-x-hidden pt-20">
+      <div id="main-scroll" className="bg-[#F8F9FF] text-[#0b1c30] antialiased overflow-x-hidden overflow-y-auto h-screen snap-y snap-mandatory scroll-smooth">
         <Hero />
         <HowItWorks />
         <Features />
@@ -1003,8 +996,10 @@ function Home() {
         <CukaiBotShowcase />
         <Pricing />
         <FAQ />
-        <FinalCTA />
-        <Footer />
+        <div className="snap-start">
+          <FinalCTA />
+          <Footer />
+        </div>
       </div>
     </>
   );
