@@ -1,6 +1,9 @@
 // OpportunitiesCard — the "Unclaimed Savings Opportunities" panel.
 // Takes the `opportunities` array and maps each onto an <OpportunityRow />.
+// Presentational only, no state.
 // Presentational only, no state. Matches Main_Dashboard_-_Cukai_AI.png.
+// `scrollable` prop: when true the list area overflows-y-auto so the card
+// fills its parent height without causing the page to scroll.
 import OpportunityRow from './OpportunityRow';
 
 const ArrowRight = () => (
@@ -10,23 +13,29 @@ const ArrowRight = () => (
   </svg>
 );
 
-function OpportunitiesCard({ opportunities }) {
-  // `opportunities` is the array of { id, title, provision, amount }; one row each.
+function OpportunitiesCard({ opportunities, scrollable = false }) {
   return (
-    <section className="rounded-xl border border-border bg-surface p-6">
-      {/* Card header: title + "View all" link */}
-      <div className="flex items-center justify-between">
-        <h2 className="font-headings text-lg font-semibold text-headings">
+    // h-full so the card expands to fill whatever height the parent grid cell gives it.
+    <section className="flex h-full flex-col rounded-xl border border-border bg-surface p-4">
+      {/* Card header — shrink-0 so it never gets squeezed */}
+      <div className="flex shrink-0 items-center justify-between">
+        <h2 className="font-headings text-sm font-semibold text-headings">
           Unclaimed Savings Opportunities
         </h2>
-        <a href="#" className="flex items-center gap-1 text-sm font-medium text-primary hover:text-primary-hover">
+        <a href="#" className="flex items-center gap-1 text-xs font-medium text-primary hover:text-primary-hover">
           View all
           <ArrowRight />
         </a>
       </div>
 
+      {/* Scrollable rows area */}
       {/* Rows — divide-y draws the hairlines between them */}
-      <div className="mt-2 divide-y divide-border">
+      <div
+        className={
+          'mt-2 divide-y divide-border ' +
+          (scrollable ? 'min-h-0 flex-1 overflow-y-auto px-1' : '')
+        }
+      >
         {opportunities.map((opp) => (
           // key = opp.id: the data carries a stable, unique id ("capital-allowance", …),
           // which is the ideal key. It lets React track each row to its underlying record
