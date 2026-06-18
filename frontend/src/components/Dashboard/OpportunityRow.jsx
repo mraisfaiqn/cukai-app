@@ -29,7 +29,7 @@ function OpportunityRow({
     // what useParams() reads back on the detail page.
     <Link
       to={`/opportunities/${id}`}
-      className="-mx-2 flex items-center justify-between gap-4 rounded-lg px-2 py-4 transition-colors hover:bg-primary-tint/50"
+      className="flex items-center justify-between gap-4 rounded-lg px-2 py-4 transition-colors hover:bg-primary-tint/50"
     >
       <div className="flex items-start gap-3">
         {/* Icon chip — teal-tinted square per the design's chip language */}
