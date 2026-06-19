@@ -277,7 +277,7 @@ function CukaiBot() {
   const showEmptyState = messages.length === 0;
 
   return (
-    <main className="h-[calc(100vh-4rem)] bg-background font-body flex flex-col overflow-hidden">
+    <main className="h-[calc(100vh-4.1rem)] bg-background font-body flex flex-col overflow-hidden">
       <div className="mx-auto w-full max-w-7xl flex flex-col gap-4 px-6 py-5 h-full overflow-hidden">
 
         {/* ── Page Header (shrink-0 prevents it from squishing) ── */}

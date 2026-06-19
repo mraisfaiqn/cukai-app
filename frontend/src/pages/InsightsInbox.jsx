@@ -329,7 +329,7 @@ function InsightsInbox() {
     // ── CHANGED: min-h-screen → h-[calc(100vh-4rem)] + flex flex-col overflow-hidden
     // This locks the component to exactly the remaining viewport below the h-16 navbar,
     // preventing the outer page from ever needing to scroll.
-    <main className="h-[calc(100vh-4rem)] bg-background font-body flex flex-col overflow-hidden">
+    <main className="h-[calc(100vh-4.1rem)] bg-background font-body flex flex-col overflow-hidden">
 
       {/* Toast */}
       {toast && (
