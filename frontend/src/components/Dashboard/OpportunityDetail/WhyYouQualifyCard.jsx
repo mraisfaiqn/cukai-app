@@ -1,8 +1,9 @@
 // WhyYouQualifyCard — the AI explanation panel. Presentational only.
 // Renders one paragraph per string and an optional legal-reference link.
+// "Ask CukaiBot" button is right-aligned in the header row
 
 const SparkleIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />
   </svg>
 );
@@ -15,29 +16,33 @@ const DocIcon = () => (
 );
 
 function WhyYouQualifyCard({
-  paragraphs, // array of strings — one <p> each (the AI's reasoning, in order).
-  reference,  // legal reference text, e.g. "Public Ruling No. 12/2014" (optional link).
+  paragraphs,
+  reference,
 }) {
   return (
-    <section className="h-full rounded-xl border border-border bg-primary-tint p-6">
-      <div className="flex items-center gap-2">
-        <span className="text-primary"><SparkleIcon /></span>
-        <h2 className="font-headings text-lg font-semibold text-headings">Why you qualify</h2>
+    <section className="h-full rounded-xl border border-border bg-primary-tint p-5 flex flex-col min-h-0">
+      {/* Header row: icon + title on the left, button pinned to the right */}
+      <div className="flex items-center justify-between gap-2 shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="text-primary"><SparkleIcon /></span>
+          <h2 className="font-headings text-lg font-semibold text-headings">Why you qualify</h2>
+        </div>
+        <div className="flex items-center gap-3 ml-auto">
+          {reference && (
+            <a href="#" className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary-hover">
+              <DocIcon />
+              Reference: {reference}
+            </a>
+          )}
+          
+        </div>
       </div>
-
-      <div className="mt-3 space-y-3 text-sm leading-relaxed text-body-text">
-        {/* Static, ordered prose that never reorders — index keys are safe here. */}
+      {/* Scrollable prose — grows to fill remaining card height */}
+      <div className="flex-1 min-h-0 overflow-y-auto mt-2 space-y-2 text-sm leading-relaxed text-body-text pr-1">
         {paragraphs.map((p, i) => (
           <p key={i}>{p}</p>
         ))}
       </div>
-
-      {reference && (
-        <a href="#" className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary-hover">
-          <DocIcon />
-          Reference: {reference}
-        </a>
-      )}
     </section>
   );
 }
