@@ -27,7 +27,7 @@ function UserNavigation() {
               <span>{tab.name}</span>
               {/* Active bottom border slider matching teammate design choices */}
               {isActive && (
-                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#10B981]" />
+                <div className="absolute bottom-0 left-3 right-3 h-0.5 bg-[#0F6E56]" />
               )}
             </>
           )}
