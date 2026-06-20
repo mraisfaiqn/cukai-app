@@ -28,27 +28,72 @@ const STATUS_META = {
   mixed:          { label: 'Needs Review',     color: '#B45309', bg: '#FFFBEB', dot: '#F59E0B' },
 };
 
-// ─── Category colours ─────────────────────────────────────────────────────────
+// ─── Refined categories ────────────────────────────────────────────────────────
+// Business categories follow LHDN "allowable wholly & exclusively for business" types
+// (salaries, rental, utilities, professional fees, capital-asset purchases, marketing,
+// transport, supplier costs, financing costs). Personal categories cover common
+// "domestic and private" non-allowable spend so users see real diversification.
+const BUSINESS_CATEGORIES = [
+  'Sales & Service Income',
+  'Supplier & Inventory Purchases',
+  'Payroll & EPF/SOCSO',
+  'Rental & Utilities',
+  'Marketing & Advertising',
+  'Professional & Legal Fees',
+  'Transport & Logistics',
+  'Capital Assets & Equipment',
+  'Loan Interest & Bank Charges',
+  'Office & Admin Supplies',
+];
+const PERSONAL_CATEGORIES = [
+  'Groceries & Household',
+  'Personal Travel & Leisure',
+  'Dining & Entertainment',
+  'Personal Shopping',
+  'Medical & Healthcare',
+  'Family & Education',
+  'Subscriptions & Lifestyle',
+];
+const REVIEW_CATEGORY = 'Mixed / Pending Review';
+
 const CATEGORY_COLORS = {
-  'Service Income': '#0F6E56', 'Product Sales': '#1D9E75',
-  'Supplier Purchases': '#0D9488', 'Utilities & Rental': '#10B981',
-  'Payroll & Staff Cost': '#64748B', 'Marketing & Admin': '#BA7517',
-  'Transport & Maintenance': '#7C839B', 'Personal Expense': '#DC2626',
-  'Mixed / Review': '#F59E0B',
+  'Sales & Service Income': '#0F6E56',
+  'Supplier & Inventory Purchases': '#0D9488',
+  'Payroll & EPF/SOCSO': '#14B8A6',
+  'Rental & Utilities': '#10B981',
+  'Marketing & Advertising': '#B45309',
+  'Professional & Legal Fees': '#64748B',
+  'Transport & Logistics': '#7C839B',
+  'Capital Assets & Equipment': '#0369A1',
+  'Loan Interest & Bank Charges': '#475569',
+  'Office & Admin Supplies': '#1D9E75',
+  'Groceries & Household': '#DC2626',
+  'Personal Travel & Leisure': '#E11D48',
+  'Dining & Entertainment': '#F97316',
+  'Personal Shopping': '#DB2777',
+  'Medical & Healthcare': '#EF4444',
+  'Family & Education': '#F43F5E',
+  'Subscriptions & Lifestyle': '#FB7185',
+  [REVIEW_CATEGORY]: '#F59E0B',
 };
 
 // ─── Initial mock documents ───────────────────────────────────────────────────
 const INITIAL_DOCS = [
-  { id: 1, name: 'Invoice_May2026_001.pdf', type: 'Invoice', date: '12 May 2026', amount: 'RM 8,400', status: 'deductible', category: 'Service Income', note: 'Client invoice for design retainer.' },
-  { id: 2, name: 'Receipt_Utilities_Apr2026.pdf', type: 'Utility Bill', date: '30 Apr 2026', amount: 'RM 1,240', status: 'deductible', category: 'Utilities & Rental', note: 'TNB electricity bill — office premise.' },
-  { id: 3, name: 'Staff_Salary_Voucher_May.pdf', type: 'Payroll', date: '31 May 2026', amount: 'RM 14,500', status: 'deductible', category: 'Payroll & Staff Cost', note: 'Monthly salary disbursement.' },
-  { id: 4, name: 'Directors_Dinner_Receipt.jpg', type: 'Receipt', date: '18 May 2026', amount: 'RM 980', status: 'mixed', category: 'Mixed / Review', note: 'Entertainment — AI uncertain if business-related.' },
-  { id: 5, name: 'Printer_Ink_Supplies.pdf', type: 'Purchase Order', date: '5 Jun 2026', amount: 'RM 430', status: 'deductible', category: 'Supplier Purchases', note: 'Office consumables for print studio.' },
-  { id: 6, name: 'Personal_Gym_Membership.pdf', type: 'Receipt', date: '1 Jun 2026', amount: 'RM 200', status: 'non_deductible', category: 'Personal Expense', note: 'Personal gym membership — not business related.' },
-  { id: 7, name: 'Marketing_Campaign_May.pdf', type: 'Invoice', date: '20 May 2026', amount: 'RM 3,200', status: 'deductible', category: 'Marketing & Admin', note: 'Social media advertising spend.' },
-  { id: 8, name: 'Grab_Business_Trips.pdf', type: 'Receipt', date: '28 May 2026', amount: 'RM 340', status: 'deductible', category: 'Transport & Maintenance', note: 'Client meeting transport.' },
-  { id: 9, name: 'Personal_Holiday_Flight.pdf', type: 'Receipt', date: '15 Jun 2026', amount: 'RM 1,800', status: 'non_deductible', category: 'Personal Expense', note: 'Family holiday flights — personal.' },
-  { id: 10, name: 'Team_Lunch_Receipt.jpg', type: 'Receipt', date: '10 Jun 2026', amount: 'RM 560', status: 'mixed', category: 'Mixed / Review', note: 'Team lunch — may be partially deductible.' },
+  { id: 1, name: 'Invoice_May2026_001.pdf', type: 'Invoice', date: '12 May 2026', amount: 'RM 8,400', status: 'deductible', category: 'Sales & Service Income', note: 'Client invoice for design retainer.' },
+  { id: 2, name: 'Receipt_Utilities_Apr2026.pdf', type: 'Utility Bill', date: '30 Apr 2026', amount: 'RM 1,240', status: 'deductible', category: 'Rental & Utilities', note: 'TNB electricity bill — office premise.' },
+  { id: 3, name: 'Staff_Salary_Voucher_May.pdf', type: 'Payroll', date: '31 May 2026', amount: 'RM 14,500', status: 'deductible', category: 'Payroll & EPF/SOCSO', note: 'Monthly salary disbursement.' },
+  { id: 4, name: 'Directors_Dinner_Receipt.jpg', type: 'Receipt', date: '18 May 2026', amount: 'RM 980', status: 'mixed', category: REVIEW_CATEGORY, note: 'Entertainment — AI uncertain if business-related.' },
+  { id: 5, name: 'Printer_Ink_Supplies.pdf', type: 'Purchase Order', date: '5 Jun 2026', amount: 'RM 430', status: 'deductible', category: 'Office & Admin Supplies', note: 'Office consumables for print studio.' },
+  { id: 6, name: 'Personal_Gym_Membership.pdf', type: 'Receipt', date: '1 Jun 2026', amount: 'RM 200', status: 'non_deductible', category: 'Subscriptions & Lifestyle', note: 'Personal gym membership — not business related.' },
+  { id: 7, name: 'Marketing_Campaign_May.pdf', type: 'Invoice', date: '20 May 2026', amount: 'RM 3,200', status: 'deductible', category: 'Marketing & Advertising', note: 'Social media advertising spend.' },
+  { id: 8, name: 'Grab_Business_Trips.pdf', type: 'Receipt', date: '28 May 2026', amount: 'RM 340', status: 'deductible', category: 'Transport & Logistics', note: 'Client meeting transport.' },
+  { id: 9, name: 'Personal_Holiday_Flight.pdf', type: 'Receipt', date: '15 Jun 2026', amount: 'RM 1,800', status: 'non_deductible', category: 'Personal Travel & Leisure', note: 'Family holiday flights — personal.' },
+  { id: 10, name: 'Team_Lunch_Receipt.jpg', type: 'Receipt', date: '10 Jun 2026', amount: 'RM 560', status: 'mixed', category: REVIEW_CATEGORY, note: 'Team lunch — may be partially deductible.' },
+  { id: 11, name: 'New_Laptop_Purchase.pdf', type: 'Invoice', date: '3 Jun 2026', amount: 'RM 5,200', status: 'deductible', category: 'Capital Assets & Equipment', note: 'MacBook Pro for design work — capital allowance eligible.' },
+  { id: 12, name: 'Legal_Retainer_Q2.pdf', type: 'Invoice', date: '22 May 2026', amount: 'RM 2,500', status: 'deductible', category: 'Professional & Legal Fees', note: 'Quarterly legal retainer for contracts.' },
+  { id: 13, name: 'Business_Loan_Interest.pdf', type: 'Statement', date: '1 Jun 2026', amount: 'RM 670', status: 'deductible', category: 'Loan Interest & Bank Charges', note: 'Monthly interest on business equipment loan.' },
+  { id: 14, name: 'Weekly_Groceries.jpg', type: 'Receipt', date: '8 Jun 2026', amount: 'RM 310', status: 'non_deductible', category: 'Groceries & Household', note: 'Household groceries — personal.' },
+  { id: 15, name: 'Kids_Tuition_Fee.pdf', type: 'Receipt', date: '2 Jun 2026', amount: 'RM 450', status: 'non_deductible', category: 'Family & Education', note: 'Children tuition — personal expense.' },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -61,45 +106,99 @@ function buildBusinessSegments(docs) {
   docs.filter(d => d.status === 'deductible').forEach(d => {
     totals[d.category] = (totals[d.category] || 0) + parseAmt(d.amount);
   });
-  return Object.entries(totals).map(([label, value]) => ({ label, value, color: CATEGORY_COLORS[label] || '#94A3B8' }));
+  return Object.entries(totals)
+    .filter(([, value]) => value > 0)
+    .map(([label, value]) => ({ label, value, color: CATEGORY_COLORS[label] || '#94A3B8' }))
+    .sort((a, b) => b.value - a.value);
 }
 
 function buildPersonalSegments(docs) {
-  // Personal = non_deductible + mixed grouped simply
-  const personal = docs.filter(d => d.status === 'non_deductible').reduce((s, d) => s + parseAmt(d.amount), 0);
-  const review   = docs.filter(d => d.status === 'mixed').reduce((s, d) => s + parseAmt(d.amount), 0);
+  const totals = {};
+  docs.filter(d => d.status === 'non_deductible').forEach(d => {
+    totals[d.category] = (totals[d.category] || 0) + parseAmt(d.amount);
+  });
+  return Object.entries(totals)
+    .filter(([, value]) => value > 0)
+    .map(([label, value]) => ({ label, value, color: CATEGORY_COLORS[label] || '#94A3B8' }))
+    .sort((a, b) => b.value - a.value);
+}
+
+function buildTaxSummarySegments(formData) {
+  const { chargeableIncome, totalRelief, taxPayable } = formData;
   const segs = [];
-  if (personal > 0) segs.push({ label: 'Personal Expenses', value: personal, color: '#DC2626' });
-  if (review > 0)   segs.push({ label: 'Pending Review', value: review, color: '#F59E0B' });
+  if (chargeableIncome > 0) segs.push({ label: 'Chargeable Income', value: chargeableIncome, color: '#0F6E56' });
+  if (totalRelief > 0) segs.push({ label: 'Total Relief Claimed', value: totalRelief, color: '#10B981' });
+  if (taxPayable > 0) segs.push({ label: 'Est. Tax Payable', value: taxPayable, color: '#B45309' });
   return segs;
+}
+
+// ─── HTML tooltip (portal-free, viewport-clamped) ─────────────────────────────
+// Renders as a fixed-position div positioned from the mouse event's clientX/Y,
+// then clamps to the viewport so long labels are never cut off by a parent's
+// overflow:hidden — unlike an inline SVG <g>, this escapes the SVG's box entirely.
+function ChartTooltip({ show, x, y, color, label, value, percent }) {
+  if (!show) return null;
+  const TW = 180;
+  let left = x + 14;
+  let top = y - 12;
+  if (typeof window !== 'undefined') {
+    if (left + TW > window.innerWidth - 8) left = x - TW - 14;
+    if (top < 8) top = 8;
+    if (top + 70 > window.innerHeight - 8) top = window.innerHeight - 78;
+  }
+  return (
+    <div
+      className="fixed z-[9999] pointer-events-none rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 shadow-lg"
+      style={{ left, top, width: TW }}
+    >
+      <div className="flex items-center gap-1.5">
+        <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: color }} />
+        <span className="text-[10px] font-semibold text-[#0F172A] leading-tight break-words">{label}</span>
+      </div>
+      <p className="text-[10px] text-[#64748B] mt-1">{value}</p>
+      <p className="text-[10px] text-[#94A3B8]">{percent} of total</p>
+    </div>
+  );
 }
 
 // ─── Donut Pie Chart ──────────────────────────────────────────────────────────
 function DonutChart({ segments, title, subtitle, size = 140 }) {
   const [hovered, setHovered] = useState(null);
-  const [tip, setTip] = useState({ x: 0, y: 0 });
-  const svgRef = useRef(null);
+  const [mouse, setMouse] = useState({ x: 0, y: 0 });
 
   const total = segments.reduce((s, sg) => s + sg.value, 0);
   const CX = size / 2, CY = size / 2, R = size * 0.39, INNER = size * 0.22;
 
-  let cum = -Math.PI / 2;
-  const slices = segments.map(sg => {
-    const angle = total > 0 ? (sg.value / total) * 2 * Math.PI : 0;
-    const start = cum; cum += angle; const end = cum;
-    const large = angle > Math.PI ? 1 : 0;
-    const x1 = CX + R * Math.cos(start), y1 = CY + R * Math.sin(start);
-    const x2 = CX + R * Math.cos(end),   y2 = CY + R * Math.sin(end);
-    const ix1 = CX + INNER * Math.cos(start), iy1 = CY + INNER * Math.sin(start);
-    const ix2 = CX + INNER * Math.cos(end),   iy2 = CY + INNER * Math.sin(end);
-    const d = [`M ${x1} ${y1}`, `A ${R} ${R} 0 ${large} 1 ${x2} ${y2}`,
-      `L ${ix2} ${iy2}`, `A ${INNER} ${INNER} 0 ${large} 0 ${ix1} ${iy1}`, 'Z'].join(' ');
-    return { ...sg, d };
-  });
+  // Build slice paths. Special-case a single full-value segment (would otherwise
+  // produce a zero-length arc at exactly 360 degrees and render nothing).
+  let slices = [];
+  if (total > 0) {
+    const nonZero = segments.filter(s => s.value > 0);
+    if (nonZero.length === 1) {
+      const sg = nonZero[0];
+      // Two semicircle arcs = a full ring, since a single 360° arc command is degenerate.
+      const outerTop = `M ${CX} ${CY - R} A ${R} ${R} 0 1 1 ${CX} ${CY + R} A ${R} ${R} 0 1 1 ${CX} ${CY - R}`;
+      const innerTop = `M ${CX} ${CY - INNER} A ${INNER} ${INNER} 0 1 0 ${CX} ${CY + INNER} A ${INNER} ${INNER} 0 1 0 ${CX} ${CY - INNER}`;
+      slices = [{ ...sg, d: `${outerTop} Z ${innerTop} Z`, fullCircle: true }];
+    } else {
+      let cum = -Math.PI / 2;
+      slices = nonZero.map(sg => {
+        const angle = (sg.value / total) * 2 * Math.PI;
+        const start = cum; cum += angle; const end = cum;
+        const large = angle > Math.PI ? 1 : 0;
+        const x1 = CX + R * Math.cos(start), y1 = CY + R * Math.sin(start);
+        const x2 = CX + R * Math.cos(end),   y2 = CY + R * Math.sin(end);
+        const ix1 = CX + INNER * Math.cos(start), iy1 = CY + INNER * Math.sin(start);
+        const ix2 = CX + INNER * Math.cos(end),   iy2 = CY + INNER * Math.sin(end);
+        const d = [`M ${x1} ${y1}`, `A ${R} ${R} 0 ${large} 1 ${x2} ${y2}`,
+          `L ${ix2} ${iy2}`, `A ${INNER} ${INNER} 0 ${large} 0 ${ix1} ${iy1}`, 'Z'].join(' ');
+        return { ...sg, d };
+      });
+    }
+  }
 
   const handleMove = (e, sg) => {
-    const rect = svgRef.current.getBoundingClientRect();
-    setTip({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    setMouse({ x: e.clientX, y: e.clientY });
     setHovered(sg);
   };
 
@@ -117,15 +216,10 @@ function DonutChart({ segments, title, subtitle, size = 140 }) {
         </div>
       ) : (
         <div className="relative" style={{ width: size, height: size }}>
-          <svg ref={svgRef} width={size} height={size} viewBox={`0 0 ${size} ${size}`}
+          <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}
             onMouseLeave={() => setHovered(null)} style={{ overflow: 'visible' }}>
-            <defs>
-              <filter id={`shadow-${title}`} x="-20%" y="-20%" width="140%" height="140%">
-                <feDropShadow dx="0" dy="1" stdDeviation="3" floodOpacity="0.12" />
-              </filter>
-            </defs>
             {slices.map((sl) => (
-              <path key={sl.label} d={sl.d} fill={sl.color}
+              <path key={sl.label} d={sl.d} fill={sl.color} fillRule="evenodd"
                 opacity={hovered && hovered.label !== sl.label ? 0.4 : 1}
                 style={{ cursor: 'pointer', transition: 'opacity 0.15s, transform 0.1s', transformOrigin: `${CX}px ${CY}px`,
                   transform: hovered?.label === sl.label ? 'scale(1.04)' : 'scale(1)' }}
@@ -136,23 +230,15 @@ function DonutChart({ segments, title, subtitle, size = 140 }) {
             <text x={CX} y={CY + 8} textAnchor="middle" fontSize={size * 0.075} fill="#0F172A" fontWeight="700" fontFamily="sans-serif">
               {fmtRM(total)}
             </text>
-            {/* Tooltip */}
-            {hovered && (() => {
-              const tw = 148, th = 56;
-              let tx = tip.x + 12, ty = tip.y - 30;
-              if (tx + tw > size + 60) tx = tip.x - tw - 8;
-              if (ty < 0) ty = 4;
-              return (
-                <g transform={`translate(${tx},${ty})`}>
-                  <rect width={tw} height={th} rx={7} fill="white" stroke="#E2E8F0" strokeWidth={1} filter={`url(#shadow-${title})`} />
-                  <circle cx={10} cy={13} r={4} fill={hovered.color} />
-                  <text x={18} y={17} fontSize="8.5" fill="#0F172A" fontWeight="600" fontFamily="sans-serif">{hovered.label}</text>
-                  <text x={9} y={32} fontSize="8" fill="#64748B" fontFamily="sans-serif">{fmtRM(hovered.value)}</text>
-                  <text x={9} y={47} fontSize="8" fill="#94A3B8" fontFamily="sans-serif">{pct(hovered.value, total)} of total</text>
-                </g>
-              );
-            })()}
           </svg>
+          {/* HTML tooltip — escapes SVG bounds, viewport-clamped, never clipped */}
+          <ChartTooltip
+            show={!!hovered}
+            x={mouse.x} y={mouse.y}
+            color={hovered?.color} label={hovered?.label}
+            value={hovered ? fmtRM(hovered.value) : ''}
+            percent={hovered ? pct(hovered.value, total) : ''}
+          />
         </div>
       )}
       {/* Legend */}
@@ -171,13 +257,13 @@ function DonutChart({ segments, title, subtitle, size = 140 }) {
   );
 }
 
-// ─── Persistent dual-chart sidebar (shown on all tabs) ────────────────────────
-function ChartSidebar({ docs }) {
-  const bizSegs  = buildBusinessSegments(docs);
-  const persSegs = buildPersonalSegments(docs);
+// ─── Persistent triple-chart sidebar (shown on all tabs) ──────────────────────
+function ChartSidebar({ docs, formData }) {
+  const bizSegs   = buildBusinessSegments(docs);
+  const persSegs  = buildPersonalSegments(docs);
+  const taxSegs   = buildTaxSummarySegments(formData);
   const totalBiz  = bizSegs.reduce((s, sg) => s + sg.value, 0);
   const totalPers = persSegs.reduce((s, sg) => s + sg.value, 0);
-  const pending   = docs.filter(d => d.status === 'mixed').length;
 
   return (
     <div className="w-56 shrink-0 flex flex-col gap-3 overflow-y-auto">
@@ -197,36 +283,50 @@ function ChartSidebar({ docs }) {
           <span className="text-[10px] font-bold text-[#DC2626]">{fmtRM(totalPers)}</span>
         </div>
       </div>
-      {/* Quick stats */}
-      {pending > 0 && (
-        <div className="rounded-xl border border-[#FDE68A] bg-[#FFFBEB] p-3 text-center">
-          <span className="text-[10px] font-semibold text-[#B45309]">{pending} item{pending > 1 ? 's' : ''} need review</span>
-          <p className="text-[9px] text-[#92400E] mt-0.5">Classify in OCR Evidence tab</p>
+      {/* Tax summary chart card */}
+      <div className="rounded-xl border border-[#E2E8F0] bg-white p-4">
+        <DonutChart segments={taxSegs} title="Tax Summary" subtitle="From Generate Report" size={130} />
+        <div className="mt-3 border-t border-[#F1F5F9] pt-2.5 flex justify-between items-center">
+          <span className="text-[10px] text-[#64748B]">Est. payable</span>
+          <span className="text-[10px] font-bold text-[#B45309]">{fmtRM(formData.taxPayable)}</span>
         </div>
-      )}
+      </div>
     </div>
   );
 }
 
 // ─── Tab navigation ───────────────────────────────────────────────────────────
-function CukaiTabNav({ active, onChange, mixedCount }) {
+function CukaiTabNav({ active, onChange, mixedCount, onReviewClick }) {
   const tabs = [
     { id: 'upload', label: 'Upload Documents' },
     { id: 'ocr',    label: mixedCount > 0 ? `OCR Evidence (${mixedCount})` : 'OCR Evidence' },
     { id: 'generate', label: 'Generate Report' },
   ];
   return (
-    <nav className="flex items-center gap-2 border-b border-slate-100 pb-px shrink-0">
-      {tabs.map(t => (
-        <button key={t.id} onClick={() => onChange(t.id)}
-          className={`relative px-4 py-2.5 text-sm font-medium transition-all duration-150 select-none ${
-            active === t.id ? 'text-[#0D9488] font-semibold' : 'text-[#64748B] hover:text-[#0F172A]'
-          }`}>
-          {t.label}
-          {active === t.id && <div className="absolute bottom-0 left-3 right-3 h-0.5 bg-[#0F6E56]" />}
-        </button>
-      ))}
-    </nav>
+    <div className="flex items-center gap-5 shrink-0 border-b border-slate-100 pb-px">
+      {/* Tab nav — occupies same row as the main content column */}
+      <nav className="flex-1 min-w-0 flex items-center gap-2">
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => onChange(t.id)}
+            className={`relative px-4 py-2.5 text-sm font-medium transition-all duration-150 select-none ${
+              active === t.id ? 'text-[#0D9488] font-semibold' : 'text-[#64748B] hover:text-[#0F172A]'
+            }`}>
+            {t.label}
+            {active === t.id && <div className="absolute bottom-0 left-3 right-3 h-0.5 bg-[#0F6E56]" />}
+          </button>
+        ))}
+      </nav>
+      {/* Review button — aligned to the same column width as the chart sidebar */}
+      <div className="w-56 shrink-0 flex items-center justify-center pb-1.5">
+        {mixedCount > 0 && (
+          <button onClick={onReviewClick}
+            className="flex items-center gap-2 rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-3 py-1.5 text-xs font-semibold text-[#B45309] hover:bg-[#FEF3C7] transition-colors">
+            <span className="h-2 w-2 rounded-full bg-[#F59E0B] animate-pulse" />
+            {mixedCount} item{mixedCount > 1 ? 's' : ''} need review
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -246,21 +346,42 @@ function StatusBadge({ status }) {
 function UploadTab({ docs, onAdd, onRemove }) {
   const inputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [sortBy, setSortBy] = useState('date_desc');
 
   const handleFiles = useCallback((files) => {
     const statuses = ['deductible', 'deductible', 'mixed', 'non_deductible'];
-    const bizCats  = ['Service Income', 'Supplier Purchases', 'Marketing & Admin', 'Transport & Maintenance'];
     Array.from(files).forEach(file => {
-      const status   = statuses[Math.floor(Math.random() * statuses.length)];
-      const category = status === 'non_deductible' ? 'Personal Expense'
-        : status === 'mixed' ? 'Mixed / Review'
-        : bizCats[Math.floor(Math.random() * bizCats.length)];
+      const status = statuses[Math.floor(Math.random() * statuses.length)];
+      const category = status === 'non_deductible'
+        ? PERSONAL_CATEGORIES[Math.floor(Math.random() * PERSONAL_CATEGORIES.length)]
+        : status === 'mixed' ? REVIEW_CATEGORY
+        : BUSINESS_CATEGORIES[Math.floor(Math.random() * BUSINESS_CATEGORIES.length)];
       const amount = Math.floor(Math.random() * 5000 + 100);
       onAdd({ id: Date.now() + Math.random(), name: file.name, type: 'Uploaded',
         date: new Date().toLocaleDateString('en-MY', { day: '2-digit', month: 'short', year: 'numeric' }),
         amount: `RM ${amount.toLocaleString()}`, status, category, note: 'AI classification — please review.' });
     });
   }, [onAdd]);
+
+  // Available categories present in the current doc set, for the filter dropdown
+  const availableCategories = [...new Set(docs.map(d => d.category))].sort();
+
+  let filtered = docs.filter(d => {
+    if (statusFilter !== 'all' && d.status !== statusFilter) return false;
+    if (categoryFilter !== 'all' && d.category !== categoryFilter) return false;
+    return true;
+  });
+
+  filtered = [...filtered].sort((a, b) => {
+    if (sortBy === 'date_desc') return new Date(b.date) - new Date(a.date);
+    if (sortBy === 'date_asc') return new Date(a.date) - new Date(b.date);
+    if (sortBy === 'amount_desc') return parseAmt(b.amount) - parseAmt(a.amount);
+    if (sortBy === 'amount_asc') return parseAmt(a.amount) - parseAmt(b.amount);
+    if (sortBy === 'name_asc') return a.name.localeCompare(b.name);
+    return 0;
+  });
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
@@ -283,11 +404,44 @@ function UploadTab({ docs, onAdd, onRemove }) {
         <p className="mt-0.5 text-[10px] text-[#64748B]">PDF, JPG, PNG — receipts, invoices, bank statements, salary vouchers</p>
       </div>
 
+      {/* Filter & sort bar */}
+      <div className="shrink-0 flex items-center gap-2 flex-wrap">
+        {[
+          { id: 'all', label: 'All' },
+          { id: 'deductible', label: 'Company Expense' },
+          { id: 'non_deductible', label: 'Personal Expense' },
+          { id: 'mixed', label: 'Needs Review' },
+        ].map(f => (
+          <button key={f.id} onClick={() => setStatusFilter(f.id)}
+            className={`rounded-full px-3 py-1 text-[10px] font-medium transition-colors ${
+              statusFilter === f.id ? 'bg-[#0F6E56] text-white' : 'bg-[#F1F5F9] text-[#64748B] hover:bg-[#E2E8F0]'
+            }`}>{f.label}</button>
+        ))}
+
+        <div className="ml-auto flex items-center gap-2">
+          <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
+            className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
+            <option value="all">All categories</option>
+            {availableCategories.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+            className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
+            <option value="date_desc">Newest first</option>
+            <option value="date_asc">Oldest first</option>
+            <option value="amount_desc">Amount: high to low</option>
+            <option value="amount_asc">Amount: low to high</option>
+            <option value="name_asc">Name A–Z</option>
+          </select>
+        </div>
+      </div>
+
       {/* Document list */}
       <div className="flex-1 min-h-0 overflow-y-auto rounded-xl border border-[#E2E8F0] bg-white">
-        {docs.length === 0 ? (
+        {filtered.length === 0 ? (
           <div className="flex h-full items-center justify-center p-8 text-center">
-            <p className="text-xs text-[#94A3B8]">No documents yet. Drop files above to begin.</p>
+            <p className="text-xs text-[#94A3B8]">
+              {docs.length === 0 ? 'No documents yet. Drop files above to begin.' : 'No documents match the current filters.'}
+            </p>
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -299,14 +453,14 @@ function UploadTab({ docs, onAdd, onRemove }) {
               </tr>
             </thead>
             <tbody>
-              {docs.map((doc, i) => (
+              {filtered.map((doc, i) => (
                 <tr key={doc.id} className={`border-b border-[#F1F5F9] last:border-0 ${i % 2 === 0 ? '' : 'bg-[#FAFBFC]'}`}>
                   <td className="py-2.5 pl-4 pr-3">
                     <p className="font-medium text-[#0F172A] text-xs leading-tight truncate max-w-[150px]">{doc.name}</p>
                     <p className="text-[9px] text-[#94A3B8] mt-0.5">{doc.type}</p>
                   </td>
                   <td className="px-3 py-2.5 text-xs font-semibold text-[#0F172A] whitespace-nowrap">{doc.amount}</td>
-                  <td className="px-3 py-2.5 text-[10px] text-[#334155] max-w-[100px] truncate">{doc.category}</td>
+                  <td className="px-3 py-2.5 text-[10px] text-[#334155] max-w-[120px] truncate">{doc.category}</td>
                   <td className="px-3 py-2.5"><StatusBadge status={doc.status} /></td>
                   <td className="px-3 py-2.5 text-[10px] text-[#64748B] whitespace-nowrap">{doc.date}</td>
                   <td className="py-2.5 pr-4 text-right">
@@ -322,6 +476,7 @@ function UploadTab({ docs, onAdd, onRemove }) {
           </table>
         )}
       </div>
+      <p className="shrink-0 text-[10px] text-[#94A3B8]">{filtered.length} of {docs.length} documents shown</p>
     </div>
   );
 }
@@ -377,8 +532,13 @@ function OcrTab({ docs, onUpdateStatus }) {
   const mixed    = docs.filter(d => d.status === 'mixed');
   const filtered = filter === 'all' ? docs : docs.filter(d => d.status === filter);
 
+  // Re-classification picks a sensible default category for the new status
   const handleConfirm = (status) => {
-    onUpdateStatus(reclassDoc.id, status);
+    onUpdateStatus(reclassDoc.id, status, {
+      category: status === 'deductible' ? BUSINESS_CATEGORIES[0]
+        : status === 'non_deductible' ? PERSONAL_CATEGORIES[0]
+        : REVIEW_CATEGORY,
+    });
     setReclassDoc(null);
   };
 
@@ -441,11 +601,11 @@ function OcrTab({ docs, onUpdateStatus }) {
                 <div className="flex shrink-0 flex-col gap-1.5 items-end">
                   {doc.status === 'mixed' ? (
                     <>
-                      <button onClick={() => onUpdateStatus(doc.id, 'deductible')}
+                      <button onClick={() => onUpdateStatus(doc.id, 'deductible', { category: BUSINESS_CATEGORIES[0] })}
                         className="rounded-lg border border-[#0F6E56] bg-white px-3 py-1 text-[10px] font-semibold text-[#0F6E56] hover:bg-[#ECFDF5] transition-colors whitespace-nowrap">
                         ✓ Company
                       </button>
-                      <button onClick={() => onUpdateStatus(doc.id, 'non_deductible')}
+                      <button onClick={() => onUpdateStatus(doc.id, 'non_deductible', { category: PERSONAL_CATEGORIES[0] })}
                         className="rounded-lg border border-[#DC2626] bg-white px-3 py-1 text-[10px] font-semibold text-[#DC2626] hover:bg-[#FEF2F2] transition-colors whitespace-nowrap">
                         ✗ Personal
                       </button>
@@ -479,13 +639,10 @@ function PdfPreview({ formId, formData, sc, onClose }) {
 
   return (
     <div className="fixed inset-0 z-50 flex" onClick={handleClose}>
-      {/* Backdrop */}
       <div className={`flex-1 bg-black/40 transition-opacity duration-300 ${visible ? 'opacity-100' : 'opacity-0'}`} />
-      {/* Slide-over panel */}
       <div
         className={`relative flex h-full w-[680px] max-w-full flex-col bg-white shadow-2xl transition-transform duration-300 ease-out ${visible ? 'translate-x-0' : 'translate-x-full'}`}
         onClick={e => e.stopPropagation()}>
-        {/* Panel header */}
         <div className="flex items-center justify-between border-b border-[#E2E8F0] px-5 py-3 bg-[#F8FAFC] shrink-0">
           <div>
             <p className="text-sm font-bold text-[#0F172A]">
@@ -494,7 +651,6 @@ function PdfPreview({ formId, formData, sc, onClose }) {
             <p className="text-[10px] text-[#64748B] mt-0.5">This is a pre-filled draft for your reference. Verify all values before submitting to LHDN.</p>
           </div>
           <div className="flex items-center gap-2">
-            {/* Zoom controls */}
             <div className="flex items-center gap-1 rounded-lg border border-[#E2E8F0] bg-white px-2 py-1">
               <button onClick={() => setZoom(z => Math.max(60, z - 10))}
                 className="text-[#64748B] hover:text-[#0F172A] px-1 text-sm font-bold">−</button>
@@ -517,12 +673,9 @@ function PdfPreview({ formId, formData, sc, onClose }) {
           </div>
         </div>
 
-        {/* Scrollable preview area */}
         <div className="flex-1 overflow-y-auto bg-[#E8EBEF] p-6">
           <div style={{ transform: `scale(${zoom / 100})`, transformOrigin: 'top center', transition: 'transform 0.2s' }}>
-            {/* A4-ish mock form sheet */}
             <div className="bg-white mx-auto shadow-xl rounded-lg overflow-hidden" style={{ width: 580 }}>
-              {/* LHDN Header */}
               <div className="bg-[#0F6E56] px-6 py-4 flex items-center gap-4">
                 <div className="h-10 w-10 rounded-full bg-white/20 flex items-center justify-center text-white font-black text-lg">L</div>
                 <div>
@@ -541,7 +694,6 @@ function PdfPreview({ formId, formData, sc, onClose }) {
               <div className="px-6 py-5 space-y-5 text-[11px]">
                 {formId === 'B' ? (
                   <>
-                    {/* Basic Particulars */}
                     <PreviewSection title="BASIC PARTICULARS">
                       <PreviewField label="1  Name" value="Aisyah binti Ahmad" />
                       <PreviewField label="2  Tax Identification No. (TIN)" value="SG 12345678901" />
@@ -549,14 +701,12 @@ function PdfPreview({ formId, formData, sc, onClose }) {
                       <PreviewField label="4  Correspondence address" value="No. 12, Jalan Damai 3, 50450 Kuala Lumpur" />
                     </PreviewSection>
 
-                    {/* Part A */}
                     <PreviewSection title="PART A — PARTICULARS OF INDIVIDUAL">
                       <PreviewField label="A1  Citizen" value="MYS" /><PreviewField label="A2  Gender" value="Female" />
                       <PreviewField label="A3  Date of birth" value="01/01/1990" /><PreviewField label="A4  Status" value="Married" />
                       <PreviewField label="A6  Record-keeping" value="Yes" /><PreviewField label="A7  Type of assessment" value="3 – Separate" />
                     </PreviewSection>
 
-                    {/* Part B */}
                     <PreviewSection title="PART B — COMPUTATION OF INCOME TAX">
                       <PreviewField label="B1   Statutory income from businesses in Malaysia" value={fmtRM(deductibleTotal)} highlight />
                       <PreviewField label="B2   Statutory income from partnerships in Malaysia" value="RM 235,000" highlight />
@@ -575,7 +725,6 @@ function PdfPreview({ formId, formData, sc, onClose }) {
                       <PreviewField label="B34  BALANCE TAX PAYABLE" value={fmtRM(taxPayable)} highlight bold />
                     </PreviewSection>
 
-                    {/* Part H */}
                     <PreviewSection title="PART H — RELIEF">
                       <PreviewField label="H1   Individual and dependent relatives" value="RM 9,000" />
                       <PreviewField label="H2   Expenses for parents" value="—" />
@@ -592,7 +741,6 @@ function PdfPreview({ formId, formData, sc, onClose }) {
                       <PreviewField label="H22  TOTAL RELIEF" value="RM 18,000" bold highlight />
                     </PreviewSection>
 
-                    {/* Part N — Financial Particulars */}
                     <PreviewSection title="PART N — FINANCIAL PARTICULARS (MAIN BUSINESS)">
                       <PreviewField label="N1   Name of business" value="Meridian Print Studio (Sole Prop)" />
                       <PreviewField label="N2   Business code (MSIC)" value="1811" />
@@ -619,7 +767,6 @@ function PdfPreview({ formId, formData, sc, onClose }) {
                   </>
                 ) : (
                   <>
-                    {/* Form P */}
                     <PreviewSection title="PARTNERSHIP DETAILS">
                       <PreviewField label="1   Name of partnership" value="Meridian Print Studio" />
                       <PreviewField label="2   Income tax no." value="D 1234567890" />
@@ -698,7 +845,6 @@ function PdfPreview({ formId, formData, sc, onClose }) {
                   </>
                 )}
 
-                {/* Footer */}
                 <div className="border-t border-[#E2E8F0] pt-4 text-[9px] text-[#94A3B8] text-center">
                   <p>This is a cukai.ai pre-filled draft — for reference only. File via mytax.hasil.gov.my · Due: 30 Jun 2025</p>
                   <p className="mt-0.5">Contact Hasil Care Line: 03-8911 1000 (Local) / 603-8911 1000 (Overseas)</p>
@@ -737,10 +883,7 @@ function PreviewField({ label, value, highlight, bold }) {
 }
 
 // ─── Generate Report Tab ──────────────────────────────────────────────────────
-function GenerateTab({ docs, scenario }) {
-  const [selectedForm, setSelectedForm] = useState(null);
-  const [activeScenario, setActiveScenario] = useState(scenario);
-  const [showPreview, setShowPreview] = useState(false);
+function GenerateTab({ docs, scenario, activeScenario, setActiveScenario, selectedForm, setSelectedForm, showPreview, setShowPreview }) {
   const sc = USER_SCENARIOS[activeScenario];
 
   const deductibleTotal    = docs.filter(d => d.status === 'deductible').reduce((s, d) => s + parseAmt(d.amount), 0);
@@ -750,7 +893,6 @@ function GenerateTab({ docs, scenario }) {
   const totalIncome        = deductibleTotal + partnerShare;
   const chargeableIncome   = Math.max(0, totalIncome - 18000);
 
-  // Simple progressive tax calc (Malaysia 2024 rates)
   const calcTax = (ci) => {
     const bands = [
       [5000, 0], [15000, 0.01], [15000, 0.03], [15000, 0.06],
@@ -882,7 +1024,6 @@ function GenerateTab({ docs, scenario }) {
                 </div>
               </div>
 
-              {/* Compact inline summary of key values */}
               <div className="px-5 py-4 space-y-4">
                 {selectedForm === 'B' ? (
                   <>
@@ -985,43 +1126,66 @@ function CukaiAccount() {
   const [docs, setDocs] = useState(INITIAL_DOCS);
   const [userScenario]  = useState('B');
 
+  // Generate Report tab state lifted to root so the Tax Summary chart in the
+  // sidebar can reflect it on every tab, not just while Generate Report is active.
+  const [activeScenario, setActiveScenario] = useState('B');
+  const [selectedForm, setSelectedForm] = useState(null);
+  const [showPreview, setShowPreview] = useState(false);
+
   const addDoc = useCallback((doc) => setDocs(prev => [doc, ...prev]), []);
   const removeDoc = useCallback((id) => setDocs(prev => prev.filter(d => d.id !== id)), []);
-  const updateDocStatus = useCallback((id, status) => {
+  const updateDocStatus = useCallback((id, status, extra = {}) => {
     setDocs(prev => prev.map(d =>
       d.id !== id ? d : {
         ...d, status,
-        category: status === 'non_deductible' ? 'Personal Expense'
-          : status === 'mixed' ? 'Mixed / Review'
-          : (d.category === 'Personal Expense' || d.category === 'Mixed / Review') ? 'Supplier Purchases'
-          : d.category,
+        category: extra.category !== undefined ? extra.category
+          : status === 'non_deductible' ? PERSONAL_CATEGORIES[0]
+          : status === 'mixed' ? REVIEW_CATEGORY
+          : BUSINESS_CATEGORIES[0],
       }
     ));
   }, []);
 
   const mixedCount = docs.filter(d => d.status === 'mixed').length;
 
+  // Compute formData once at root so both the GenerateTab and the persistent
+  // Tax Summary chart use the same numbers.
+  const sc = USER_SCENARIOS[activeScenario];
+  const deductibleTotal = docs.filter(d => d.status === 'deductible').reduce((s, d) => s + parseAmt(d.amount), 0);
+  const partnerShare    = sc.firm ? 235000 : 0;
+  const totalIncome      = deductibleTotal + partnerShare;
+  const chargeableIncome = Math.max(0, totalIncome - 18000);
+  const calcTax = (ci) => {
+    const bands = [
+      [5000, 0], [15000, 0.01], [15000, 0.03], [15000, 0.06],
+      [20000, 0.11], [30000, 0.19], [150000, 0.25], [Infinity, 0.26],
+    ];
+    let tax = 0, rem = ci;
+    for (const [band, rate] of bands) {
+      if (rem <= 0) break;
+      const taxable = Math.min(rem, band);
+      tax += taxable * rate;
+      rem -= taxable;
+    }
+    return Math.round(tax);
+  };
+  const taxCharged     = calcTax(chargeableIncome);
+  const lessInstalment = Math.round(taxCharged * 0.7);
+  const taxPayable     = Math.max(0, taxCharged - 400 - lessInstalment);
+  const formData = { chargeableIncome, totalRelief: 18000, taxPayable };
+
   return (
     <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body flex flex-col">
       <div className="mx-auto w-full max-w-7xl px-6 py-4 flex flex-col flex-1 min-h-0 gap-3">
 
         {/* Header */}
-        <div className="shrink-0 flex items-start justify-between gap-4">
-          <div>
-            <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Tax Documents</h1>
-            <p className="text-xs text-[#64748B] mt-1">Upload receipts, classify expenses, and generate your tax return draft.</p>
-          </div>
-          {mixedCount > 0 && (
-            <button onClick={() => setTab('ocr')}
-              className="shrink-0 flex items-center gap-2 rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-3 py-2 text-xs font-semibold text-[#B45309] hover:bg-[#FEF3C7] transition-colors">
-              <span className="h-2 w-2 rounded-full bg-[#F59E0B] animate-pulse" />
-              {mixedCount} item{mixedCount > 1 ? 's' : ''} need review
-            </button>
-          )}
+        <div className="shrink-0">
+          <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Tax Documents</h1>
+          <p className="text-xs text-[#64748B] mt-1">Upload receipts, classify expenses, and generate your tax return draft.</p>
         </div>
 
-        {/* Tab nav */}
-        <CukaiTabNav active={tab} onChange={setTab} mixedCount={mixedCount} />
+        {/* Tab nav + review button row, aligned to main content / sidebar columns */}
+        <CukaiTabNav active={tab} onChange={setTab} mixedCount={mixedCount} onReviewClick={() => setTab('ocr')} />
 
         {/* Body: tab content + persistent chart sidebar */}
         <div className="flex flex-1 min-h-0 gap-5">
@@ -1029,10 +1193,17 @@ function CukaiAccount() {
           <div className="flex-1 min-w-0 min-h-0">
             {tab === 'upload'   && <UploadTab docs={docs} onAdd={addDoc} onRemove={removeDoc} />}
             {tab === 'ocr'      && <OcrTab docs={docs} onUpdateStatus={updateDocStatus} />}
-            {tab === 'generate' && <GenerateTab docs={docs} scenario={userScenario} />}
+            {tab === 'generate' && (
+              <GenerateTab
+                docs={docs} scenario={userScenario}
+                activeScenario={activeScenario} setActiveScenario={setActiveScenario}
+                selectedForm={selectedForm} setSelectedForm={setSelectedForm}
+                showPreview={showPreview} setShowPreview={setShowPreview}
+              />
+            )}
           </div>
-          {/* Persistent dual-chart sidebar */}
-          <ChartSidebar docs={docs} />
+          {/* Persistent triple-chart sidebar */}
+          <ChartSidebar docs={docs} formData={formData} />
         </div>
 
       </div>
