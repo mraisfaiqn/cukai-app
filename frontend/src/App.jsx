@@ -5,6 +5,7 @@ import Home from './pages/Landing/Home'
 import Login from './pages/Landing/Login'
 import GetStarted from './pages/Landing/GetStarted'
 import Overview from './pages/Dashboard/Overview'
+import PartnershipOverview from './pages/Dashboard/PartnershipOverview'
 import OpportunityDetail from './pages/Dashboard/OpportunityDetail'
 import CukaiAccount from './pages/CukaiAccount'
 import CukaiBot from './pages/CukaiBot'
@@ -55,6 +56,7 @@ function App() {
         {/* PROTECTED ROUTES (Accessible only when logged in) */}
         <Route element={<ProtectedLayout isAuthenticated={isAuthenticated} onLogout={() => setIsAuthenticated(false)}/>}>
           <Route path="/overview" element={<Overview />} />
+          <Route path="/firm" element={<PartnershipOverview />} />
           <Route path="/account" element={<CukaiAccount />} />
           <Route path="/cukaibot" element={<CukaiBot />} />
           <Route path="/insightsinbox" element={<InsightsInbox />} />
