@@ -6,6 +6,7 @@ import Login from './pages/Landing/Login'
 import GetStarted from './pages/Landing/GetStarted'
 import Overview from './pages/Dashboard/Overview'
 import PartnershipOverview from './pages/Dashboard/PartnershipOverview'
+import ReliefCalculator from './pages/Dashboard/ReliefCalculator'
 import OpportunityDetail from './pages/Dashboard/OpportunityDetail'
 import CukaiAccount from './pages/CukaiAccount'
 import CukaiBot from './pages/CukaiBot'
@@ -13,7 +14,6 @@ import InsightsInbox from './pages/InsightsInbox'
 import Documentation from './pages/Documentation'
 import ManageAccount from './pages/Account/ManageAccount'
 import TermsConditions from './pages/Account/TermsConditions'
-import * as API from './services/api'
 
 // 1. A wrapper that protects internal pages
 function ProtectedLayout({ isAuthenticated, onLogout }) {
@@ -57,6 +57,7 @@ function App() {
         <Route element={<ProtectedLayout isAuthenticated={isAuthenticated} onLogout={() => setIsAuthenticated(false)}/>}>
           <Route path="/overview" element={<Overview />} />
           <Route path="/firm" element={<PartnershipOverview />} />
+          <Route path="/relief-calculator" element={<ReliefCalculator />} />
           <Route path="/account" element={<CukaiAccount />} />
           <Route path="/cukaibot" element={<CukaiBot />} />
           <Route path="/insightsinbox" element={<InsightsInbox />} />

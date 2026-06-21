@@ -207,3 +207,23 @@ export const getFormBProfile = async (year, userId = null) => {
   const { data } = await api.get(`/api/profile/form-b/${year}`, { params });
   return data;
 };
+
+// ── Tax relief calculator ─────────────────────────────────────────────────────
+
+/**
+ * GET the active relief catalogue (codes, labels, caps) for a Year of Assessment.
+ * Used to build the calculator form dynamically.
+ */
+export const getReliefs = async (ya = 2025) => {
+  const { data } = await api.get('/api/v1/tax/reliefs', { params: { ya } });
+  return data;
+};
+
+/**
+ * POST income + relief claims, get back the full calculation breakdown.
+ *   payload: { total_income, reliefs: { code: amount, ... }, zakat, year_of_assessment }
+ */
+export const calculateTax = async (payload) => {
+  const { data } = await api.post('/api/v1/tax/calculate', payload);
+  return data;
+};
