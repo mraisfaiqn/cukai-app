@@ -1,9 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import UserNavigation from '../../components/UserNavigation';
-import ProfileTab from './ProfileTab';
+import ManageProfile from './ManageProfile';
 import ManagePermission from './ManagePermissions';
-import LanguageDisplayTab from './LanguageDisplay';
-import PersonalDetailsTab from './PersonalDetailsTab';
 
 function ManageAccount() {
   return (
@@ -26,11 +24,9 @@ function ManageAccount() {
         {/* Tab content — no scroll, fills remaining height */}
         <div className="flex-1 min-h-0">
           <Routes>
-            <Route index element={<Navigate to="personal" replace />} />
-            <Route path="personal" element={<PersonalDetailsTab />} />
-            <Route path="profile" element={<ProfileTab />} />
+            <Route index element={<Navigate to="profile" replace />} />
+            <Route path="profile" element={<ManageProfile />} />
             <Route path="permissions" element={<ManagePermission />} />
-            <Route path="display" element={<LanguageDisplayTab />} />
           </Routes>
         </div>
 

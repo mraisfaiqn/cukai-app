@@ -2,10 +2,8 @@ import { NavLink } from "react-router-dom";
 
 function UserNavigation() {
   const tabs = [
-    { name: "Personal Profile", path: "/manageaccount/personal" },
-    { name: "Profile & Entities", path: "/manageaccount/profile" },
+    { name: "Manage Profile", path: "/manageaccount/profile" },
     { name: "Manage Permissions", path: "/manageaccount/permissions" },
-    { name: "Language & Display", path: "/manageaccount/display" },
   ];
 
   return (
