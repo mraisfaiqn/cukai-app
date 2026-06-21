@@ -6,3 +6,5 @@ uvicorn
 pydantic
 cloud-sql-python-connector
 pg8000
+pytest
+httpx
