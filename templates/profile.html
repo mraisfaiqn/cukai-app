@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cukai.ai — Profile</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <!-- White top navigation bar -->
+  <div class="nav">
+    <span class="brand-name"><span class="nm-dark">cukai</span><span class="nm-light">.ai</span></span>
+    <div class="nav-right">
+      <div class="nav-avatar">{{ user.full_name[0] }}</div>
+      <a class="signout" href="/">Sign out</a>
+    </div>
+  </div>
+
+  <div class="page">
+
+    <!-- Heading + summary line -->
+    <div class="header">
+      <div class="header-left">
+        <h1>Welcome back, {{ user.full_name.split()[0] }}</h1>
+        <div class="subline">
+          {{ company.company_name }}
+          ·
+          {% if user.entity_type == "partnership" %}Partnership{% else %}Sole Proprietor{% endif %}
+          ·
+          <span class="pill">YA 2025</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row of stat cards -->
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-label">Annual income</div>
+        <div class="stat-num">RM {{ "{:,}".format(company.anl_income) }}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Monthly income</div>
+        <div class="stat-num">RM {{ "{:,}".format(company.mth_income) }}</div>
+      </div>
+      <div class="stat highlight">
+        <div class="stat-label">Entity type</div>
+        <div class="stat-num small">
+          {% if user.entity_type == "partnership" %}Partnership{% else %}Sole Proprietor{% endif %}
+        </div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">SSM number</div>
+        <div class="stat-num small">{{ company.ssm }}</div>
+      </div>
+    </div>
+
+    <!-- ===== Personal info card ===== -->
+    <div class="card">
+      <div class="card-head">
+        <div class="avatar">{{ user.full_name[0] }}</div>
+        <div>
+          <span class="badge">
+            {% if user.entity_type == "partnership" %}Partnership{% else %}Sole Proprietor{% endif %}
+          </span>
+          <h2>{{ user.full_name }}</h2>
+        </div>
+      </div>
+
+      <h3 class="section-title">Personal information</h3>
+      <div class="grid">
+        <div><div class="label">ID</div><div class="value">{{ user.user_code }}</div></div>
+        <div><div class="label">Email</div><div class="value">{{ user.email }}</div></div>
+        <div><div class="label">Phone</div><div class="value">{{ user.phone }}</div></div>
+        <div><div class="label">NRIC</div><div class="value">{{ user.nric }}</div></div>
+        <div><div class="label">Marital status</div><div class="value">{{ user.marital }}</div></div>
+        <div><div class="label">Number of children</div><div class="value">{{ user.children }}</div></div>
+        <div><div class="label">Disability</div><div class="value">{{ "Yes" if user.disability else "No" }}</div></div>
+        <div><div class="label">Dependant</div><div class="value">{{ "Yes — parental support" if user.elder_support else "No" }}</div></div>
+      </div>
+    </div>
+
+    <!-- ===== Company info card ===== -->
+    <div class="card">
+      <h2>{{ company.company_name }}</h2>
+      <h3 class="section-title">Company information</h3>
+      <div class="grid">
+        <div><div class="label">SSM number</div><div class="value">{{ company.ssm }}</div></div>
+        <div><div class="label">Company ID</div><div class="value">{{ company.company_code }}</div></div>
+
+        {% if user.entity_type == "partnership" %}
+          <div><div class="label">Number of partners</div><div class="value">{{ company.num_partners }}</div></div>
+          <div>
+            <div class="label">Partner details</div>
+            <div class="value">
+              {% for p in company.partners.split(',') %}{{ loop.index }}. {{ p }}<br>{% endfor %}
+            </div>
+          </div>
+        {% else %}
+          <div><div class="label">Owner</div><div class="value">{{ company.owners }}</div></div>
+          <div><div class="label">Number of owners</div><div class="value">{{ company.num_partners }}</div></div>
+        {% endif %}
+
+        <div><div class="label">Monthly income</div><div class="value">RM {{ "{:,}".format(company.mth_income) }}</div></div>
+        <div><div class="label">Annual income</div><div class="value">RM {{ "{:,}".format(company.anl_income) }}</div></div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

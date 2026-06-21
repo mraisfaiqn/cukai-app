@@ -1,0 +1,12 @@
+# Virtual environment folders (machine-specific, never push these)
+.venv/
+venv/
+myvenv/
+env/
+
+# Python cache (auto-generated junk)
+__pycache__/
+*.pyc
+
+# Your real secrets file (contains the database password) - never push this
+.env
