@@ -2,6 +2,12 @@
 // ↔ calculation engine pipe works end to end. It loads the relief catalogue from
 // GET /api/v1/tax/reliefs to build the form dynamically, then POSTs the entered
 // values to /api/v1/tax/calculate and renders the breakdown the engine returns.
+//
+// Income side mirrors Form B Part B: one statutory-income figure per business
+// (supports multiple businesses), plus employment/rent/other income, current-year
+// business losses, and approved donations — the engine derives aggregate income,
+// applies losses then the 10%-of-aggregate-income donation cap, and only then
+// moves on to personal reliefs → chargeable income → tax payable.
 import { useEffect, useState } from 'react';
 import { getReliefs, calculateTax } from '../../services/api';
 
@@ -11,7 +17,15 @@ const rm = (n) =>
 
 function ReliefCalculator() {
   const [catalogue, setCatalogue] = useState([]); // relief defs from the backend
-  const [income, setIncome] = useState('120000');
+
+  // Income sources — Form B Part B style.
+  const [businesses, setBusinesses] = useState(['120000']); // statutory income per business
+  const [employment, setEmployment] = useState('0');
+  const [rent, setRent] = useState('0');
+  const [otherIncome, setOtherIncome] = useState('0');
+  const [businessLosses, setBusinessLosses] = useState('0');
+  const [donations, setDonations] = useState('0');
+
   const [zakat, setZakat] = useState('0');
   const [claims, setClaims] = useState({});        // { code: amountString }
   const [result, setResult] = useState(null);
@@ -32,6 +46,10 @@ function ReliefCalculator() {
 
   const setClaim = (code, value) => setClaims((c) => ({ ...c, [code]: value }));
 
+  const addBusiness = () => setBusinesses((b) => [...b, '']);
+  const removeBusiness = (i) => setBusinesses((b) => b.filter((_, idx) => idx !== i));
+  const setBusiness = (i, value) => setBusinesses((b) => b.map((v, idx) => (idx === i ? value : v)));
+
   const handleCalculate = async () => {
     setLoading(true);
     setError(null);
@@ -43,7 +61,12 @@ function ReliefCalculator() {
         if (!r.auto && claims[r.code]) reliefs[r.code] = Number(claims[r.code]) || 0;
       });
       const data = await calculateTax({
-        total_income: Number(income) || 0,
+        businesses: businesses.map((v) => Number(v) || 0),
+        employment: Number(employment) || 0,
+        rent: Number(rent) || 0,
+        other_income: Number(otherIncome) || 0,
+        business_losses: Number(businessLosses) || 0,
+        donations: Number(donations) || 0,
         reliefs,
         zakat: Number(zakat) || 0,
         year_of_assessment: 2025,
@@ -66,7 +89,7 @@ function ReliefCalculator() {
             Tax Relief Calculator
           </h1>
           <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
-            <span>Enter your income and reliefs to see chargeable income, tax, and savings.</span>
+            <span>Enter your income sources and reliefs to see chargeable income, tax, and savings.</span>
             <span className="rounded-full bg-primary-tint px-2.5 py-0.5 text-xs font-semibold text-primary">YA 2025</span>
           </div>
         </header>
@@ -82,15 +105,88 @@ function ReliefCalculator() {
           {/* ── Input form ───────────────────────────────────────────── */}
           <section className="space-y-6">
             <div className="rounded-xl border border-border bg-surface p-6">
-              <h2 className="font-headings text-lg font-semibold text-primary">Your income</h2>
-              <label className="mt-4 block">
-                <span className="text-sm font-medium text-body-text">Total income (RM)</span>
-                <input
-                  type="number" min="0" value={income}
-                  onChange={(e) => setIncome(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-headings outline-none focus:border-primary focus:ring-2 focus:ring-primary/30"
-                />
-              </label>
+              <h2 className="font-headings text-lg font-semibold text-primary">Business income</h2>
+              <p className="mt-1 text-sm text-muted">
+                Statutory income per business (gross income − allowable expenses − capital allowances).
+                Add one row per business — matches Form B item B1a.
+              </p>
+
+              <div className="mt-4 space-y-2">
+                {businesses.map((v, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <span className="w-20 shrink-0 text-sm text-muted">Business {i + 1}</span>
+                    <input
+                      type="number" min="0" value={v}
+                      placeholder="0"
+                      onChange={(e) => setBusiness(i, e.target.value)}
+                      className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-headings outline-none focus:border-primary focus:ring-2 focus:ring-primary/30"
+                    />
+                    {businesses.length > 1 && (
+                      <button
+                        type="button" onClick={() => removeBusiness(i)}
+                        className="shrink-0 rounded-lg border border-border px-2 py-2 text-xs text-muted hover:border-critical hover:text-critical"
+                        aria-label={`Remove business ${i + 1}`}
+                      >✕</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <button
+                type="button" onClick={addBusiness}
+                className="mt-3 text-sm font-medium text-primary hover:text-primary-hover"
+              >+ Add another business</button>
+
+              <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <label className="block">
+                  <span className="text-sm font-medium text-body-text">Employment income (RM)</span>
+                  <input
+                    type="number" min="0" value={employment}
+                    onChange={(e) => setEmployment(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-headings outline-none focus:border-primary focus:ring-2 focus:ring-primary/30"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm font-medium text-body-text">Rental income (RM)</span>
+                  <input
+                    type="number" min="0" value={rent}
+                    onChange={(e) => setRent(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-headings outline-none focus:border-primary focus:ring-2 focus:ring-primary/30"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm font-medium text-body-text">Other income (RM)</span>
+                  <input
+                    type="number" min="0" value={otherIncome}
+                    onChange={(e) => setOtherIncome(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-headings outline-none focus:border-primary focus:ring-2 focus:ring-primary/30"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-border bg-surface p-6">
+              <h2 className="font-headings text-lg font-semibold text-primary">Losses &amp; donations</h2>
+              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <label className="block">
+                  <span className="text-sm font-medium text-body-text">Current-year business losses (RM)</span>
+                  <input
+                    type="number" min="0" value={businessLosses}
+                    onChange={(e) => setBusinessLosses(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-headings outline-none focus:border-primary focus:ring-2 focus:ring-primary/30"
+                  />
+                  <span className="mt-1 block text-xs text-muted">Offsets aggregate income, capped at the amount available.</span>
+                </label>
+                <label className="block">
+                  <span className="text-sm font-medium text-body-text">Approved donations (RM)</span>
+                  <input
+                    type="number" min="0" value={donations}
+                    onChange={(e) => setDonations(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-headings outline-none focus:border-primary focus:ring-2 focus:ring-primary/30"
+                  />
+                  <span className="mt-1 block text-xs text-muted">Capped at 10% of aggregate income (Form B item G2).</span>
+                </label>
+              </div>
               <label className="mt-4 block">
                 <span className="text-sm font-medium text-body-text">Zakat paid (RM)</span>
                 <input
@@ -152,6 +248,41 @@ function ReliefCalculator() {
                   <p className="mt-1 text-sm text-primary/80">
                     vs {rm(result.tax_without_reliefs)} tax with no personal reliefs.
                   </p>
+                </div>
+
+                {/* Income waterfall — Form B Part B steps before reliefs */}
+                <div className="rounded-xl border border-border bg-surface p-6">
+                  <h2 className="font-headings text-lg font-semibold text-primary">Income waterfall</h2>
+                  <div className="mt-4 divide-y divide-border">
+                    {result.income_breakdown.businesses.map((amt, i) => (
+                      <Row key={i} label={`Business ${i + 1} statutory income`} value={rm(amt)} />
+                    ))}
+                    {result.income_breakdown.employment > 0 && (
+                      <Row label="Employment income" value={rm(result.income_breakdown.employment)} />
+                    )}
+                    {result.income_breakdown.rent > 0 && (
+                      <Row label="Rental income" value={rm(result.income_breakdown.rent)} />
+                    )}
+                    {result.income_breakdown.other_income > 0 && (
+                      <Row label="Other income" value={rm(result.income_breakdown.other_income)} />
+                    )}
+                    <Row label="Aggregate income" value={rm(result.income_breakdown.aggregate_income)} bold />
+                    {result.business_losses.applied > 0 && (
+                      <Row
+                        label="Less: business losses"
+                        value={'− ' + rm(result.business_losses.applied)}
+                        note={result.business_losses.unabsorbed > 0 ? `${rm(result.business_losses.unabsorbed)} unabsorbed, carries forward` : null}
+                      />
+                    )}
+                    {result.donations.applied > 0 && (
+                      <Row
+                        label="Less: approved donations"
+                        value={'− ' + rm(result.donations.applied)}
+                        note={result.donations.capped ? `capped at 10% of aggregate income (${rm(result.donations.cap)})` : null}
+                      />
+                    )}
+                    <Row label="Total income" value={rm(result.total_income)} bold />
+                  </div>
                 </div>
 
                 {/* Waterfall */}
