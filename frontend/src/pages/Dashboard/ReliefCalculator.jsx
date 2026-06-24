@@ -10,6 +10,7 @@
 // moves on to personal reliefs → chargeable income → tax payable.
 import { useEffect, useState } from 'react';
 import { getReliefs, calculateTax } from '../../services/api';
+import { dummyTaxInput, sumAmounts } from '../../data/taxInputData';
 
 // Format a number as Malaysian Ringgit, e.g. 96500 -> "RM 96,500".
 const rm = (n) =>
@@ -23,28 +24,42 @@ function ReliefCalculator() {
   // allowances (Form B's own statutory-income formula), not as a single
   // pre-netted figure — so the calculator derives statutory income itself:
   // statutory income = gross income − allowable expenses − capital allowances.
-  const [businesses, setBusinesses] = useState([
-    { grossIncome: '180000', allowableExpenses: '50000', capitalAllowances: '10000' },
-  ]);
-  const [employment, setEmployment] = useState('0');
-  const [rent, setRent] = useState('0');
-  const [otherIncome, setOtherIncome] = useState('0');
-  const [businessLosses, setBusinessLosses] = useState('0');
-  const [donations, setDonations] = useState('0');
+  //
+  // All initial values below come from `dummyTaxInput` (src/data/taxInputData.js)
+  // — the stand-in for the not-yet-built DB. When the DB lands, swap that
+  // import for a resolved API value with the same shape; nothing here changes.
+  const [businesses, setBusinesses] = useState(
+    dummyTaxInput.businesses.map((b) => ({
+      grossIncome: String(b.grossIncome),
+      allowableExpenses: String(b.allowableExpenses),
+      capitalAllowances: String(b.capitalAllowances),
+    }))
+  );
+  const [employment, setEmployment] = useState(String(dummyTaxInput.incomeSources.employment));
+  const [rent, setRent] = useState(String(dummyTaxInput.incomeSources.rent));
+  const [otherIncome, setOtherIncome] = useState(String(dummyTaxInput.incomeSources.otherIncome));
+  const [businessLosses, setBusinessLosses] = useState(String(sumAmounts(dummyTaxInput.losses)));
+  const [donations, setDonations] = useState(String(sumAmounts(dummyTaxInput.donations)));
 
-  const [zakat, setZakat] = useState('0');
+  const [zakat, setZakat] = useState(String(dummyTaxInput.zakat));
   const [claims, setClaims] = useState({});        // { code: amountString }
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Load the relief catalogue once, and seed auto reliefs at their cap.
+  // Load the relief catalogue once, and seed claims:
+  // - auto reliefs are always granted at their cap (engine enforces this anyway)
+  // - everything else starts from whatever `dummyTaxInput.reliefs` has for that
+  //   code — the same swap-in-a-DB-later layer as the income fields above.
   useEffect(() => {
     getReliefs()
       .then((data) => {
         setCatalogue(data.reliefs);
         const seeded = {};
-        data.reliefs.forEach((r) => { if (r.auto) seeded[r.code] = String(r.cap); });
+        data.reliefs.forEach((r) => {
+          if (r.auto) seeded[r.code] = String(r.cap);
+          else if (dummyTaxInput.reliefs[r.code] != null) seeded[r.code] = String(dummyTaxInput.reliefs[r.code]);
+        });
         setClaims(seeded);
       })
       .catch(() => setError('Could not load reliefs — is the backend running on :8000?'));
