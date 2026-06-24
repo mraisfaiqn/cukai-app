@@ -46,12 +46,22 @@ async def list_reliefs(ya: int = 2025):
 async def calculate_tax(payload: CalculateRequest):
     """Calculate chargeable income, tax payable, and relief savings.
 
-    Caps each relief at its legal maximum, derives chargeable income, applies
-    the progressive brackets and rebates, and reports how much the reliefs saved.
+    Accepts either a single `total_income`, or a Form-B-style income-source
+    breakdown (businesses / employment / rent / other_income / business_losses
+    / donations) which the engine resolves into total income first. Either way,
+    it then caps each relief at its legal maximum, derives chargeable income,
+    applies the progressive brackets and rebates, and reports how much the
+    reliefs saved.
     """
     return calculate_assessment(
         total_income=payload.total_income,
         reliefs=payload.reliefs,
         zakat=payload.zakat,
         ya=payload.year_of_assessment,
+        businesses=payload.businesses,
+        employment=payload.employment,
+        rent=payload.rent,
+        other_income=payload.other_income,
+        business_losses=payload.business_losses,
+        donations=payload.donations,
     )

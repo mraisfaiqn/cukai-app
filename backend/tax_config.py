@@ -56,6 +56,16 @@ BRACKETS = {
 # this threshold. Zakat is rebated in full (handled as a user input in the API).
 INDIVIDUAL_REBATE = {2025: {"amount": 400, "chargeable_income_ceiling": 35000}}
 
+# ── Approved donations cap ───────────────────────────────────────────────────
+# Per Form B item G2 (gift of money to approved institutions / funds / sports /
+# national-interest projects / wakaf), the combined claim is restricted to this
+# percentage of AGGREGATE INCOME (item B11) — not total income, not chargeable
+# income. Gifts to government / libraries / disabled facilities / art galleries
+# (G1, G3-G7) are uncapped in the real form, but we treat the whole donations
+# figure as the capped G2 bucket for now since that's the common case and the
+# calculator only takes one "donations" input.
+DONATION_CAP_PCT = {2025: 0.10}
+
 DEFAULT_YA = 2025
 
 
@@ -72,3 +82,8 @@ def get_brackets(ya: int = DEFAULT_YA):
 def get_rebate_rule(ya: int = DEFAULT_YA):
     """Return the individual-rebate rule for a Year of Assessment."""
     return INDIVIDUAL_REBATE.get(ya, INDIVIDUAL_REBATE[DEFAULT_YA])
+
+
+def get_donation_cap_pct(ya: int = DEFAULT_YA) -> float:
+    """Return the approved-donations cap as a fraction of aggregate income."""
+    return DONATION_CAP_PCT.get(ya, DONATION_CAP_PCT[DEFAULT_YA])
