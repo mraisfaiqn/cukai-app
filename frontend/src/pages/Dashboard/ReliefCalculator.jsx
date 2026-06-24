@@ -19,7 +19,13 @@ function ReliefCalculator() {
   const [catalogue, setCatalogue] = useState([]); // relief defs from the backend
 
   // Income sources — Form B Part B style.
-  const [businesses, setBusinesses] = useState(['120000']); // statutory income per business
+  // Each business is entered as gross income, allowable expenses and capital
+  // allowances (Form B's own statutory-income formula), not as a single
+  // pre-netted figure — so the calculator derives statutory income itself:
+  // statutory income = gross income − allowable expenses − capital allowances.
+  const [businesses, setBusinesses] = useState([
+    { grossIncome: '180000', allowableExpenses: '50000', capitalAllowances: '10000' },
+  ]);
   const [employment, setEmployment] = useState('0');
   const [rent, setRent] = useState('0');
   const [otherIncome, setOtherIncome] = useState('0');
@@ -46,9 +52,18 @@ function ReliefCalculator() {
 
   const setClaim = (code, value) => setClaims((c) => ({ ...c, [code]: value }));
 
-  const addBusiness = () => setBusinesses((b) => [...b, '']);
+  const addBusiness = () =>
+    setBusinesses((b) => [...b, { grossIncome: '', allowableExpenses: '', capitalAllowances: '' }]);
   const removeBusiness = (i) => setBusinesses((b) => b.filter((_, idx) => idx !== i));
-  const setBusiness = (i, value) => setBusinesses((b) => b.map((v, idx) => (idx === i ? value : v)));
+  const setBusinessField = (i, field, value) =>
+    setBusinesses((b) => b.map((row, idx) => (idx === i ? { ...row, [field]: value } : row)));
+
+  // Statutory income (Form B's own formula): gross income − allowable
+  // expenses − capital allowances. Negative isn't clamped here — a
+  // loss-making business should show as negative until the engine nets it
+  // against aggregate income (it floors each business at 0 itself).
+  const statutoryIncome = (row) =>
+    (Number(row.grossIncome) || 0) - (Number(row.allowableExpenses) || 0) - (Number(row.capitalAllowances) || 0);
 
   const handleCalculate = async () => {
     setLoading(true);
@@ -61,7 +76,7 @@ function ReliefCalculator() {
         if (!r.auto && claims[r.code]) reliefs[r.code] = Number(claims[r.code]) || 0;
       });
       const data = await calculateTax({
-        businesses: businesses.map((v) => Number(v) || 0),
+        businesses: businesses.map((row) => statutoryIncome(row)),
         employment: Number(employment) || 0,
         rent: Number(rent) || 0,
         other_income: Number(otherIncome) || 0,
@@ -107,29 +122,67 @@ function ReliefCalculator() {
             <div className="rounded-xl border border-border bg-surface p-6">
               <h2 className="font-headings text-lg font-semibold text-primary">Business income</h2>
               <p className="mt-1 text-sm text-muted">
-                Statutory income per business (gross income − allowable expenses − capital allowances).
+                Enter gross income, allowable expenses and capital allowances per business — the calculator
+                works out statutory income itself (gross income − allowable expenses − capital allowances).
                 Add one row per business — matches Form B item B1a.
               </p>
 
-              <div className="mt-4 space-y-2">
-                {businesses.map((v, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <span className="w-20 shrink-0 text-sm text-muted">Business {i + 1}</span>
-                    <input
-                      type="number" min="0" value={v}
-                      placeholder="0"
-                      onChange={(e) => setBusiness(i, e.target.value)}
-                      className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-headings outline-none focus:border-primary focus:ring-2 focus:ring-primary/30"
-                    />
-                    {businesses.length > 1 && (
-                      <button
-                        type="button" onClick={() => removeBusiness(i)}
-                        className="shrink-0 rounded-lg border border-border px-2 py-2 text-xs text-muted hover:border-critical hover:text-critical"
-                        aria-label={`Remove business ${i + 1}`}
-                      >✕</button>
-                    )}
-                  </div>
-                ))}
+              <div className="mt-4 space-y-3">
+                {businesses.map((row, i) => {
+                  const net = statutoryIncome(row);
+                  return (
+                    <div key={i} className="rounded-lg border border-border p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium text-body-text">Business {i + 1}</span>
+                        {businesses.length > 1 && (
+                          <button
+                            type="button" onClick={() => removeBusiness(i)}
+                            className="shrink-0 rounded-lg border border-border px-2 py-1 text-xs text-muted hover:border-critical hover:text-critical"
+                            aria-label={`Remove business ${i + 1}`}
+                          >✕</button>
+                        )}
+                      </div>
+
+                      <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        <label className="block">
+                          <span className="text-xs text-muted">Gross income (RM)</span>
+                          <input
+                            type="number" min="0" value={row.grossIncome}
+                            placeholder="0"
+                            onChange={(e) => setBusinessField(i, 'grossIncome', e.target.value)}
+                            className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-headings outline-none focus:border-primary focus:ring-2 focus:ring-primary/30"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-xs text-muted">Allowable expenses (RM)</span>
+                          <input
+                            type="number" min="0" value={row.allowableExpenses}
+                            placeholder="0"
+                            onChange={(e) => setBusinessField(i, 'allowableExpenses', e.target.value)}
+                            className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-headings outline-none focus:border-primary focus:ring-2 focus:ring-primary/30"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-xs text-muted">Capital allowances (RM)</span>
+                          <input
+                            type="number" min="0" value={row.capitalAllowances}
+                            placeholder="0"
+                            onChange={(e) => setBusinessField(i, 'capitalAllowances', e.target.value)}
+                            className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-headings outline-none focus:border-primary focus:ring-2 focus:ring-primary/30"
+                          />
+                        </label>
+                      </div>
+
+                      <p className="mt-2 text-xs text-muted">
+                        Statutory income ={' '}
+                        <span className={'font-semibold tabular-nums ' + (net < 0 ? 'text-critical' : 'text-headings')}>
+                          {rm(net)}
+                        </span>
+                        {net < 0 && ' (loss — won\'t count as income; record it as a current-year business loss instead)'}
+                      </p>
+                    </div>
+                  );
+                })}
               </div>
 
               <button
