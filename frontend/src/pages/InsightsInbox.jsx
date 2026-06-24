@@ -370,20 +370,51 @@ function InsightsInbox() {
               AI-generated tax insights, compliance alerts, and advisory notifications — timestamped and organised.
             </p>
           </div>
-          {/* ── Stats Strip ── */}
+          {/* ── Stats + Tax Health Strip ── */}
           {!showArchived && (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 shrink-0">
+            <div className="grid grid-cols-6 gap-3 shrink-0">
+              {/* 4 insight stat cards */}
               {[
                 { label: 'Unread', value: insights.filter(i => !i.read && !i.archived).length, color: 'text-[#0F172A]' },
                 { label: 'High Priority', value: insights.filter(i => i.priority === 'high' && !i.archived).length, color: 'text-red-500' },
                 { label: 'Actionable', value: insights.filter(i => i.actionable && !i.archived).length, color: 'text-[#0D9488]' },
                 { label: 'Total Insights', value: insights.filter(i => !i.archived).length, color: 'text-[#64748B]' },
               ].map(s => (
-                <div key={s.label} className="rounded-xl border border-slate-100 bg-white px-4 py-3.5 shadow-sm">
+                <div key={s.label} className="col-span-1 rounded-xl border border-slate-100 bg-white px-4 py-3.5 shadow-sm">
                   <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
                   <p className="text-xs text-[#64748B]">{s.label}</p>
                 </div>
               ))}
+              {/* Tax Health card — spans 2 cols, matches height of stat cards */}
+              <div className="col-span-2 rounded-xl border border-slate-100 bg-white px-4 py-3 shadow-sm flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold text-[#64748B] shrink-0 leading-tight">Tax<br/>Health</p>
+                <div className="flex items-center gap-4 flex-1 justify-around">
+                  {[
+                    { label: 'Health', value: 78, max: 100, color: '#0D9488', track: '#E6FAF8' },
+                    { label: 'Literacy', value: 42, max: 100, color: '#7C3AED', track: '#EDE9FE' },
+                  ].map(ring => {
+                    const radius = 38;
+                    const circumference = 2 * Math.PI * radius;
+                    const offset = circumference * (1 - Math.min(Math.max(ring.value / ring.max, 0), 1));
+                    return (
+                      <div key={ring.label} className="flex items-center gap-2">
+                        <div className="relative h-10 w-10 shrink-0">
+                          <svg viewBox="0 0 100 100" className="h-full w-full -rotate-90">
+                            <circle cx="50" cy="50" r={radius} fill="none" strokeWidth="12" stroke={ring.track} />
+                            <circle cx="50" cy="50" r={radius} fill="none" strokeWidth="12" strokeLinecap="round"
+                              stroke={ring.color} strokeDasharray={circumference} strokeDashoffset={offset} />
+                          </svg>
+                          <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-[#0F172A]">{ring.value}</span>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-semibold text-[#0F172A]">{ring.value}<span className="text-[#94A3B8] font-normal">/100</span></p>
+                          <p className="text-[9px] text-[#64748B] uppercase tracking-wide">{ring.label}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           )}
         </div>

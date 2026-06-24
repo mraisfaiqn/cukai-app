@@ -94,3 +94,63 @@ export const opportunityDetails = {
     },
   },
 };
+
+// ── Add this export to your existing dashboardData.js ─────────────────────────
+//
+// `piecharts` drives the PieChartsCarousel in Overview.
+// Each entry matches the shape expected by PieChartsCarousel:
+//   { title, subtitle, footerLabel, footerColor, segments: [{ label, value, color }] }
+//
+// The three charts mirror CukaiAccount's ChartSidebar:
+//   1. Business Expenses   (deductible items)
+//   2. Personal Expenses   (non-deductible items)
+//   3. Tax Summary         (chargeable income / relief / payable)
+//
+// Swap the hardcoded values below for real computed data once you wire up
+// a shared data layer (e.g. a context or store that both CukaiAccount and
+// Overview consume).
+
+export const piecharts = [
+  {
+    title: 'Business Expenses',
+    subtitle: 'Company-classified items',
+    footerLabel: 'Deductible total',
+    footerColor: '#0F6E56',
+    segments: [
+      { label: 'Sales & Service Income',         value: 8400,  color: '#0F6E56' },
+      { label: 'Payroll & EPF/SOCSO',             value: 14500, color: '#14B8A6' },
+      { label: 'Supplier & Inventory Purchases',  value: 4820,  color: '#0D9488' },
+      { label: 'Capital Assets & Equipment',      value: 17600, color: '#0369A1' },
+      { label: 'Marketing & Advertising',         value: 3200,  color: '#B45309' },
+      { label: 'Professional & Legal Fees',       value: 2500,  color: '#64748B' },
+      { label: 'Rental & Utilities',              value: 1240,  color: '#10B981' },
+      { label: 'Transport & Logistics',           value: 340,   color: '#7C839B' },
+      { label: 'Loan Interest & Bank Charges',    value: 670,   color: '#475569' },
+      { label: 'Office & Admin Supplies',         value: 430,   color: '#1D9E75' },
+    ],
+  },
+  {
+    title: 'Personal Expenses',
+    subtitle: 'Non-deductible items',
+    footerLabel: 'Non-deductible',
+    footerColor: '#DC2626',
+    segments: [
+      { label: 'Subscriptions & Lifestyle', value: 200,  color: '#FB7185' },
+      { label: 'Personal Travel & Leisure', value: 1800, color: '#E11D48' },
+      { label: 'Groceries & Household',     value: 310,  color: '#DC2626' },
+      { label: 'Medical & Healthcare',      value: 1250, color: '#EF4444' },
+      { label: 'Family & Education',        value: 450,  color: '#F43F5E' },
+    ],
+  },
+  {
+    title: 'Tax Summary',
+    subtitle: 'From Generate Report',
+    footerLabel: 'Est. payable',
+    footerColor: '#B45309',
+    segments: [
+      { label: 'Chargeable Income',    value: 235000, color: '#0F6E56' },
+      { label: 'Total Relief Claimed', value: 18000,  color: '#10B981' },
+      { label: 'Est. Tax Payable',     value: 12400,  color: '#B45309' },
+    ],
+  },
+];
