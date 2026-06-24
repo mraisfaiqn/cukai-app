@@ -743,7 +743,7 @@ function UploadTab({ docs, onAdd, onRemove, onUpdateStatus }) {
         </div>
 
         {/* Needs-review banner */}
-        {mixed.length > 0 && (
+        {/* {mixed.length > 0 && (
           <div className="shrink-0 flex items-start gap-3 rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-4 py-3">
             <svg className="mt-0.5 shrink-0" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#B45309" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
@@ -757,7 +757,7 @@ function UploadTab({ docs, onAdd, onRemove, onUpdateStatus }) {
               Review now
             </button>
           </div>
-        )}
+        )} */}
 
         {/* Filter & sort bar */}
         <div className="shrink-0 flex items-center gap-2 flex-wrap">
@@ -1593,7 +1593,7 @@ function GenerateTab({ docs, scenario, activeScenario, setActiveScenario, select
         </div>
 
         {/* Filing summary stats */}
-        <div className="shrink-0 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {/* <div className="shrink-0 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
             { label: 'Total Income', value: fmtRM(totalIncome), color: '#0F6E56' },
             { label: 'Deductible Expenses', value: fmtRM(deductibleTotal), color: '#0D9488' },
@@ -1605,7 +1605,7 @@ function GenerateTab({ docs, scenario, activeScenario, setActiveScenario, select
               <p className="text-sm font-bold mt-1" style={{ color }}>{value}</p>
             </div>
           ))}
-        </div>
+        </div> */}
 
         {/* Form cards */}
         <div className="shrink-0 grid gap-3 sm:grid-cols-2">
@@ -1840,7 +1840,7 @@ function CukaiAccount() {
             )}
           </div>
           {/* Persistent triple-chart sidebar */}
-          <ChartSidebar docs={docs} formData={formData} />
+          {/* <ChartSidebar docs={docs} formData={formData} /> */}
         </div>
 
       </div>
