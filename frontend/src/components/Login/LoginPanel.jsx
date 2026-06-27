@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useNavigate, NavLink } from "react-router-dom";
 import cukaiLogo from '../../assets/cukai-logo.png';
+import { userLogin } from "../../services/api";
 
 
-// crossed-out eye icons for show/hide password toggle
+// buka/tutup password eye icon
 const EyeOffIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
     <path
@@ -13,7 +14,7 @@ const EyeOffIcon = () => (
   </svg>
 );
 
-// eye open when password visible
+// eye open when password shown
 const EyeIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
     <path
@@ -36,18 +37,16 @@ export default function LoginPanel({ onLogin }) {
     e.preventDefault();
     setLoading(true);
     try {
-      // 1. Fake API call or actual auth logic here
-      await new Promise((resolve) => setTimeout(resolve, 1500)); 
-      // 2. Trigger the parent state change (setIsAuthenticated(true))
-      onLogin(); 
-      // 3. Redirect to the overview page now that they are logged in
-      navigate("/overview"); 
-    } catch (error) {
-      console.error("Login failed", error);
-    } finally {
-      setLoading(false);
-    }
-  };
+    await userLogin(email, password);  // calls bckend
+    onLogin();
+    navigate("/overview");
+  } catch (error) {
+    console.error("Login failed", error);
+    alert("Login failed — check your email and password.");
+  } finally {
+    setLoading(false);
+  }
+};
 
   return (
     <div className="w-[50%] h-screen bg-[#E8ECF4] flex items-center justify-center px-8 flex-shrink-0">
@@ -137,7 +136,7 @@ export default function LoginPanel({ onLogin }) {
             {loading ? "Logging in…" : "Log In"}
           </button>
         </form>
-        {/*form closes/}
+        {/*form closes*/}
         {/* Spacer that push bottom part down and makes card taller */}
         <div className="flex-1 min-h-[48px]" />
         {/* Divider */}
