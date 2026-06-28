@@ -32,9 +32,7 @@ def parse_date(value): #conditional trigger. special case for date. DOB, spouse 
   if not value: # if empty, return none. 
     return None
   return date.fromisoformat(value) 
-#otherwise convert string to date
-#takes text from  frntend, convert to date format in bckend.
-#good way to prevent system from crashing if empty value ya.
+
 
 
 ###API endpoints test
@@ -42,7 +40,7 @@ def parse_date(value): #conditional trigger. special case for date. DOB, spouse 
 # User registration: create a sole-proprietor profile from onboarding —
 # one person + their business. Matches the POST /userReg.
 @app.post("/userReg", response_model=schemas.PersonOut)
-def user_reg(payload: schemas.ProfileIn, db: db_dependency):
+async def user_red(db:db_dependency, payload:schemas.ProfileIn):
   p = payload.person
 
  # for? prevent duplicate. mainly emails while registering
@@ -113,40 +111,54 @@ def user_reg(payload: schemas.ProfileIn, db: db_dependency):
   db.refresh(person)
   return person
 
-
+#### to cari user by ID
 @app.get("/userProfile/{person_id}", response_model=schemas.PersonOut)
-def get_profile(person_id: int, db: db_dependency):
-  person = db.query(models.Person).filter(models.Person.id == person_id).first()
-  if not person:
-    raise HTTPException(status_code=404, detail="Profile not found")
-  return person
-
-
+async def get_profile(db:db_dependency, person_id:int=Path(gt=0)):
+  person_result = db.query(models.Person).filter(models.Person.id == person_id).first()
+  if person_result is not None:
+    return person_result
+  raise HTTPException(status_code=404, detail="Profile not found")
+ 
+#### cari user by email & passwrod.
 @app.get("/userLogin")
-def user_login(email: str, password: str, db: db_dependency):
-  person = db.query(models.Person).filter(models.Person.email == email).first()
+async def user_login(db:db_dependency,email: str, password: str):
+  person_result = db.query(models.Person).filter(models.Person.email == email).first()
 
-  if not person:
+  if not person_result:
     raise HTTPException(status_code=404, detail="User not found")
-  if not bcrypt.checkpw(password.encode(), person.password_hash.encode()):
+  if not bcrypt.checkpw(password.encode(), person_result.password_hash.encode()):
     raise HTTPException(status_code=401, detail="Incorrect password")
-  return {person}
+  return {"id": person_result.id, "fullName": person_result.full_name}
 
 ### Ini for Manage Acc. Only GET personal details
 @app.get("/personalDetails/{person_id}", response_model=schemas.PersonalDetailsOut)
-def get_personal_details(person_id: int, db: db_dependency):
-  person = db.query(models.Person).filter(models.Person.id == person_id).first()
-  if not person:
-    raise HTTPException(status_code=404, detail="Person not found")
-  return person
+async def get_personal_details(db: db_dependency, person_id:int=Path(gt=0)):
+  person_result = db.query(models.Person).filter(models.Person.id == person_id).first()
+  if person_result is not None:
+    return person_result
+  raise HTTPException(status_code=404, detail="Person not found")
+  
 
 #### Ini for Manage Acc. Only GET entity details.
 @app.get("/companyDetails/{person_id}", response_model=schemas.EntityOut)
-def get_company_details(person_id: int, db: db_dependency):
-  person = db.query(models.Person).filter(models.Person.id == person_id).first()
-  if not person:
+async def get_company_details(db: db_dependency, person_id: int = Path(gt=0)):
+  person_result = db.query(models.Person).filter(models.Person.id == person_id).first()
+  if not person_result:
     raise HTTPException(status_code=404, detail="Person not found")
-  if not person.entities:
+  if not person_result.entities:
     raise HTTPException(status_code=404, detail="No company found for this person")
-  return person.entities[0]
+  return person_result.entities[0]
 
+
+### to delete userrr
+@app.delete("/userDelete/{person_id}")
+async def delete_user(db: db_dependency, person_id: int = Path(gt=0)):
+  user_result = db.query(models.Person).filter(models.Person.id == person_id).first()
+  if user_result is None:
+    raise HTTPException(status_code=404, detail="User not found")
+  else:
+    db.delete(user_result)
+    db.commit()
+    return {"message": "User successfully deleted"}
+  
+ 
