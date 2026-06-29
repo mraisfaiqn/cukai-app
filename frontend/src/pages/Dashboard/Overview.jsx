@@ -8,8 +8,10 @@
 //  - Bottom right col (was DeadlinesCard) now holds PieChartsCarousel.
 //  - Both carousels use dot-navigation to page through items.
 
-import { useState } from 'react';
-import { stats, opportunities, deadlines, account, alert, piecharts } from '../../data/dashboardData';
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+// Keep your imports exactly as they are—they act as excellent fallback mock data!
+import { stats as initialStats, account as initialAccount, piecharts as initialPieCharts, opportunities, deadlines, alert, piecharts } from '../../data/dashboardData';
 import DashboardHeader from '../../components/Dashboard/DashboardHeader';
 import ActionBanner from '../../components/Dashboard/ActionBanner';
 import StatsGrid from '../../components/Dashboard/StatsGrid';
@@ -208,39 +210,95 @@ function PieChartsCarousel({ charts }) {
 }
 
 // ── Overview ───────────────────────────────────────────────────────────────────
-function Overview() {
+export default function Overview() {
+  // 1. Establish state variables using the static data as default placeholders
+  const [liveAccount, setLiveAccount] = useState(initialAccount);
+  const [liveStats, setLiveStats] = useState(initialStats);
+  const [livePieCharts, setLivePieCharts] = useState(initialPieCharts);
+  const [loading, setLoading] = useState(true);
+
+  // 2. Fetch active metrics from your database on mount
+  useEffect(() => {
+    const fetchDashboardMetrics = async () => {
+      try {
+        const userId = localStorage.getItem("userId");
+        if (!userId) return;
+
+       // Fetch both endpoints simultaneously to match your existing main.py paths
+        const [personalRes, companyRes] = await Promise.all([
+          axios.get(`http://localhost:8000/personalDetails/${userId}`),
+          axios.get(`http://localhost:8000/companyDetails/${userId}`)
+        ]);
+
+        const person = personalRes.data;
+        const activeEntity = companyRes.data;
+
+        if (activeEntity) {
+          // Dynamic calculation: Safely fallback to 0 if null
+          const turnover = activeEntity.sales_turnover || 0;
+          const expenses = activeEntity.total_expenditure || 0;
+          const netProfit = activeEntity.net_profit_loss || (turnover - expenses);
+          
+          // Estimation: Simple Malaysian individual/sole-prop tax estimation logic 
+          // (You can replace this with your backend formula later)
+          const estimatedTax = netProfit > 5000 ? netProfit * 0.03 : 0; 
+
+          // Inject raw database values cleanly into your beautiful stats layout structure!
+          setLiveStats([
+            { label: 'Sales Turnover', value: `RM ${turnover.toLocaleString()}`, change: 'Live Sync', trend: 'up' },
+            { label: 'Total Expenditure', value: `RM ${expenses.toLocaleString()}`, change: 'Live Sync', trend: 'down' },
+            { label: 'Net Profit / Loss', value: `RM ${netProfit.toLocaleString()}`, change: 'Calculated', trend: netProfit >= 0 ? 'up' : 'down' },
+            { label: 'Est. Tax Payable', value: `RM ${estimatedTax.toLocaleString()}`, change: 'Formulaic', trend: 'neutral' },
+          ]);
+
+          // Dynamically update header account contexts
+          setLiveAccount({
+            name: person?.fullName || person?.full_name || 'Taxpayer',
+            entity: activeEntity.name || 'Sole Proprietorship',
+            msic: activeEntity.businessCode || activeEntity.business_code ? `MSIC ${activeEntity.businessCode || activeEntity.business_code}` : 'No Code Set',
+            assessmentYear: 'YA 2026',
+            deadlineNote: 'Form B Sync Active',
+          });
+        }
+      } catch (err) {
+        console.error("Error updating dashboard view context:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchDashboardMetrics();
+  }, []);
+  
   return (
     <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body">
-      <div className="flex h-full min-h-0 flex-col gap-3 px-6 py-4 mx-auto max-w-7xl">
+      <div className="flex h-full w-full flex-col gap-3 p-3">
+      {/* ── Header using dynamic backend account details ── */}
+      <DashboardHeader
+        greeting={timeOfDayGreeting()}
+        name={liveAccount.name}
+        entity={liveAccount.entity}
+        msic={liveAccount.msic}
+        assessmentYear={liveAccount.assessmentYear}
+        deadlineNote={liveAccount.deadlineNote}
+      />
 
-        {/* ── Greeting + entity context ── */}
-        <DashboardHeader
-          greeting={timeOfDayGreeting()}
-          name={account.name}
-          entity={account.entity}
-          msic={account.msic}
-          assessmentYear={account.assessmentYear}
-          deadlineNote={account.deadlineNote}
-        />
+      <ActionBanner
+        title={alert.title}
+        message={alert.message}
+        actionLabel={alert.actionLabel}
+        compact
+      />
 
-        {/* ── Action banner ── */}
-        <ActionBanner
-          title={alert.title}
-          message={alert.message}
-          actionLabel={alert.actionLabel}
-          compact
-        />
-
-        {/* ── KPI strip + Deadlines Carousel in one row ──
-              StatsGrid spans 4 cols, DeadlinesCarousel spans 2 cols. */}
-        <div className="grid grid-cols-6 gap-3">
-          <div className="col-span-4">
-            <StatsGrid stats={stats} compact />
-          </div>
-          <div className="col-span-2">
-            <DeadlinesCarousel deadlines={deadlines} />
-          </div>
+      <div className="grid grid-cols-6 gap-3">
+        <div className="col-span-4">
+          {/* ── Stats grid using dynamic numbers from Postgres ── */}
+          <StatsGrid stats={liveStats} compact />
         </div>
+        <div className="col-span-2">
+          <DeadlinesCarousel deadlines={deadlines} />
+        </div>
+      </div>
 
         {/* ── Body: 3-column grid, fills remaining height ──
               Col 1-2: Opportunities (scrollable)
@@ -258,5 +316,3 @@ function Overview() {
     </main>
   );
 }
-
-export default Overview;

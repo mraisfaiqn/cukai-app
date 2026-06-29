@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useNavigate, NavLink } from "react-router-dom";
 import cukaiLogo from '../../assets/cukai-logo.png';
+import { userLogin } from "../../services/api";
 
 
-// crossed-out eye icons for show/hide password toggle
+// buka/tutup password eye icon
 const EyeOffIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
     <path
@@ -13,7 +14,7 @@ const EyeOffIcon = () => (
   </svg>
 );
 
-// eye open when password visible
+// eye open when password shown
 const EyeIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
     <path
@@ -32,19 +33,34 @@ export default function LoginPanel({ onLogin }) {
   const [loading,  setLoading]  = useState(false);
   const navigate = useNavigate();
 
+  const [error, setError] = useState("");
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
+    setError(""); // Clear previous errors
+
     try {
-      // 1. Fake API call or actual auth logic here
-      await new Promise((resolve) => setTimeout(resolve, 1500)); 
-      // 2. Trigger the parent state change (setIsAuthenticated(true))
-      onLogin(); 
-      // 3. Redirect to the overview page now that they are logged in
-      navigate("/overview"); 
-    } catch (error) {
-      console.error("Login failed", error);
+      // 1. Fire network request to your FastAPI login endpoint
+      const response = await userLogin(email, password);
+
+      // If your userLogin wrapper returns the raw Axios response data, 
+      // extract the unique ID so other pages can load this specific user's metrics
+      if (response && response.id) {
+        localStorage.setItem("userId", response.id);
+        localStorage.setItem("userFullName", response.fullName || "");
+      }
+
+      onLogin();
+      navigate("/overview");
+    } catch (err) {
+      console.error("Login process caught error:", err);
+      
+      // Look for the clean error description passed back from your FastAPI backend
+      const serverMessage = err.response?.data?.detail || "Invalid email or password layout.";
+      setError(serverMessage);
     } finally {
+      // This will force the button to drop "Logging in..." and become clickable again!
       setLoading(false);
     }
   };
@@ -68,7 +84,7 @@ export default function LoginPanel({ onLogin }) {
         <p className="text-center text-[13px] text-[#94A3B8] mb-8 mt-3">
           Log In to Continue
         </p>
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        
           {/* Email/username */}
           <div>
             <label className="block text-[13px] font-semibold tracking-[0.06em] text-[#6B7280] mb-2">
@@ -114,6 +130,14 @@ export default function LoginPanel({ onLogin }) {
               </button>
             </div>
           </div>
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-100 text-red-600 rounded-xl text-xs font-medium flex items-center gap-2">
+              <span>⚠️</span>
+              <span>Incorrect Password or Email</span>
+            </div>
+          )}
+          
           {/* Remember Me */}
           <div className="flex items-center gap-2.5">
             <input
@@ -137,7 +161,7 @@ export default function LoginPanel({ onLogin }) {
             {loading ? "Logging in…" : "Log In"}
           </button>
         </form>
-        {/*form closes/}
+        {/*form closes*/}
         {/* Spacer that push bottom part down and makes card taller */}
         <div className="flex-1 min-h-[48px]" />
         {/* Divider */}

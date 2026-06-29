@@ -131,29 +131,29 @@ const BLANK_PARTNER = {
 
 const BLANK_PERSONAL_PROFILE = {
   // Identity & residency
-  fullName: 'Mohd Rais Faiq Nichol',
+  fullName: '',
   idType: 'ic',
-  identificationNo: '950312-10-5521',
-  personalTin: 'IG 4471002938',
-  citizenship: 'MYS',
-  gender: 'male',
-  dateOfBirth: '1995-03-12',
+  identificationNo: '',
+  personalTin: '',
+  citizenship: '',
+  gender: '',
+  dateOfBirth: '',
   // Marital / dependents
-  maritalStatus: 'single',
+  maritalStatus: '',
   maritalEventDate: '',
   spouseName: '',
   spouseIdNo: '',
   spouseDob: '',
-  assessmentType: 'self-single',
+  assessmentType: '',
   numberOfChildren: '0',
   hasDisabledDependents: false,
   // Contact
-  phone: '012-345 6789',
-  email: 'faiq.nichol@example.com',
-  correspondenceAddress: 'No. 7, Jalan SS19/1',
-  correspondencePostcode: '47500',
-  correspondenceCity: 'Subang Jaya',
-  correspondenceState: 'Selangor',
+  phone: '',
+  email: '',
+  correspondenceAddress: '',
+  correspondencePostcode: '',
+  correspondenceCity: '',
+  correspondenceState: '',
   refundMethod: 'bank',
   bankName: '',
   bankAccountNo: '',
@@ -163,9 +163,9 @@ const BLANK_PERSONAL_PROFILE = {
   rpgtDisposal: false,
   // Relief category toggles
   hasDependentParents: false,
-  hasEpfLifeInsurance: true,
-  hasEducationMedicalInsurance: true,
-  hasLifestylePurchases: true,
+  hasEpfLifeInsurance: false,
+  hasEducationMedicalInsurance: false,
+  hasLifestylePurchases: false,
   hasSspnEvOther: false,
 };
 
@@ -279,6 +279,13 @@ const PersonalProfileSummary = ({ profile, onOpen }) => {
 
 const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
   const [draft, setDraft] = useState(profile);
+
+  React.useEffect(() => {
+    if (profile) {
+      setDraft(profile);
+    }
+  }, [profile]); // Fires automatically the exact millisecond personalProfile updates!
+
   const set = (key) => (e) => setDraft({ ...draft, [key]: e.target.value });
   const setVal = (key) => (val) => setDraft({ ...draft, [key]: val });
 
@@ -1108,77 +1115,31 @@ const CreateEntityModal = ({ onClose, onCreate }) => {
    MAIN COMPONENT
    ========================================================================= */
 
-const SEED_ENTITIES = [
-  {
-    entityType: 'sole-prop',
-    name: 'Hafiz Printing & Design',
-    ssmNo: '202103145678 (TR02145)',
-    tin: 'IG 8823415601',
-    businessCode: '47912',
-    businessActivity: 'Retail of printed materials',
-    premiseAddress: 'No. 12, Jalan SS15/4',
-    premisePostcode: '47500',
-    premiseCity: 'Subang Jaya',
-    premiseState: 'Selangor',
-    salesTurnover: '186400',
-    totalExpenditure: '142100',
-    netProfitLoss: '44300',
-    totalAssets: '98200',
-    totalLiabilities: '21500',
-  },
-  {
-    entityType: 'partnership',
-    name: 'Urban Brew Partners',
-    ssmNo: '202301982734',
-    tin: 'D 1109283745',
-    businessCode: '56101',
-    businessActivity: 'Cafe and restaurant operations',
-    partnerCount: '3',
-    basisOfApportionment: 'Equal Split',
-    employerNo: 'E 2208841',
-    isPrecedentPartner: true,
-    precedentPartnerName: '',
-    mainBusinessAddress: 'Lot 4, Jalan PJU 5/1',
-    mainBusinessPostcode: '47810',
-    mainBusinessCity: 'Petaling Jaya',
-    mainBusinessState: 'Selangor',
-    partners: [
-      { name: 'Mohd Rais Faiq Nichol', identificationNo: '950312-10-5521', incomeTaxNo: 'IG 4471002938', countryOfResidence: 'MYS', profitShare: '40', dateAppointed: '2023-04-01' },
-      { name: 'Aiman Bin Yusof', identificationNo: '930621-08-5142', incomeTaxNo: 'IG 5512239871', countryOfResidence: 'MYS', profitShare: '35', dateAppointed: '2023-04-01' },
-      { name: 'Lim Wei Jian', identificationNo: '910114-14-6633', incomeTaxNo: 'IG 6634110982', countryOfResidence: 'MYS', profitShare: '25', dateAppointed: '2023-04-01' },
-    ],
-  },
-  {
-    entityType: 'partnership',
-    name: 'Northline Logistics Co.',
-    ssmNo: '202209876543',
-    tin: 'D 2207765432',
-    businessCode: '49230',
-    businessActivity: 'Freight transport arrangement',
-    partnerCount: '4',
-    basisOfApportionment: 'No Salaries or Interest',
-    employerNo: 'E 1190233',
-    isPrecedentPartner: false,
-    precedentPartnerName: 'Adam Bin Razak',
-    mainBusinessAddress: 'No. 8, Jalan Industri 2/3',
-    mainBusinessPostcode: '40200',
-    mainBusinessCity: 'Shah Alam',
-    mainBusinessState: 'Selangor',
-    partners: [
-      { name: 'Adam Bin Razak', identificationNo: '880905-10-1123', incomeTaxNo: 'IG 1123456789', countryOfResidence: 'MYS', profitShare: '30', dateAppointed: '2022-09-15' },
-      { name: 'Mohd Rais Faiq Nichol', identificationNo: '950312-10-5521', incomeTaxNo: 'IG 4471002938', countryOfResidence: 'MYS', profitShare: '25', dateAppointed: '2022-09-15' },
-    ],
-  },
-];
+export default function ManageProfile({ initialProfile, initialEntities }) {
+  // Use initialProfile if available, otherwise fall back to your static BLANK_PERSONAL_PROFILE structure
+  const [personalProfile, setPersonalProfile] = useState(initialProfile || BLANK_PERSONAL_PROFILE);
+  const [entities, setEntities] = useState([]);
 
-export default function ManageProfile() {
-  const [personalProfile, setPersonalProfile] = useState(BLANK_PERSONAL_PROFILE);
-  const [showPersonalPanel, setShowPersonalPanel] = useState(false);
+  // Watch for when the data finishes downloading from ManageAccount.jsx
+  React.useEffect(() => {
+    if (initialProfile) {
+      setPersonalProfile(initialProfile);
+    }
+  }, [initialProfile]);
 
-  const [entities, setEntities] = useState(SEED_ENTITIES);
+  React.useEffect(() => {
+    if (initialEntities && initialEntities.length > 0) {
+      setEntities(initialEntities);
+    }
+  }, [initialEntities]);
+
   const [activeIndex, setActiveIndex] = useState(0);
   const [previewIndex, setPreviewIndex] = useState(null);
+  const [showPersonalPanel, setShowPersonalPanel] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  
+  // Add these two states right below them to track network status:
+  const [error, setError] = useState(null);
 
   const handleSwitch = (index) => {
     setActiveIndex(index);
@@ -1208,11 +1169,27 @@ export default function ManageProfile() {
     setShowCreateModal(false);
   };
 
-  const handleSavePersonal = (updated) => {
-    setPersonalProfile(updated);
-    setShowPersonalPanel(false);
+  const handleSavePersonal = async (updatedData) => {
+    // Fire the save request to the parent component
+    if (onSavePersonal) {
+      const success = await onSavePersonal(updatedData);
+      if (success) {
+        setShowPersonalPanel(false); // Close the slide-over panel on a successful database write!
+      } else {
+        alert("Something went wrong saving your changes. Please try again.");
+      }
+    }
   };
 
+
+  if (error) {
+    return (
+      <div className="p-4 bg-red-50 text-red-600 rounded-xl text-xs border border-red-100 m-6">
+        ⚠️ {error}
+      </div>
+    );
+  }
+  
   return (
     <div className="h-full flex flex-col gap-3">
 

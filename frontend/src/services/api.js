@@ -21,3 +21,12 @@ export const createUser = async (userData) => {
   const response = await axios.post('https://example.com', userData);
   return response.data;
 };
+
+// frntend mau cakap dgn backend utk login. guna axios utk call backend API.
+export const userLogin = async (email, password) => {
+  const response = await axios.post(`${API_URL}/userLogin`, {
+    email: email,
+    password: password
+  });
+  return response.data;
+};
