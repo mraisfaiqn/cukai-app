@@ -73,5 +73,5 @@ function App() {
     </Router>
   )
 }
-API.test() //Delete me
+
 export default App;

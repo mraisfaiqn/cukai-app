@@ -1,3 +1,4 @@
+import axios from "axios";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import cukaiLogo from '../../assets/cukai-logo.png';
@@ -613,13 +614,94 @@ function StepExistingSSM({ data, setData, onBack, onNext }) {
 export default function GetStarted({ onLogin }) {
   const [step, setStep] = useState(0);
   const [data, setData] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
   const navigate = useNavigate();
 
   const isExisting = data.accountType === "existing";
 
-  // Step index constants for existing-account path
-  // 0: Account, 1: AccountType, 2: ExistingSSM, 3: Upload, 4: Savings
-  // New-account path mirrors the original full wizard
+  // ── API Submission Handler ──
+  const handleRegisterUser = async () => {
+    setLoading(true);
+    setError(null);
+
+    // Map your flat wizard data into the nested structure main.py expects
+    const payload = {
+      person: {
+        email: data.email || "",
+        password: data.password || "",
+        full_name: data.fullName || "",
+        id_type: "ic", 
+        identification_no: data.identificationNo || "", 
+        personal_tin: data.personalTin || "",
+        citizenship: "MYS",
+        gender: data.gender || "",
+        date_of_birth: data.dob || null,
+        marital_status: data.marital || "single",
+        marital_event_date: null,
+        spouse_name: data.spouseName || "",
+        spouse_id_no: data.spouseIdNo || "",
+        spouse_dob: null,
+        assessment_type: "single",
+        number_of_children: data.hasChildren ? parseInt(data.numChildren || 0) : 0,
+        has_disabled_dependents: data.childDisability || false,
+        phone: data.phone || "",
+        correspondence_address: data.address || "",
+        correspondence_postcode: data.postcode || "",
+        correspondence_city: data.city || "",
+        correspondence_state: data.state || "",
+        refund_method: "bank",
+        bank_name: data.bankName || "",
+        bank_account_no: data.bankAccountNo || "",
+        record_keeping: true,
+        has_foreign_accounts: false,
+        rpgt_disposal: false,
+        has_dependent_parents: data.supportParents || false,
+        has_epf_life_insurance: data.epf || false,
+        has_education_medical_insurance: data.medInsurance || false,
+        has_lifestyle_purchases: false,
+        has_sspn_ev_other: data.sspn || false,
+      },
+      entity: {
+        entity_type: "sole-prop",
+        name: data.companyName || `${data.fullName || 'Solopreneur'}'s Business`,
+        business_code: data.industry || "",
+        business_activity: data.industry || "",
+        ssm_no: isExisting ? data.existingSsmNumber : (data.ssmNumber || ""),
+        tin: "",
+        address: "",
+        postcode: "",
+        city: "",
+        state: "",
+        sales_turnover: parseFloat(data.businessIncome || 0),
+        total_expenditure: 0,
+        net_profit_loss: 0,
+        total_assets: 0,
+        total_liabilities: 0,
+        monthly_income: !isExisting ? parseFloat(data.businessIncome || 0) : 0,
+        annual_income: 0,
+      }
+    };
+
+    try {
+      // Direct call to your FastAPI backend endpoint
+      const response = await axios.post("http://localhost:8000/userReg", payload);
+      
+      // Cache database identity locally for subsequent dashboard loads
+      if (response.data && response.data.id) {
+        localStorage.setItem("userId", response.data.id);
+        localStorage.setItem("userFullName", response.data.full_name || data.fullName);
+      }
+
+      onLogin(); 
+      navigate("/overview");
+    } catch (err) {
+      console.error("Registration failed:", err);
+      setError(err.response?.data?.detail || "Network request failed. Is your backend server up?");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const newAccountStepsConfig = [
     { label: "Account" },
@@ -635,11 +717,6 @@ export default function GetStarted({ onLogin }) {
     { label: "Account Type" },
     { label: "Link Company" },
   ];
-
-  // We use a flat step index. Routing is handled by the WIZARD_STEPS map.
-  // Steps 0-1 are shared. From step 2 onward the path diverges.
-  // Step 2 (new) = Income  |  Step 2 (existing) = ExistingSSM -> step 50 (Upload) -> step 51 (Savings)
-  // Using high step indices (50, 51) for the existing-path terminal steps to avoid collision.
 
   const WIZARD_STEPS = {};
 
@@ -657,7 +734,7 @@ export default function GetStarted({ onLogin }) {
         if (data.accountType === "existing") {
           setStep(2);
         } else {
-          setStep(10); // new account path starts at 10
+          setStep(10);
         }
       }} />
     </>
@@ -671,7 +748,7 @@ export default function GetStarted({ onLogin }) {
     </>
   );
   WIZARD_STEPS[50] = <StepUpload onBack={() => setStep(2)} onNext={() => setStep(51)} onSkip={() => setStep(51)} />;
-  WIZARD_STEPS[51] = <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />;
+  WIZARD_STEPS[51] = <StepSavings data={data} onNext={handleRegisterUser} />;
 
   // ── New account path (steps 10–17) ──
   WIZARD_STEPS[10] = (
@@ -699,11 +776,9 @@ export default function GetStarted({ onLogin }) {
     </>
   );
   WIZARD_STEPS[14] = <StepUpload onBack={() => setStep(13)} onNext={() => setStep(15)} />;
-  WIZARD_STEPS[15] = <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />;
+  WIZARD_STEPS[15] = <StepSavings data={data} onNext={handleRegisterUser} />;
 
   const currentView = WIZARD_STEPS[step];
-  const allStepIndices = Object.keys(WIZARD_STEPS).map(Number);
-  const totalSteps = allStepIndices.length;
 
   return (
     <div className="w-screen h-screen bg-[#E8ECF4] flex items-center justify-center px-4 overflow-hidden">
@@ -715,12 +790,142 @@ export default function GetStarted({ onLogin }) {
             cukai<span className="text-[#10B981]">.</span><span className="font-light text-[#64748B]">ai</span>
           </span>
         </div>
-        {/* Step content */}
-        <div className="transition-all duration-300">
+
+        {/* Error Alert Banner */}
+        {error && (
+          <div className="mb-3 p-2.5 rounded-xl bg-red-50 text-red-600 text-[11px] font-medium border border-red-100 animate-fade-in">
+            ⚠️ {error}
+          </div>
+        )}
+
+        {/* Form contents with dynamic loading styles */}
+        <div className={`transition-all duration-300 ${loading ? "opacity-40 pointer-events-none select-none" : ""}`}>
           {currentView}
         </div>
-
+        
+        {loading && (
+          <div className="text-center text-[10px] font-semibold text-[#10B981] mt-2 animate-pulse">
+            Processing secure registration...
+          </div>
+        )}
       </div>
     </div>
   );
 }
+
+// // ─── MAIN COMPONENT ──────────────────────────────────────────────────────────
+
+// export default function GetStarted({ onLogin }) {
+//   const [step, setStep] = useState(0);
+//   const [data, setData] = useState({});
+//   const navigate = useNavigate();
+
+//   const isExisting = data.accountType === "existing";
+
+//   // Step index constants for existing-account path
+//   // 0: Account, 1: AccountType, 2: ExistingSSM, 3: Upload, 4: Savings
+//   // New-account path mirrors the original full wizard
+
+//   const newAccountStepsConfig = [
+//     { label: "Account" },
+//     { label: "Account Type" },
+//     { label: "Income" },
+//     { label: "Personal & Family" },
+//     { label: "Savings & Insurance" },
+//     { label: "Business Profile" },
+//   ];
+
+//   const existingAccountStepsConfig = [
+//     { label: "Account" },
+//     { label: "Account Type" },
+//     { label: "Link Company" },
+//   ];
+
+//   // We use a flat step index. Routing is handled by the WIZARD_STEPS map.
+//   // Steps 0-1 are shared. From step 2 onward the path diverges.
+//   // Step 2 (new) = Income  |  Step 2 (existing) = ExistingSSM -> step 50 (Upload) -> step 51 (Savings)
+//   // Using high step indices (50, 51) for the existing-path terminal steps to avoid collision.
+
+//   const WIZARD_STEPS = {};
+
+//   // ── Shared ──
+//   WIZARD_STEPS[0] = (
+//     <>
+//       <ProgressBar current={0} total={isExisting ? 3 : 6} steps={isExisting ? existingAccountStepsConfig : newAccountStepsConfig} />
+//       <Step0_Account data={data} setData={setData} onNext={() => setStep(1)} />
+//     </>
+//   );
+//   WIZARD_STEPS[1] = (
+//     <>
+//       <ProgressBar current={1} total={isExisting ? 3 : 6} steps={isExisting ? existingAccountStepsConfig : newAccountStepsConfig} />
+//       <Step1_Employment data={data} setData={setData} onBack={() => setStep(0)} onNext={() => {
+//         if (data.accountType === "existing") {
+//           setStep(2);
+//         } else {
+//           setStep(10); // new account path starts at 10
+//         }
+//       }} />
+//     </>
+//   );
+
+//   // ── Existing account path ──
+//   WIZARD_STEPS[2] = (
+//     <>
+//       <ProgressBar current={2} total={3} steps={existingAccountStepsConfig} />
+//       <StepExistingSSM data={data} setData={setData} onBack={() => setStep(1)} onNext={() => setStep(50)} />
+//     </>
+//   );
+//   WIZARD_STEPS[50] = <StepUpload onBack={() => setStep(2)} onNext={() => setStep(51)} onSkip={() => setStep(51)} />;
+//   WIZARD_STEPS[51] = <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />;
+
+//   // ── New account path (steps 10–17) ──
+//   WIZARD_STEPS[10] = (
+//     <>
+//       <ProgressBar current={2} total={6} steps={newAccountStepsConfig} />
+//       <Step2_Income data={data} setData={setData} onBack={() => setStep(1)} onNext={() => setStep(11)} />
+//     </>
+//   );
+//   WIZARD_STEPS[11] = (
+//     <>
+//       <ProgressBar current={3} total={6} steps={newAccountStepsConfig} />
+//       <Step3_Personal data={data} setData={setData} onBack={() => setStep(10)} onNext={() => setStep(12)} />
+//     </>
+//   );
+//   WIZARD_STEPS[12] = (
+//     <>
+//       <ProgressBar current={4} total={6} steps={newAccountStepsConfig} />
+//       <Step4_Savings data={data} setData={setData} onBack={() => setStep(11)} onNext={() => setStep(13)} />
+//     </>
+//   );
+//   WIZARD_STEPS[13] = (
+//     <>
+//       <ProgressBar current={5} total={6} steps={newAccountStepsConfig} />
+//       <Step5_BusinessProfile data={data} setData={setData} onBack={() => setStep(12)} onNext={() => setStep(14)} />
+//     </>
+//   );
+//   WIZARD_STEPS[14] = <StepUpload onBack={() => setStep(13)} onNext={() => setStep(15)} />;
+//   WIZARD_STEPS[15] = <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />;
+
+//   const currentView = WIZARD_STEPS[step];
+//   const allStepIndices = Object.keys(WIZARD_STEPS).map(Number);
+//   const totalSteps = allStepIndices.length;
+
+//   return (
+//     <div className="w-screen h-screen bg-[#E8ECF4] flex items-center justify-center px-4 overflow-hidden">
+//       <div className="w-full max-w-[440px] bg-white rounded-[20px] shadow-[0_4px_32px_rgba(15,23,42,0.10)] px-7 py-6 flex flex-col">
+//         {/* Logo */}
+//         <div className="flex items-center justify-center gap-2 mb-1">
+//           <img src={cukaiLogo} alt="Cukai.ai logo" className="h-8 w-8 shrink-0" />
+//           <span className="select-none text-lg font-bold tracking-tight text-[#0F172A]">
+//             cukai<span className="text-[#10B981]">.</span><span className="font-light text-[#64748B]">ai</span>
+//           </span>
+//         </div>
+//         {/* Step content */}
+//         <div className="transition-all duration-300">
+//           {currentView}
+//         </div>
+
+//       </div>
+//     </div>
+//   );
+// }

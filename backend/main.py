@@ -111,6 +111,20 @@ async def user_red(db:db_dependency, payload:schemas.ProfileIn):
   db.refresh(person)
   return person
 
+# @app.put("/personalDetails/{person_id}")
+# async def update_personal_details(person_id: int, updated_data: schemas.PersonalDetailsUpdate, db: db_dependency):
+#     db_person = db.query(models.Person).filter(models.Person.id == person_id).first()
+#     if not db_person:
+#         raise HTTPException(status_code=404, detail="Profile record not found")
+        
+#     # Update properties dynamically loop
+#     for key, value in updated_data.dict(exclude_unset=True).items():
+#         setattr(db_person, key, value)
+        
+#     db.commit()
+#     db.refresh(db_person)
+#     return db_person
+
 #### to cari user by ID
 @app.get("/userProfile/{person_id}", response_model=schemas.PersonOut)
 async def get_profile(db:db_dependency, person_id:int=Path(gt=0)):
@@ -120,14 +134,21 @@ async def get_profile(db:db_dependency, person_id:int=Path(gt=0)):
   raise HTTPException(status_code=404, detail="Profile not found")
  
 #### cari user by email & passwrod.
-@app.get("/userLogin")
-async def user_login(db:db_dependency,email: str, password: str):
-  person_result = db.query(models.Person).filter(models.Person.email == email).first()
+@app.post("/userLogin")
+# CRITICAL: Change (db: db_dependency, email: str, password: str) 
+#    to use your new schema variable "payload"
+async def user_login(db: db_dependency, payload: schemas.UserLogin):
+  
+  # Read the email out of the payload object using dot notation
+  person_result = db.query(models.Person).filter(models.Person.email == payload.email).first()
 
   if not person_result:
     raise HTTPException(status_code=404, detail="User not found")
-  if not bcrypt.checkpw(password.encode(), person_result.password_hash.encode()):
+    
+  # Read the password out of the payload object using dot notation
+  if not bcrypt.checkpw(payload.password.encode(), person_result.password_hash.encode()):
     raise HTTPException(status_code=401, detail="Incorrect password")
+    
   return {"id": person_result.id, "fullName": person_result.full_name}
 
 ### Ini for Manage Acc. Only GET personal details

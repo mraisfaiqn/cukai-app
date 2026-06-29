@@ -33,20 +33,37 @@ export default function LoginPanel({ onLogin }) {
   const [loading,  setLoading]  = useState(false);
   const navigate = useNavigate();
 
+  const [error, setError] = useState("");
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
+    setError(""); // Clear previous errors
+
     try {
-    await userLogin(email, password);  // calls bckend
-    onLogin();
-    navigate("/overview");
-  } catch (error) {
-    console.error("Login failed", error);
-    alert("Login failed — check your email and password.");
-  } finally {
-    setLoading(false);
-  }
-};
+      // 1. Fire network request to your FastAPI login endpoint
+      const response = await userLogin(email, password);
+
+      // If your userLogin wrapper returns the raw Axios response data, 
+      // extract the unique ID so other pages can load this specific user's metrics
+      if (response && response.id) {
+        localStorage.setItem("userId", response.id);
+        localStorage.setItem("userFullName", response.fullName || "");
+      }
+
+      onLogin();
+      navigate("/overview");
+    } catch (err) {
+      console.error("Login process caught error:", err);
+      
+      // Look for the clean error description passed back from your FastAPI backend
+      const serverMessage = err.response?.data?.detail || "Invalid email or password layout.";
+      setError(serverMessage);
+    } finally {
+      // This will force the button to drop "Logging in..." and become clickable again!
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="w-[50%] h-screen bg-[#E8ECF4] flex items-center justify-center px-8 flex-shrink-0">
@@ -67,7 +84,7 @@ export default function LoginPanel({ onLogin }) {
         <p className="text-center text-[13px] text-[#94A3B8] mb-8 mt-3">
           Log In to Continue
         </p>
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        
           {/* Email/username */}
           <div>
             <label className="block text-[13px] font-semibold tracking-[0.06em] text-[#6B7280] mb-2">
@@ -113,6 +130,14 @@ export default function LoginPanel({ onLogin }) {
               </button>
             </div>
           </div>
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-100 text-red-600 rounded-xl text-xs font-medium flex items-center gap-2">
+              <span>⚠️</span>
+              <span>Incorrect Password or Email</span>
+            </div>
+          )}
+          
           {/* Remember Me */}
           <div className="flex items-center gap-2.5">
             <input

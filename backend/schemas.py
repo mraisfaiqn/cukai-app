@@ -166,3 +166,7 @@ class PersonalDetailsOut(Base):
     has_lifestyle_purchases: Optional[bool] = None
     has_sspn_ev_other: Optional[bool] = None
     created_at: Optional[datetime] = None
+
+class UserLogin(Base):
+    email: str
+    password: str
