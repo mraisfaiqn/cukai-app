@@ -1,9 +1,9 @@
-import axios from "axios";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, NavLink } from "react-router-dom";
 import cukaiLogo from '../../assets/cukai-logo.png';
+import { registerUser, getEntityBySsm, linkPersonToEntity } from "../../services/api";
 
-// ─── SHARED UI ───────────────────────────────────────────────────────────────
+// ── Shared UI primitives ────────────────────────────────────────────────────────
 
 const ProgressBar = ({ current, total, steps }) => (
   <div className="mb-3">
@@ -56,10 +56,12 @@ const SectionLabel = ({ children }) => (
 );
 
 const CheckItem = ({ label, sublabel, checked, onChange }) => (
-  <label className="flex items-start gap-3 cursor-pointer py-1.5 group">
+  <label
+    onClick={(e) => { e.preventDefault(); onChange(); }}
+    className="flex items-start gap-3 cursor-pointer py-1.5 group select-none"
+  >
     <div
-      onClick={onChange}
-      className={`mt-0.5 w-4 h-4 rounded border-2 flex-shrink-0 flex items-center justify-center transition-all duration-150 cursor-pointer ${
+      className={`mt-0.5 w-4 h-4 rounded border-2 flex-shrink-0 flex items-center justify-center transition-all duration-150 ${
         checked ? "bg-[#10B981] border-[#10B981]" : "border-[#CBD5E1] group-hover:border-[#10B981]"
       }`}
     >
@@ -106,7 +108,7 @@ const getStrength = (pw) => {
 const strengthLabel = ["", "Weak", "Fair", "Good", "Strong"];
 const strengthColor = ["", "#EF4444", "#F59E0B", "#3B82F6", "#10B981"];
 
-// ─── STEP COMPONENTS ─────────────────────────────────────────────────────────
+// ── Step components ─────────────────────────────────────────────────────────────
 
 function Step0_Account({ data, setData, onNext }) {
   const [showPw, setShowPw] = useState(false);
@@ -187,6 +189,17 @@ function Step0_Account({ data, setData, onNext }) {
       </div>
 
       <NavButtons showBack={false} onNext={onNext} nextDisabled={!valid} />
+
+      {/* Log in link — shown only when showBack is false (first step) */}
+      <p className="mt-3 text-center text-[11px] text-[#94A3B8]">
+        Already have an account?{" "}
+        <NavLink
+          to="/login"
+          className="text-[#94A3B8] underline underline-offset-2 hover:text-[#64748B] transition-colors"
+        >
+          Log in
+        </NavLink>
+      </p>
     </Card>
   );
 }
@@ -373,18 +386,27 @@ function Step4_Savings({ data, setData, onBack, onNext }) {
 
       <div className="divide-y divide-[#F1F5F9]">
         <div className="pb-2">
-          <SectionLabel>Retirement Savings</SectionLabel>
+          <SectionLabel>EPF, Retirement &amp; Life Insurance</SectionLabel>
+          {/* Each item has its own key — all three feed into one DB flag (hasEpfLifeInsurance) */}
           <CheckItem label={<span>Voluntary EPF contributions <InfoIcon /></span>} checked={!!data.epf} onChange={() => toggle("epf")} />
+          <CheckItem label="Life insurance or takaful premiums" checked={!!data.lifeInsurance} onChange={() => toggle("lifeInsurance")} />
           <CheckItem label="Private Retirement Scheme (PRS)" checked={!!data.prs} onChange={() => toggle("prs")} />
-          <CheckItem label="Deferred annuity premiums" checked={!!data.annuity} onChange={() => toggle("annuity")} />
         </div>
         <div className="py-2">
           <SectionLabel>Insurance</SectionLabel>
-          <CheckItem label="Life insurance & takaful premiums" checked={!!data.lifeInsurance} onChange={() => toggle("lifeInsurance")} />
-          <CheckItem label="Education & medical insurance" checked={!!data.medInsurance} onChange={() => toggle("medInsurance")} />
+          <CheckItem label="Education &amp; medical insurance" checked={!!data.medInsurance} onChange={() => toggle("medInsurance")} />
+        </div>
+        <div className="py-2">
+          <SectionLabel>Lifestyle &amp; Purchases</SectionLabel>
+          <CheckItem
+            label="Books, internet, gym, personal devices"
+            sublabel="Lifestyle relief — books, home internet, gym, sports equipment, devices"
+            checked={!!data.lifestylePurchases}
+            onChange={() => toggle("lifestylePurchases")}
+          />
         </div>
         <div className="pt-2">
-          <SectionLabel>Education Savings</SectionLabel>
+          <SectionLabel>Education Savings &amp; Other</SectionLabel>
           <CheckItem label="SSPN education savings" sublabel="National Education Savings Scheme" checked={!!data.sspn} onChange={() => toggle("sspn")} />
         </div>
       </div>
@@ -547,14 +569,25 @@ function StepUpload({ onBack, onNext, onSkip }) {
 
 function StepSavings({ data, onNext }) {
   const base = 660;
-  const extra = (data.epf ? 150 : 0) + (data.prs ? 100 : 0) + (data.lifeInsurance ? 80 : 0)
-    + (data.medInsurance ? 60 : 0) + (data.sspn ? 40 : 0) + (data.hasChildren ? 120 : 0)
-    + (data.homeOffice ? 50 : 0) + (data.equipment ? 70 : 0) + (data.training ? 90 : 0);
+  const extra =
+    (data.epf            ? 150 : 0) +
+    (data.lifeInsurance  ?  80 : 0) +
+    (data.prs            ? 100 : 0) +
+    (data.medInsurance   ?  60 : 0) +
+    (data.sspn           ?  40 : 0) +
+    (data.hasChildren    ? 120 : 0) +
+    (data.lifestylePurchases ? 80 : 0);
   const total = base + extra;
 
   return (
     <Card>
       <div className="text-center py-4">
+        <div className="w-12 h-12 rounded-full bg-[#D1FAE5] flex items-center justify-center mx-auto mb-3">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <path d="M20 6L9 17l-5-5" stroke="#10B981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </div>
+        <p className="text-sm font-bold text-[#0F172A] mb-1">Account created!</p>
         <p className="text-xs font-semibold text-[#10B981] mb-1.5">Your estimated tax savings</p>
         <p className="text-4xl font-extrabold text-[#0F172A] mb-3 tracking-tight">RM {total.toLocaleString()}</p>
         <p className="text-xs text-[#64748B] max-w-xs mx-auto leading-relaxed">
@@ -572,14 +605,38 @@ function StepSavings({ data, onNext }) {
   );
 }
 
-// ─── EXISTING ACCOUNT SSM STEP ──────────────────────────────────────────────
-function StepExistingSSM({ data, setData, onBack, onNext }) {
+// ── Existing-account path: link by SSM number ───────────────────────────────────
+function StepExistingSSM({ data, setData, onBack, onNext, onNotFound }) {
+  const [searching, setSearching]       = useState(false);
+  const [foundEntity, setFoundEntity]   = useState(null);   // entity returned by the lookup
+  const [lookupError, setLookupError]   = useState(null);
   const hasInput = (data.existingSsmNumber || "").trim().length > 0;
+
+  const handleFind = async () => {
+    setSearching(true);
+    setLookupError(null);
+    setFoundEntity(null);
+    try {
+      const entity = await getEntityBySsm(data.existingSsmNumber);
+      // SSM found — store the entity id so the parent can link after registration
+      setFoundEntity(entity);
+      setData({ ...data, linkedEntityId: entity.id, linkedEntityName: entity.name });
+    } catch (err) {
+      if (err.response?.status === 404) {
+        // Entity not in the system — send user back to register as new company
+        setLookupError("No company found with that SSM number. It may not be registered in cukai.ai yet.");
+      } else {
+        setLookupError("Something went wrong. Please check your connection and try again.");
+      }
+    } finally {
+      setSearching(false);
+    }
+  };
 
   return (
     <Card>
       <h2 className="text-base font-bold text-[#0F172A] mb-0.5">Find your company</h2>
-      <p className="text-xs text-[#64748B] mb-3">Enter your company's SSM Registration Number to link your existing account.</p>
+      <p className="text-xs text-[#64748B] mb-3">Enter your SSM number to link your account to an existing company.</p>
 
       <div className="space-y-3">
         <div>
@@ -590,26 +647,78 @@ function StepExistingSSM({ data, setData, onBack, onNext }) {
               type="text"
               placeholder="e.g. 202301012345"
               value={data.existingSsmNumber || ""}
-              onChange={e => setData({ ...data, existingSsmNumber: e.target.value })}
+              onChange={e => {
+                setData({ ...data, existingSsmNumber: e.target.value });
+                setFoundEntity(null);
+                setLookupError(null);
+              }}
               className="flex-1 px-3 py-2 text-xs text-[#0F172A] placeholder-[#CBD5E1] focus:outline-none"
             />
           </div>
-          <p className="text-[10px] text-[#94A3B8] mt-1.5">Found on your SSM certificate or MyCoID portal.</p>
+          <p className="text-[10px] text-[#94A3B8] mt-1.5">Found on your SSM certificate or mycoid.ssm.com.my.</p>
         </div>
 
-        <div className="p-3 rounded-xl bg-[#F0FDF9] border border-[#D1FAE5]">
-          <p className="text-[10px] text-[#0D9488] leading-relaxed">
-            <span className="font-semibold">Where to find it?</span> Your SSM number appears on your business registration certificate, or log in to <span className="font-medium">mycoid.ssm.com.my</span> to retrieve it.
-          </p>
-        </div>
+        {/* SSM found — show entity card */}
+        {foundEntity && (
+          <div className="p-3 rounded-xl bg-[#F0FDF9] border border-[#D1FAE5]">
+            <p className="text-[10px] font-bold text-[#0D9488] uppercase tracking-wide mb-1">Company found</p>
+            <p className="text-xs font-semibold text-[#0F172A]">{foundEntity.name}</p>
+            <p className="text-[10px] text-[#64748B] mt-0.5">{foundEntity.entityType} · {foundEntity.city}{foundEntity.state ? `, ${foundEntity.state}` : ""}</p>
+          </div>
+        )}
+
+        {/* Lookup error — with option to go back and register as new */}
+        {lookupError && (
+          <div className="p-3 rounded-xl bg-red-50 border border-red-100">
+            <p className="text-[11px] text-red-600 font-medium mb-2">⚠️ {lookupError}</p>
+            <button
+              onClick={onNotFound}
+              className="text-[10px] font-semibold text-red-600 underline underline-offset-2 hover:text-red-700"
+            >
+              ← Register as a new company instead
+            </button>
+          </div>
+        )}
+
+        {!foundEntity && !lookupError && (
+          <div className="p-3 rounded-xl bg-[#F0FDF9] border border-[#D1FAE5]">
+            <p className="text-[10px] text-[#0D9488] leading-relaxed">
+              <span className="font-semibold">Where to find it?</span> Your SSM number appears on your business registration certificate, or log in to <span className="font-medium">mycoid.ssm.com.my</span>.
+            </p>
+          </div>
+        )}
       </div>
 
-      <NavButtons onBack={onBack} onNext={onNext} nextDisabled={!hasInput} nextLabel="Find Company" />
+      <div className="flex justify-between items-center mt-4 pt-3 border-t border-[#F1F5F9]">
+        <button onClick={onBack} className="text-[#64748B] font-medium text-xs hover:text-[#0F172A] transition-colors px-2 py-1">
+          Back
+        </button>
+        {!foundEntity ? (
+          <button
+            onClick={handleFind}
+            disabled={!hasInput || searching}
+            className={`px-5 py-2 rounded-xl font-semibold text-xs transition-all duration-200 ${
+              !hasInput || searching
+                ? "bg-[#D1FAE5] text-[#6EE7B7] cursor-not-allowed"
+                : "bg-[#10B981] hover:bg-[#0D9488] text-white shadow-sm hover:shadow-md"
+            }`}
+          >
+            {searching ? "Searching…" : "Find Company"}
+          </button>
+        ) : (
+          <button
+            onClick={onNext}
+            className="px-5 py-2 rounded-xl font-semibold text-xs bg-[#10B981] hover:bg-[#0D9488] text-white shadow-sm hover:shadow-md transition-all duration-200"
+          >
+            Link & Continue →
+          </button>
+        )}
+      </div>
     </Card>
   );
 }
 
-// ─── MAIN COMPONENT ──────────────────────────────────────────────────────────
+// ── Main component ──────────────────────────────────────────────────────────────
 
 export default function GetStarted({ onLogin }) {
   const [step, setStep] = useState(0);
@@ -620,84 +729,98 @@ export default function GetStarted({ onLogin }) {
 
   const isExisting = data.accountType === "existing";
 
-  // ── API Submission Handler ──
-  const handleRegisterUser = async () => {
+  const handleRegisterUser = async (onSuccess) => {
     setLoading(true);
     setError(null);
 
     // Map your flat wizard data into the nested structure main.py expects
     const payload = {
       person: {
-        email: data.email || "",
-        password: data.password || "",
-        full_name: data.fullName || "",
-        id_type: "ic", 
-        identification_no: data.identificationNo || "", 
-        personal_tin: data.personalTin || "",
-        citizenship: "MYS",
-        gender: data.gender || "",
-        date_of_birth: data.dob || null,
-        marital_status: data.marital || "single",
-        marital_event_date: null,
-        spouse_name: data.spouseName || "",
-        spouse_id_no: data.spouseIdNo || "",
-        spouse_dob: null,
-        assessment_type: "single",
-        number_of_children: data.hasChildren ? parseInt(data.numChildren || 0) : 0,
-        has_disabled_dependents: data.childDisability || false,
-        phone: data.phone || "",
-        correspondence_address: data.address || "",
-        correspondence_postcode: data.postcode || "",
-        correspondence_city: data.city || "",
-        correspondence_state: data.state || "",
-        refund_method: "bank",
-        bank_name: data.bankName || "",
-        bank_account_no: data.bankAccountNo || "",
-        record_keeping: true,
-        has_foreign_accounts: false,
-        rpgt_disposal: false,
-        has_dependent_parents: data.supportParents || false,
-        has_epf_life_insurance: data.epf || false,
-        has_education_medical_insurance: data.medInsurance || false,
-        has_lifestyle_purchases: false,
-        has_sspn_ev_other: data.sspn || false,
+        email:                        data.email                           || "",
+        password:                     data.password                        || "",
+        fullName:                     data.fullName                        || "",
+        idType:                       "ic",
+        identificationNo:             data.identificationNo                || "",
+        personalTin:                  data.personalTin                     || "",
+        citizenship:                  "MYS",
+        gender:                       data.gender                          || "",
+        dateOfBirth:                  data.dob                             || null,
+        maritalStatus:                data.marital                         || "single",
+        maritalEventDate:             null,
+        spouseName:                   data.spouseName                      || "",
+        spouseIdNo:                   data.spouseIdNo                      || "",
+        spouseDob:                    null,
+        assessmentType:               "single",
+        numberOfChildren:             data.hasChildren ? parseInt(data.numChildren || 0) : 0,
+        hasDisabledDependents:        data.childDisability                 || false,
+        phone:                        data.phone                           || "",
+        correspondenceAddress:        data.address                         || "",
+        correspondencePostcode:       data.postcode                        || "",
+        correspondenceCity:           data.city                            || "",
+        correspondenceState:          data.state                           || "",
+        refundMethod:                 "bank",
+        bankName:                     data.bankName                        || "",
+        bankAccountNo:                data.bankAccountNo                   || "",
+        recordKeeping:                true,
+        hasForeignAccounts:           false,
+        rpgtDisposal:                 false,
+        hasDependentParents:          data.supportParents                  || false,
+        hasEpfLifeInsurance:          !!(data.epf || data.lifeInsurance || data.prs),
+        hasEducationMedicalInsurance: data.medInsurance                    || false,
+        hasLifestylePurchases:        data.lifestylePurchases              || false,
+        hasSspnEvOther:               data.sspn                            || false,
       },
-      entity: {
-        entity_type: "sole-prop",
-        name: data.companyName || `${data.fullName || 'Solopreneur'}'s Business`,
-        business_code: data.industry || "",
-        business_activity: data.industry || "",
-        ssm_no: isExisting ? data.existingSsmNumber : (data.ssmNumber || ""),
-        tin: "",
-        address: "",
-        postcode: "",
-        city: "",
-        state: "",
-        sales_turnover: parseFloat(data.businessIncome || 0),
-        total_expenditure: 0,
-        net_profit_loss: 0,
-        total_assets: 0,
-        total_liabilities: 0,
-        monthly_income: !isExisting ? parseFloat(data.businessIncome || 0) : 0,
-        annual_income: 0,
+      // skipEntity tells the backend not to create a new entity for this person.
+      // Used by the existing-account path — they're joining an existing company via SSM.
+      skipEntity: isExisting,
+
+      entity: isExisting ? {} : {
+        entityType:       "sole-prop",
+        name:             data.companyName || `${data.fullName || "Solopreneur"}'s Business`,
+        businessCode:     data.industry || "",
+        businessActivity: data.industry || "",
+        ssmNo:            data.ssmNumber || "",
+        tin:              "",
+        address:          "",
+        postcode:         "",
+        city:             "",
+        state:            "",
+        salesTurnover:    parseFloat(data.businessIncome || 0),
+        totalExpenditure: 0,
+        netProfitLoss:    0,
+        totalAssets:      0,
+        totalLiabilities: 0,
+        monthlyIncome:    parseFloat(data.businessIncome || 0),
+        annualIncome:     0,
       }
     };
 
     try {
       // Direct call to your FastAPI backend endpoint
-      const response = await axios.post("http://localhost:8000/userReg", payload);
+      const response = await registerUser(payload);
       
       // Cache database identity locally for subsequent dashboard loads
-      if (response.data && response.data.id) {
-        localStorage.setItem("userId", response.data.id);
-        localStorage.setItem("userFullName", response.data.full_name || data.fullName);
+      if (response && response.id) {
+        localStorage.setItem("userId",       String(response.id));
+        localStorage.setItem("userFullName", response.fullName || data.fullName || "");
+        localStorage.setItem("userEmail",    data.email || "");
+        // For new-company path: default to the entity just created.
+        // For existing-company path: activeEntityId is set after linkPersonToEntity succeeds.
+        if (!isExisting && response.entities && response.entities.length > 0) {
+          localStorage.setItem("activeEntityId", String(response.entities[0].id));
+        }
       }
 
-      onLogin(); 
-      navigate("/overview");
+      await onSuccess(response?.id);
     } catch (err) {
       console.error("Registration failed:", err);
-      setError(err.response?.data?.detail || "Network request failed. Is your backend server up?");
+      const detail = err.response?.data?.detail || "Network request failed. Is your backend server up?";
+      // For existing-account path, "Email already registered" means the user already has an account
+      if (isExisting && detail.toLowerCase().includes("email already")) {
+        setError("This email is already registered. Please log in to link your account to this company.");
+      } else {
+        setError(detail);
+      }
     } finally {
       setLoading(false);
     }
@@ -720,7 +843,7 @@ export default function GetStarted({ onLogin }) {
 
   const WIZARD_STEPS = {};
 
-  // ── Shared ──
+  // Shared steps (both paths begin here)
   WIZARD_STEPS[0] = (
     <>
       <ProgressBar current={0} total={isExisting ? 3 : 6} steps={isExisting ? existingAccountStepsConfig : newAccountStepsConfig} />
@@ -740,17 +863,40 @@ export default function GetStarted({ onLogin }) {
     </>
   );
 
-  // ── Existing account path ──
+  // Existing-account path diverges here
   WIZARD_STEPS[2] = (
     <>
       <ProgressBar current={2} total={3} steps={existingAccountStepsConfig} />
-      <StepExistingSSM data={data} setData={setData} onBack={() => setStep(1)} onNext={() => setStep(50)} />
+      <StepExistingSSM
+        data={data}
+        setData={setData}
+        onBack={() => setStep(1)}
+        onNotFound={() => setStep(1)}
+        onNext={() => handleRegisterUser(async (personId) => {
+          // After registration, link the new user to the found entity
+          if (data.linkedEntityId && personId) {
+            try {
+              await linkPersonToEntity(data.linkedEntityId, personId);
+              // Now that we're linked to the found entity, scope the active context to it
+              localStorage.setItem("activeEntityId", String(data.linkedEntityId));
+            } catch (linkErr) {
+              if (linkErr.response?.status === 409) {
+                // User is already a member of this entity — don't silently fail
+                setError("Your account is already linked to this company. Please log in instead.");
+              } else {
+                console.warn("Could not auto-link to entity:", linkErr);
+              }
+            }
+          }
+          setStep(50);
+        })}
+      />
     </>
   );
   WIZARD_STEPS[50] = <StepUpload onBack={() => setStep(2)} onNext={() => setStep(51)} onSkip={() => setStep(51)} />;
-  WIZARD_STEPS[51] = <StepSavings data={data} onNext={handleRegisterUser} />;
+  WIZARD_STEPS[51] = <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />;
 
-  // ── New account path (steps 10–17) ──
+  // New-account path
   WIZARD_STEPS[10] = (
     <>
       <ProgressBar current={2} total={6} steps={newAccountStepsConfig} />
@@ -772,11 +918,16 @@ export default function GetStarted({ onLogin }) {
   WIZARD_STEPS[13] = (
     <>
       <ProgressBar current={5} total={6} steps={newAccountStepsConfig} />
-      <Step5_BusinessProfile data={data} setData={setData} onBack={() => setStep(12)} onNext={() => setStep(14)} />
+      <Step5_BusinessProfile
+        data={data}
+        setData={setData}
+        onBack={() => setStep(12)}
+        onNext={() => handleRegisterUser(async () => setStep(14))}
+      />
     </>
   );
   WIZARD_STEPS[14] = <StepUpload onBack={() => setStep(13)} onNext={() => setStep(15)} />;
-  WIZARD_STEPS[15] = <StepSavings data={data} onNext={handleRegisterUser} />;
+  WIZARD_STEPS[15] = <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />;
 
   const currentView = WIZARD_STEPS[step];
 
@@ -794,7 +945,33 @@ export default function GetStarted({ onLogin }) {
         {/* Error Alert Banner */}
         {error && (
           <div className="mb-3 p-2.5 rounded-xl bg-red-50 text-red-600 text-[11px] font-medium border border-red-100 animate-fade-in">
-            ⚠️ {error}
+            <p>⚠️ {error}</p>
+            {error.toLowerCase().includes("email") && (
+              <div className="flex gap-2 mt-2">
+                {!isExisting && (
+                  <button
+                    onClick={() => { setError(null); setStep(0); }}
+                    className="px-3 py-1 rounded-lg bg-white border border-red-200 text-red-600 text-[10px] font-semibold hover:bg-red-50 transition-colors"
+                  >
+                    ← Change email
+                  </button>
+                )}
+                <button
+                  onClick={() => navigate("/login")}
+                  className="px-3 py-1 rounded-lg bg-red-600 text-white text-[10px] font-semibold hover:bg-red-700 transition-colors"
+                >
+                  {isExisting ? "Log in to link your account" : "Log in instead"}
+                </button>
+              </div>
+            )}
+            {!error.toLowerCase().includes("email") && (
+              <button
+                onClick={() => setError(null)}
+                className="mt-2 px-3 py-1 rounded-lg bg-white border border-red-200 text-red-600 text-[10px] font-semibold hover:bg-red-50 transition-colors"
+              >
+                Dismiss
+              </button>
+            )}
           </div>
         )}
 
@@ -812,120 +989,3 @@ export default function GetStarted({ onLogin }) {
     </div>
   );
 }
-
-// // ─── MAIN COMPONENT ──────────────────────────────────────────────────────────
-
-// export default function GetStarted({ onLogin }) {
-//   const [step, setStep] = useState(0);
-//   const [data, setData] = useState({});
-//   const navigate = useNavigate();
-
-//   const isExisting = data.accountType === "existing";
-
-//   // Step index constants for existing-account path
-//   // 0: Account, 1: AccountType, 2: ExistingSSM, 3: Upload, 4: Savings
-//   // New-account path mirrors the original full wizard
-
-//   const newAccountStepsConfig = [
-//     { label: "Account" },
-//     { label: "Account Type" },
-//     { label: "Income" },
-//     { label: "Personal & Family" },
-//     { label: "Savings & Insurance" },
-//     { label: "Business Profile" },
-//   ];
-
-//   const existingAccountStepsConfig = [
-//     { label: "Account" },
-//     { label: "Account Type" },
-//     { label: "Link Company" },
-//   ];
-
-//   // We use a flat step index. Routing is handled by the WIZARD_STEPS map.
-//   // Steps 0-1 are shared. From step 2 onward the path diverges.
-//   // Step 2 (new) = Income  |  Step 2 (existing) = ExistingSSM -> step 50 (Upload) -> step 51 (Savings)
-//   // Using high step indices (50, 51) for the existing-path terminal steps to avoid collision.
-
-//   const WIZARD_STEPS = {};
-
-//   // ── Shared ──
-//   WIZARD_STEPS[0] = (
-//     <>
-//       <ProgressBar current={0} total={isExisting ? 3 : 6} steps={isExisting ? existingAccountStepsConfig : newAccountStepsConfig} />
-//       <Step0_Account data={data} setData={setData} onNext={() => setStep(1)} />
-//     </>
-//   );
-//   WIZARD_STEPS[1] = (
-//     <>
-//       <ProgressBar current={1} total={isExisting ? 3 : 6} steps={isExisting ? existingAccountStepsConfig : newAccountStepsConfig} />
-//       <Step1_Employment data={data} setData={setData} onBack={() => setStep(0)} onNext={() => {
-//         if (data.accountType === "existing") {
-//           setStep(2);
-//         } else {
-//           setStep(10); // new account path starts at 10
-//         }
-//       }} />
-//     </>
-//   );
-
-//   // ── Existing account path ──
-//   WIZARD_STEPS[2] = (
-//     <>
-//       <ProgressBar current={2} total={3} steps={existingAccountStepsConfig} />
-//       <StepExistingSSM data={data} setData={setData} onBack={() => setStep(1)} onNext={() => setStep(50)} />
-//     </>
-//   );
-//   WIZARD_STEPS[50] = <StepUpload onBack={() => setStep(2)} onNext={() => setStep(51)} onSkip={() => setStep(51)} />;
-//   WIZARD_STEPS[51] = <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />;
-
-//   // ── New account path (steps 10–17) ──
-//   WIZARD_STEPS[10] = (
-//     <>
-//       <ProgressBar current={2} total={6} steps={newAccountStepsConfig} />
-//       <Step2_Income data={data} setData={setData} onBack={() => setStep(1)} onNext={() => setStep(11)} />
-//     </>
-//   );
-//   WIZARD_STEPS[11] = (
-//     <>
-//       <ProgressBar current={3} total={6} steps={newAccountStepsConfig} />
-//       <Step3_Personal data={data} setData={setData} onBack={() => setStep(10)} onNext={() => setStep(12)} />
-//     </>
-//   );
-//   WIZARD_STEPS[12] = (
-//     <>
-//       <ProgressBar current={4} total={6} steps={newAccountStepsConfig} />
-//       <Step4_Savings data={data} setData={setData} onBack={() => setStep(11)} onNext={() => setStep(13)} />
-//     </>
-//   );
-//   WIZARD_STEPS[13] = (
-//     <>
-//       <ProgressBar current={5} total={6} steps={newAccountStepsConfig} />
-//       <Step5_BusinessProfile data={data} setData={setData} onBack={() => setStep(12)} onNext={() => setStep(14)} />
-//     </>
-//   );
-//   WIZARD_STEPS[14] = <StepUpload onBack={() => setStep(13)} onNext={() => setStep(15)} />;
-//   WIZARD_STEPS[15] = <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />;
-
-//   const currentView = WIZARD_STEPS[step];
-//   const allStepIndices = Object.keys(WIZARD_STEPS).map(Number);
-//   const totalSteps = allStepIndices.length;
-
-//   return (
-//     <div className="w-screen h-screen bg-[#E8ECF4] flex items-center justify-center px-4 overflow-hidden">
-//       <div className="w-full max-w-[440px] bg-white rounded-[20px] shadow-[0_4px_32px_rgba(15,23,42,0.10)] px-7 py-6 flex flex-col">
-//         {/* Logo */}
-//         <div className="flex items-center justify-center gap-2 mb-1">
-//           <img src={cukaiLogo} alt="Cukai.ai logo" className="h-8 w-8 shrink-0" />
-//           <span className="select-none text-lg font-bold tracking-tight text-[#0F172A]">
-//             cukai<span className="text-[#10B981]">.</span><span className="font-light text-[#64748B]">ai</span>
-//           </span>
-//         </div>
-//         {/* Step content */}
-//         <div className="transition-all duration-300">
-//           {currentView}
-//         </div>
-
-//       </div>
-//     </div>
-//   );
-// }

@@ -265,7 +265,7 @@ const PersonalProfileSummary = ({ profile, onOpen }) => {
         <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-[#64748B] mt-0.5">
           <span>{profile.personalTin || 'No TIN set'}</span>
           <span className="text-slate-300">•</span>
-          <span className="capitalize">{profile.maritalStatus.replace('-', ' ')}</span>
+          <span className="capitalize">{(profile.maritalStatus || '').replace('-', ' ') || 'Not set'}</span>
           <span className="text-slate-300">•</span>
           <span>{childLabel}</span>
         </div>
@@ -479,8 +479,8 @@ const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
               onChange={setVal('hasDependentParents')}
             />
             <ToggleRow
-              label="EPF / life insurance / PRS"
-              hint="Contributions to EPF, life insurance, or private retirement schemes"
+              label="EPF, life insurance &amp; PRS"
+              hint="Voluntary EPF contributions, life insurance / takaful premiums, or Private Retirement Scheme (PRS)"
               checked={draft.hasEpfLifeInsurance}
               onChange={setVal('hasEpfLifeInsurance')}
             />
@@ -525,7 +525,7 @@ const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
    ENTITY CARD — dense, 3-up
    ========================================================================= */
 
-const EntityCard = ({ entity, active, onSwitch, onOpenPreview }) => {
+const EntityCard = ({ entity, active, onSwitch, onOpenPreview, personalTin }) => {
   const isPartnership = entity.entityType === 'partnership';
   const Icon = isPartnership ? UsersIcon : BuildingIcon;
   const filingNote = isPartnership
@@ -560,7 +560,7 @@ const EntityCard = ({ entity, active, onSwitch, onOpenPreview }) => {
 
       <div className="grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-0.5 text-[11px] mb-2">
         <span className="text-[#64748B]">SSM No:</span><span className="font-semibold text-[#0F172A] truncate">{entity.ssmNo || '—'}</span>
-        <span className="text-[#64748B]">TIN:</span><span className="font-semibold text-[#0F172A] truncate">{entity.tin || '—'}</span>
+        <span className="text-[#64748B]">Personal TIN:</span><span className="font-semibold text-[#0F172A] truncate">{personalTin || '—'}</span>
         <span className="text-[#64748B]">Code:</span><span className="font-semibold text-[#0F172A] truncate">{entity.businessCode || '—'}</span>
         {isPartnership ? (
           <>
@@ -634,14 +634,15 @@ const PartnerRow = ({ partner, onChange, onRemove }) => {
   );
 };
 
-const EntityPreviewPanel = ({ entity, active, isOnlyEntity, onClose, onSave, onSwitch, onDelete }) => {
+const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClose, onSave, onSwitch, onDelete }) => {
   const [draft, setDraft] = useState(entity);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const isPartnership = draft.entityType === 'partnership';
   const set = (key) => (e) => setDraft({ ...draft, [key]: e.target.value });
 
-  const handleSave = () => onSave(draft);
+  const canSave = isNew ? !!(draft.name && draft.ssmNo) : true;
+  const handleSave = () => { if (canSave) onSave(draft); };
 
   const updatePartner = (index, updated) => {
     const next = [...draft.partners];
@@ -669,7 +670,9 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, onClose, onSave, onS
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 min-w-0">
-                <h3 className="text-sm font-bold text-[#0F172A] truncate">{draft.name || 'Untitled Entity'}</h3>
+                <h3 className="text-sm font-bold text-[#0F172A] truncate">
+                  {isNew ? 'New Sole Proprietorship' : (draft.name || 'Untitled Entity')}
+                </h3>
                 {isPartnership && <RoleBadge isPrecedentPartner={draft.isPrecedentPartner} />}
               </div>
               <p className="text-[11px] text-[#64748B]">{isPartnership ? 'General Partnership' : 'Sole Proprietorship'}</p>
@@ -695,14 +698,14 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, onClose, onSave, onS
           <Field label={isPartnership ? 'Partnership name' : 'Business name'} required>
             <TextInput value={draft.name} onChange={set('name')} placeholder="As registered with SSM" />
           </Field>
-          <div className="grid grid-cols-2 gap-2.5">
-            <Field label="SSM registration no." required>
-              <TextInput value={draft.ssmNo} onChange={set('ssmNo')} placeholder="e.g. 202103145678" />
+          <Field label="SSM registration no." required>
+            <TextInput value={draft.ssmNo} onChange={set('ssmNo')} placeholder="e.g. 202103145678" />
+          </Field>
+          {isPartnership && (
+            <Field label="Partnership Tax Identification No." required hint="Begins with D — unique to this partnership">
+              <TextInput value={draft.tin} onChange={set('tin')} placeholder="D 1234567890" />
             </Field>
-            <Field label="Tax Identification No." required hint={isPartnership ? 'Begins with D' : undefined}>
-              <TextInput value={draft.tin} onChange={set('tin')} placeholder={isPartnership ? 'D 1234567890' : 'IG 1234567890'} />
-            </Field>
-          </div>
+          )}
           <div className="grid grid-cols-2 gap-2.5">
             <Field label="Business code">
               <TextInput value={draft.businessCode} onChange={set('businessCode')} placeholder="LHDN business code" />
@@ -833,8 +836,8 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, onClose, onSave, onS
             </Field>
           </div>
 
-          {/* Danger zone */}
-          <div className="mt-4 pt-4 border-t border-slate-100">
+          {/* Danger zone — hidden when creating a new entity */}
+          {!isNew && <div className="mt-4 pt-4 border-t border-slate-100">
             <SectionLabel><span className="text-[#D85A30]">Danger Zone</span></SectionLabel>
             {!confirmingDelete ? (
               <button
@@ -884,11 +887,11 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, onClose, onSave, onS
                 </div>
               </div>
             )}
-          </div>
+          </div>}
         </div>
 
         <div className="shrink-0 flex gap-2 px-5 py-4 border-t border-slate-100">
-          {!active && (
+          {!active && !isNew && (
             <button
               onClick={onSwitch}
               className="flex-1 py-2 px-3 text-xs border border-slate-200 rounded-lg font-medium text-[#0F172A] flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors duration-150"
@@ -898,9 +901,10 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, onClose, onSave, onS
           )}
           <button
             onClick={handleSave}
-            className="flex-1 py-2 px-3 text-xs bg-[#0D9488] text-white rounded-lg font-semibold flex items-center justify-center gap-1.5 hover:bg-[#0f766e] transition-colors duration-150"
+            disabled={!canSave}
+            className={`flex-1 py-2 px-3 text-xs rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-colors duration-150 ${canSave ? "bg-[#0D9488] text-white hover:bg-[#0f766e]" : "bg-slate-100 text-slate-400 cursor-not-allowed"}`}
           >
-            <CheckIcon />Save Changes
+            <CheckIcon />{isNew ? 'Create Entity' : 'Save Changes'}
           </button>
         </div>
       </div>
@@ -1115,10 +1119,10 @@ const CreateEntityModal = ({ onClose, onCreate }) => {
    MAIN COMPONENT
    ========================================================================= */
 
-export default function ManageProfile({ initialProfile, initialEntities }) {
+export default function ManageProfile({ initialProfile, initialEntities, activeEntityId, onSavePersonal, onCreateEntity, onSaveEntity, onSwitchEntity }) {
   // Use initialProfile if available, otherwise fall back to your static BLANK_PERSONAL_PROFILE structure
   const [personalProfile, setPersonalProfile] = useState(initialProfile || BLANK_PERSONAL_PROFILE);
-  const [entities, setEntities] = useState([]);
+  const [entities, setEntities] = useState(initialEntities || []);
 
   // Watch for when the data finishes downloading from ManageAccount.jsx
   React.useEffect(() => {
@@ -1130,22 +1134,40 @@ export default function ManageProfile({ initialProfile, initialEntities }) {
   React.useEffect(() => {
     if (initialEntities && initialEntities.length > 0) {
       setEntities(initialEntities);
+      setActiveIndex(resolveActiveIndex(initialEntities, activeEntityId));
     }
-  }, [initialEntities]);
+  }, [initialEntities, activeEntityId]);
 
-  const [activeIndex, setActiveIndex] = useState(0);
+  // Derive activeIndex from the persisted activeEntityId prop
+  const resolveActiveIndex = (entities, id) => {
+    if (!id || !entities || entities.length === 0) return 0;
+    const idx = entities.findIndex((e) => e.id === id);
+    return idx >= 0 ? idx : 0;
+  };
+  const [activeIndex, setActiveIndex] = useState(() => resolveActiveIndex(initialEntities, activeEntityId));
   const [previewIndex, setPreviewIndex] = useState(null);
   const [showPersonalPanel, setShowPersonalPanel] = useState(false);
-  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newEntityDraft, setNewEntityDraft] = useState(null);
   
   // Add these two states right below them to track network status:
   const [error, setError] = useState(null);
 
   const handleSwitch = (index) => {
     setActiveIndex(index);
+    const entity = entities[index];
+    if (entity && entity.id && onSwitchEntity) {
+      onSwitchEntity(entity.id);
+    }
   };
 
-  const handleSaveEdit = (updatedEntity) => {
+  const handleSaveEdit = async (updatedEntity) => {
+    if (onSaveEntity && updatedEntity.id) {
+      const ok = await onSaveEntity(updatedEntity);
+      if (!ok) {
+        alert('Could not save entity changes. Please try again.');
+        return;
+      }
+    }
     const next = [...entities];
     next[previewIndex] = updatedEntity;
     setEntities(next);
@@ -1163,21 +1185,39 @@ export default function ManageProfile({ initialProfile, initialEntities }) {
     setPreviewIndex(null);
   };
 
-  const handleCreateEntity = (draft) => {
-    setEntities([...entities, draft]);
-    setActiveIndex(entities.length);
+  const handleCreateEntity = async (draft) => {
+    if (onCreateEntity) {
+      const created = await onCreateEntity(draft);
+      if (!created) {
+        alert('Could not create entity. Please try again.');
+        return;
+      }
+      // Use the server-returned entity (with its real id)
+      setEntities((prev) => [...prev, created]);
+      const newIndex = entities.length; // index before appending
+      setActiveIndex(newIndex);
+      if (created.id && onSwitchEntity) onSwitchEntity(created.id);
+    } else {
+      // Fallback: local-only (no backend wired)
+      setEntities((prev) => [...prev, draft]);
+      setActiveIndex(entities.length);
+    }
     setShowCreateModal(false);
   };
 
   const handleSavePersonal = async (updatedData) => {
-    // Fire the save request to the parent component
-    if (onSavePersonal) {
-      const success = await onSavePersonal(updatedData);
-      if (success) {
-        setShowPersonalPanel(false); // Close the slide-over panel on a successful database write!
-      } else {
-        alert("Something went wrong saving your changes. Please try again.");
-      }
+    if (!onSavePersonal) {
+      // No save handler wired up — just close the panel optimistically
+      setPersonalProfile(updatedData);
+      setShowPersonalPanel(false);
+      return;
+    }
+    const success = await onSavePersonal(updatedData);
+    if (success) {
+      setPersonalProfile(updatedData);
+      setShowPersonalPanel(false);
+    } else {
+      alert('Something went wrong saving your changes. Please try again.');
     }
   };
 
@@ -1206,7 +1246,7 @@ export default function ManageProfile({ initialProfile, initialEntities }) {
             <p className="text-[11px] text-[#64748B] mt-0.5">Maintain the registered details LHDN requires for each entity you file on behalf of.</p>
           </div>
           <button
-            onClick={() => setShowCreateModal(true)}
+            onClick={() => setNewEntityDraft({ ...BLANK_SOLE_PROP })}
             className="inline-flex items-center gap-1.5 rounded-lg bg-[#0D9488] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0f766e] transition-colors duration-150 shrink-0"
           >
             <PlusIcon />Create New Entity
@@ -1218,11 +1258,12 @@ export default function ManageProfile({ initialProfile, initialEntities }) {
           <div className="grid grid-cols-3 gap-3 auto-rows-fr pb-1">
             {entities.map((entity, index) => (
               <EntityCard
-                key={index}
+                key={entity.id || index}
                 entity={entity}
                 active={activeIndex === index}
                 onSwitch={() => handleSwitch(index)}
                 onOpenPreview={() => setPreviewIndex(index)}
+                personalTin={personalProfile.personalTin}
               />
             ))}
           </div>
@@ -1249,10 +1290,16 @@ export default function ManageProfile({ initialProfile, initialEntities }) {
         />
       )}
 
-      {showCreateModal && (
-        <CreateEntityModal
-          onClose={() => setShowCreateModal(false)}
-          onCreate={handleCreateEntity}
+      {newEntityDraft !== null && (
+        <EntityPreviewPanel
+          entity={newEntityDraft}
+          active={false}
+          isOnlyEntity={false}
+          isNew={true}
+          onClose={() => setNewEntityDraft(null)}
+          onSave={(draft) => { handleCreateEntity(draft); setNewEntityDraft(null); }}
+          onSwitch={() => {}}
+          onDelete={() => setNewEntityDraft(null)}
         />
       )}
     </div>

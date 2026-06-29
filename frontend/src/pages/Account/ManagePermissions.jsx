@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { getEntityMembers, updateEntityMember, removeEntityMember, getEntityAuditLog } from '../../services/api';
 
 /* ---------- Icons (matched to ManageProfile's SVG icon set) ---------- */
 
@@ -110,24 +111,12 @@ const roleBadgeClass = (role) => {
   }
 };
 
-const ENTITIES = ['Hafiz Printing & Design', 'Urban Brew Partners'];
+// ENTITIES is now derived from the entityNames prop passed by ManageAccount
 
-const SEED_MEMBERS = [
-  { id: 1, name: 'Hafiz Razak', email: 'hafiz@printing.com', role: 'Owner', status: 'Active', bg: 'bg-[#0D9488]', isYou: true, entities: ['Hafiz Printing & Design', 'Urban Brew Partners'] },
-  { id: 2, name: 'Siti Ahmad', email: 'siti.a@cukai.ai', role: 'Admin', status: 'Active', bg: 'bg-[#1D4ED8]', isYou: false, entities: ['Hafiz Printing & Design'] },
-  { id: 3, name: 'Lim Wei Kiat', email: 'weikiat@accounting.co', role: 'Viewer', status: 'Pending Invite', bg: 'bg-slate-400', isYou: false, entities: ['Urban Brew Partners'] },
-  { id: 4, name: 'Raj Kumar', email: 'raj@consulting.by', role: 'Editor', status: 'Active', bg: 'bg-[#854F0B]', isYou: false, entities: ['Hafiz Printing & Design', 'Urban Brew Partners'] },
-];
+// SEED_MEMBERS is now built dynamically from the logged-in user in ManagePermission
 
-const SEED_AUDIT_LOG = [
-  { id: 1, actor: 'Hafiz Razak', action: 'invited', target: 'Lim Wei Kiat', detail: 'as Viewer on Urban Brew Partners', timestamp: '2026-06-19 14:02' },
-  { id: 2, actor: 'Hafiz Razak', action: 'changed role', target: 'Raj Kumar', detail: 'from Viewer to Editor', timestamp: '2026-06-15 09:41' },
-  { id: 3, actor: 'Siti Ahmad', action: 'viewed report', target: 'Hafiz Printing & Design', detail: 'Q2 filing summary', timestamp: '2026-06-12 17:18' },
-  { id: 4, actor: 'Hafiz Razak', action: 'invited', target: 'Siti Ahmad', detail: 'as Admin on Hafiz Printing & Design', timestamp: '2026-05-28 11:07' },
-  { id: 5, actor: 'Hafiz Razak', action: 'removed', target: 'Nora Ismail', detail: 'from Urban Brew Partners', timestamp: '2026-05-20 16:33' },
-];
+// Audit log — placeholder until a real audit_log table is implemented
 
-const BLANK_INVITE = { name: '', email: '', role: 'viewer', entities: [] };
 
 /* ---------- Small UI primitives (matched to ManageProfile) ---------- */
 
@@ -184,12 +173,12 @@ const RoleCard = ({ role }) => {
    INVITE / EDIT MEMBER SLIDE-OVER
    ========================================================================= */
 
-const MemberPanel = ({ mode, member, onClose, onSave }) => {
+const MemberPanel = ({ mode, member, onClose, onSave, entities = [] }) => {
   const isEdit = mode === 'edit';
   const [draft, setDraft] = useState(
     isEdit
       ? { name: member.name, email: member.email, role: member.role.toLowerCase(), entities: member.entities }
-      : { ...BLANK_INVITE }
+      : { name: '', email: '', role: 'viewer', entities: [] }
   );
 
   const set = (key) => (e) => setDraft({ ...draft, [key]: e.target.value });
@@ -201,8 +190,10 @@ const MemberPanel = ({ mode, member, onClose, onSave }) => {
     }));
   };
 
+  // Edit mode: a role is always pre-selected so Save is always enabled
+  // Invite mode (not currently exposed in UI): requires name, email, and at least one entity
   const canSubmit = isEdit
-    ? draft.entities.length > 0
+    ? !!draft.role
     : draft.name && draft.email && draft.entities.length > 0;
 
   return (
@@ -249,27 +240,32 @@ const MemberPanel = ({ mode, member, onClose, onSave }) => {
           <SectionLabel><span className="mt-2 block">Role</span></SectionLabel>
           <Field label="Permission level" required hint="Determines what this person can see and do across their assigned entities">
             <SelectInput value={draft.role} onChange={set('role')}>
-              {ROLES.map((r) => (
+              {ROLES.filter((r) => r.id !== 'owner').map((r) => (
                 <option key={r.id} value={r.id}>{r.title} — {r.description}</option>
               ))}
             </SelectInput>
           </Field>
 
-          <SectionLabel><span className="mt-2 block">Entity Access</span></SectionLabel>
-          <p className="text-[10px] text-[#94A3B8] -mt-1.5 mb-1">Select which entities this person can access</p>
-          <div className="flex flex-col gap-2">
-            {ENTITIES.map((entity) => (
-              <label key={entity} className="flex items-center gap-2.5 p-2.5 rounded-lg border border-slate-100 cursor-pointer hover:bg-[#f0fdf9]/50 transition-colors duration-150">
-                <input
-                  type="checkbox"
-                  checked={draft.entities.includes(entity)}
-                  onChange={() => toggleEntity(entity)}
-                  className="h-3.5 w-3.5 rounded border-slate-300 text-[#0D9488] focus:ring-[#0D9488]/30"
-                />
-                <span className="text-xs font-medium text-[#0F172A]">{entity}</span>
-              </label>
-            ))}
-          </div>
+          {/* Entity access shown only for invite mode — edit mode is scoped to the active entity */}
+          {!isEdit && (
+            <>
+              <SectionLabel><span className="mt-2 block">Entity Access</span></SectionLabel>
+              <p className="text-[10px] text-[#94A3B8] -mt-1.5 mb-1">Select which entities this person can access</p>
+              <div className="flex flex-col gap-2">
+                {(entities || []).map((ent) => (
+                  <label key={ent.id} className="flex items-center gap-2.5 p-2.5 rounded-lg border border-slate-100 cursor-pointer hover:bg-[#f0fdf9]/50 transition-colors duration-150">
+                    <input
+                      type="checkbox"
+                      checked={draft.entities.includes(ent.name)}
+                      onChange={() => toggleEntity(ent.name)}
+                      className="h-3.5 w-3.5 rounded border-slate-300 text-[#0D9488] focus:ring-[#0D9488]/30"
+                    />
+                    <span className="text-xs font-medium text-[#0F172A]">{ent.name}</span>
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
         </div>
 
         <div className="shrink-0 flex gap-2 px-5 py-4 border-t border-slate-100">
@@ -293,7 +289,7 @@ const MemberPanel = ({ mode, member, onClose, onSave }) => {
    AUDIT LOG SLIDE-OVER
    ========================================================================= */
 
-const AuditLogPanel = ({ logs, onClose }) => (
+const AuditLogPanel = ({ logs, loading, onClose }) => (
   <div className="fixed inset-0 z-50 flex justify-end">
     <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} />
     <div className="relative h-full w-full max-w-md bg-white shadow-xl flex flex-col animate-[slideIn_0.2s_ease-out]">
@@ -313,20 +309,28 @@ const AuditLogPanel = ({ logs, onClose }) => (
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
-        <ol className="relative border-l border-slate-100 ml-1.5 flex flex-col gap-4">
-          {logs.map((log) => (
-            <li key={log.id} className="pl-4 relative">
-              <span className="absolute -left-[5px] top-1 h-2 w-2 rounded-full bg-[#0D9488]" />
-              <p className="text-xs text-[#0F172A] leading-relaxed">
-                <span className="font-semibold">{log.actor}</span>{' '}
-                <span className="text-[#64748B]">{log.action}</span>{' '}
-                <span className="font-semibold">{log.target}</span>
-              </p>
-              <p className="text-[11px] text-[#64748B] mt-0.5">{log.detail}</p>
-              <p className="text-[10px] text-[#94A3B8] mt-0.5">{log.timestamp}</p>
-            </li>
-          ))}
-        </ol>
+        {loading && (
+          <p className="text-xs text-[#94A3B8] text-center py-8">Loading audit log…</p>
+        )}
+        {!loading && logs.length === 0 && (
+          <p className="text-xs text-[#94A3B8] text-center py-8">No activity recorded yet for this entity.</p>
+        )}
+        {!loading && logs.length > 0 && (
+          <ol className="relative border-l border-slate-100 ml-1.5 flex flex-col gap-4">
+            {logs.map((log) => (
+              <li key={log.id} className="pl-4 relative">
+                <span className="absolute -left-[5px] top-1 h-2 w-2 rounded-full bg-[#0D9488]" />
+                <p className="text-xs text-[#0F172A] leading-relaxed">
+                  <span className="font-semibold">{log.actor}</span>{' '}
+                  <span className="text-[#64748B]">{log.action}</span>{' '}
+                  {log.target && <span className="font-semibold">{log.target}</span>}
+                </p>
+                {log.detail && <p className="text-[11px] text-[#64748B] mt-0.5">{log.detail}</p>}
+                <p className="text-[10px] text-[#94A3B8] mt-0.5">{log.timestamp}</p>
+              </li>
+            ))}
+          </ol>
+        )}
       </div>
 
       <div className="shrink-0 px-5 py-4 border-t border-slate-100">
@@ -372,13 +376,63 @@ const RemoveMemberModal = ({ member, onClose, onConfirm }) => (
    MAIN COMPONENT
    ========================================================================= */
 
-function ManagePermission() {
-  const [activeTab, setActiveTab] = useState(ENTITIES[0]);
-  const [members, setMembers] = useState(SEED_MEMBERS);
-  const [auditLog] = useState(SEED_AUDIT_LOG);
+function ManagePermission({ entityData = [] }) {
+  const storedName  = localStorage.getItem('userFullName') || 'Account Owner';
+  const storedEmail = localStorage.getItem('userEmail')    || '';
+  const storedId    = parseInt(localStorage.getItem('userId') || '0') || null;
+
+  // entityData is [{ id, name }, ...] — fall back to a placeholder if empty
+  const availableEntities = entityData.length > 0 ? entityData : [];
+  const activeEntityObj   = availableEntities[0] || null;
+
+  const [activeTab,      setActiveTab]      = useState(activeEntityObj);
+
+  // Sync activeTab when entityData loads asynchronously after first render
+  useEffect(() => {
+    if (availableEntities.length > 0 && !activeTab) {
+      setActiveTab(availableEntities[0]);
+    }
+  }, [entityData]);
+  const [members,        setMembers]        = useState([]);
+  const [loadingMembers, setLoadingMembers] = useState(false);
+  const [auditLog,       setAuditLog]       = useState([]);
+  const [loadingAudit,   setLoadingAudit]   = useState(false);
+
+  // Load members whenever the active entity changes
+  useEffect(() => {
+    if (!activeTab?.id) return;
+    setLoadingMembers(true);
+    getEntityMembers(activeTab.id)
+      .then((rows) => {
+        // Normalise API rows to match the shape the table expects
+        setMembers(rows.map((m) => ({
+          id:       m.id,
+          personId: m.personId,
+          name:     m.name     || m.invitedEmail || 'Unknown',
+          email:    m.email    || m.invitedEmail || '',
+          role:     m.role.charAt(0).toUpperCase() + m.role.slice(1),  // 'owner' → 'Owner'
+          status:   m.status === 'active' ? 'Active' : 'Pending Invite',
+          bg:       m.role === 'owner' ? 'bg-[#0D9488]' : m.role === 'admin' ? 'bg-[#1D4ED8]' : 'bg-slate-400',
+          isYou:    storedId !== null && m.personId === storedId,
+          entities: [activeTab.name],
+        })));
+      })
+      .catch((err) => console.error('Failed to load members:', err))
+      .finally(() => setLoadingMembers(false));
+  }, [activeTab?.id]);
+
+  // Load audit log whenever the active entity changes
+  useEffect(() => {
+    if (!activeTab?.id) return;
+    setLoadingAudit(true);
+    getEntityAuditLog(activeTab.id)
+      .then(setAuditLog)
+      .catch((err) => console.error('Failed to load audit log:', err))
+      .finally(() => setLoadingAudit(false));
+  }, [activeTab?.id]);
+
   const [searchQuery, setSearchQuery] = useState('');
 
-  const [invitePanelOpen, setInvitePanelOpen] = useState(false);
   const [editingMember, setEditingMember] = useState(null);
   const [removingMember, setRemovingMember] = useState(null);
   const [auditLogOpen, setAuditLogOpen] = useState(false);
@@ -389,48 +443,52 @@ function ManagePermission() {
     setTimeout(() => setToast(null), 2600);
   };
 
+  // Derive the current user's role in the active entity
+  // This controls whether edit/remove actions appear in the UI
+  const myMembership  = members.find((m) => m.personId === storedId);
+  const myRole        = myMembership?.role?.toLowerCase() || 'viewer';
+  const isOwner       = myRole === 'owner';
+  const canManage     = isOwner;   // only owners can change roles or remove members
+
+  // Members are already scoped to activeTab via the API; just apply search filter
   const visibleMembers = members.filter((m) => {
-    const matchesTab = m.entities.includes(activeTab);
-    const matchesSearch = searchQuery.trim() === '' ||
+    if (searchQuery.trim() === '') return true;
+    return (
       m.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      m.email.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesTab && matchesSearch;
+      m.email.toLowerCase().includes(searchQuery.toLowerCase())
+    );
   });
 
-  const handleInvite = (draft) => {
-    const newMember = {
-      id: Date.now(),
-      name: draft.name,
-      email: draft.email,
-      role: ROLES.find((r) => r.id === draft.role).title,
-      status: 'Pending Invite',
-      bg: 'bg-slate-400',
-      isYou: false,
-      entities: draft.entities,
-    };
-    setMembers([...members, newMember]);
-    setInvitePanelOpen(false);
-    showToast(`Invite sent to ${draft.email}`);
+  const handleSaveEdit = async (draft) => {
+    if (!activeTab?.id) return;
+    try {
+      await updateEntityMember(activeTab.id, editingMember.id, draft.role, storedId);
+      setMembers(members.map((m) =>
+        m.id === editingMember.id
+          ? { ...m, role: ROLES.find((r) => r.id === draft.role)?.title || draft.role }
+          : m
+      ));
+      setEditingMember(null);
+      showToast(`Updated access for ${editingMember.name}`);
+      // Refresh audit log to show the new entry
+      getEntityAuditLog(activeTab.id).then(setAuditLog).catch(() => {});
+    } catch (err) {
+      showToast(err.response?.data?.detail || 'Failed to update member');
+    }
   };
 
-  const handleSaveEdit = (draft) => {
-    setMembers(members.map((m) =>
-      m.id === editingMember.id
-        ? { ...m, role: ROLES.find((r) => r.id === draft.role).title, entities: draft.entities }
-        : m
-    ));
-    setEditingMember(null);
-    showToast(`Updated access for ${editingMember.name}`);
-  };
-
-  const handleRemove = () => {
-    setMembers(members.filter((m) => m.id !== removingMember.id));
-    showToast(`${removingMember.name} removed`);
-    setRemovingMember(null);
-  };
-
-  const handleResendInvite = (member) => {
-    showToast(`Invite resent to ${member.email}`);
+  const handleRemove = async () => {
+    if (!activeTab?.id) return;
+    try {
+      await removeEntityMember(activeTab.id, removingMember.id, storedId || undefined);
+      setMembers(members.filter((m) => m.id !== removingMember.id));
+      showToast(`${removingMember.name} removed`);
+      setRemovingMember(null);
+      getEntityAuditLog(activeTab.id).then(setAuditLog).catch(() => {});
+    } catch (err) {
+      showToast(err.response?.data?.detail || 'Failed to remove member');
+      setRemovingMember(null);
+    }
   };
 
   return (
@@ -446,25 +504,27 @@ function ManagePermission() {
         <div className="flex items-center justify-between shrink-0">
           <div>
             <h2 className="text-sm font-bold text-[#0F172A]">Team Members</h2>
-            <p className="text-[11px] text-[#64748B]">Manage who has access to your entities.</p>
+            <p className="text-[11px] text-[#64748B]">
+              Manage who has access to your entities.
+              {myMembership && (
+                <span className={`ml-2 px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${roleBadgeClass(myMembership.role)}`}>
+                  Your role: {myMembership.role}
+                </span>
+              )}
+            </p>
           </div>
-          <button
-            onClick={() => setInvitePanelOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[#0D9488] text-white px-3 py-1.5 text-xs font-semibold hover:bg-[#0f766e] transition-colors duration-150"
-          >
-            <PlusIcon />Invite Member
-          </button>
+
         </div>
 
         <div className="flex items-center justify-between gap-3 shrink-0">
           <div className="flex gap-2">
-            {ENTITIES.map((entity) => (
+            {availableEntities.map((ent) => (
               <button
-                key={entity}
-                onClick={() => setActiveTab(entity)}
-                className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors duration-150 ${activeTab === entity ? 'bg-[#0D9488] text-white' : 'bg-slate-100 text-[#64748B] hover:bg-slate-200'}`}
+                key={ent.id}
+                onClick={() => setActiveTab(ent)}
+                className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors duration-150 ${activeTab?.id === ent.id ? 'bg-[#0D9488] text-white' : 'bg-slate-100 text-[#64748B] hover:bg-slate-200'}`}
               >
-                {entity}
+                {ent.name}
               </button>
             ))}
           </div>
@@ -488,7 +548,14 @@ function ManagePermission() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-[#0F172A]">
-              {visibleMembers.length === 0 && (
+              {loadingMembers && (
+                <tr>
+                  <td colSpan={5} className="py-8 text-center text-[#94A3B8] text-xs">
+                    Loading members…
+                  </td>
+                </tr>
+              )}
+              {!loadingMembers && visibleMembers.length === 0 && (
                 <tr>
                   <td colSpan={5} className="py-8 text-center text-[#94A3B8] text-xs">
                     No members match{searchQuery ? ' your search' : ' this entity'}.
@@ -515,18 +582,12 @@ function ManagePermission() {
                     </span>
                   </td>
                   <td className="py-2.5 px-3 text-right">
-                    {!member.isYou && member.role !== 'Owner' && (
+                    {member.role === 'Owner' && (
+                      <span className="text-[10px] text-[#94A3B8] italic">Protected</span>
+                    )}
+                    {/* Only owners can edit or remove non-owner members */}
+                    {member.role !== 'Owner' && canManage && !member.isYou && (
                       <div className="flex items-center justify-end gap-3">
-                        {member.status === 'Pending Invite' && (
-                          <button
-                            onClick={() => handleResendInvite(member)}
-                            className="text-[#64748B] hover:text-[#0D9488] transition-colors duration-150"
-                            aria-label="Resend invite"
-                            title="Resend invite"
-                          >
-                            <RefreshIcon />
-                          </button>
-                        )}
                         <button
                           onClick={() => setEditingMember(member)}
                           className="text-[#64748B] hover:text-[#0F172A] transition-colors duration-150"
@@ -545,8 +606,9 @@ function ManagePermission() {
                         </button>
                       </div>
                     )}
-                    {member.role === 'Owner' && (
-                      <span className="text-[10px] text-[#94A3B8] italic">Protected</span>
+                    {/* Non-owners see their role as read-only */}
+                    {member.role !== 'Owner' && !canManage && !member.isYou && (
+                      <span className="text-[10px] text-[#94A3B8] italic">View only</span>
                     )}
                   </td>
                 </tr>
@@ -574,17 +636,14 @@ function ManagePermission() {
       </div>
 
       {/* Slide-overs & modals */}
-      {invitePanelOpen && (
-        <MemberPanel mode="invite" onClose={() => setInvitePanelOpen(false)} onSave={handleInvite} />
-      )}
       {editingMember && (
-        <MemberPanel mode="edit" member={editingMember} onClose={() => setEditingMember(null)} onSave={handleSaveEdit} />
+        <MemberPanel mode="edit" member={editingMember} onClose={() => setEditingMember(null)} onSave={handleSaveEdit} entities={availableEntities} />
       )}
       {removingMember && (
         <RemoveMemberModal member={removingMember} onClose={() => setRemovingMember(null)} onConfirm={handleRemove} />
       )}
       {auditLogOpen && (
-        <AuditLogPanel logs={auditLog} onClose={() => setAuditLogOpen(false)} />
+        <AuditLogPanel logs={auditLog} loading={loadingAudit} onClose={() => setAuditLogOpen(false)} />
       )}
 
       {/* Toast */}
