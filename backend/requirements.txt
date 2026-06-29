@@ -6,4 +6,9 @@ uvicorn
 pydantic
 cloud-sql-python-connector
 pg8000
-bycrypt
+bcrypt
+docling
+slowapi
+python-multipart
+easyocr
+langchain-google-genai
