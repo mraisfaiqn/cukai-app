@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from database import init_db, SessionLocal
 import models
-from models import Document, FormBProfile, EntityMember, AuditLog
+from models import Document, FormBProfile
 from pipeline import run_document_pipeline, validate_upload
 
 _pipeline_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="pipeline")
@@ -112,7 +112,7 @@ def _serialize_person(person: models.Person) -> dict:
     "hasLifestylePurchases":       person.has_lifestyle_purchases,
     "hasSspnEvOther":              person.has_sspn_ev_other,
     "createdAt":                   person.created_at.isoformat() if person.created_at else None,
-    "entities":                    [_serialize_entity(e) for e in person.owned_entities],
+    "entities":                    [_serialize_entity(e) for e in person.entities],
   }
 
 
@@ -207,49 +207,27 @@ async def user_reg(payload: dict, db: Session = Depends(get_db)):
     has_sspn_ev_other=p.get("hasSspnEvOther", False),
   )
 
-  # skip_entity=True is sent by the existing-account registration path.
-  # Those users join an existing entity via SSM lookup — they must NOT
-  # create a new entity here. linkPersonToEntity handles that separately.
-  skip_entity = payload.get("skipEntity", False)
-
+  entity = models.Entity(
+    entity_type="sole-prop",
+    name=e.get("name"),
+    business_code=e.get("businessCode"),
+    business_activity=e.get("businessActivity"),
+    ssm_no=e.get("ssmNo"),
+    tin=e.get("tin"),
+    address=e.get("address"),
+    postcode=e.get("postcode"),
+    city=e.get("city"),
+    state=e.get("state"),
+    sales_turnover=e.get("salesTurnover"),
+    total_expenditure=e.get("totalExpenditure"),
+    net_profit_loss=e.get("netProfitLoss"),
+    total_assets=e.get("totalAssets"),
+    total_liabilities=e.get("totalLiabilities"),
+    monthly_income=e.get("monthlyIncome"),
+    annual_income=e.get("annualIncome"),
+  )
+  person.entities.append(entity)
   db.add(person)
-  db.flush()  # Assign person.id before any membership rows
-
-  if not skip_entity:
-    entity = models.Entity(
-      entity_type="sole-prop",
-      name=e.get("name"),
-      business_code=e.get("businessCode"),
-      business_activity=e.get("businessActivity"),
-      ssm_no=e.get("ssmNo"),
-      tin=e.get("tin"),
-      address=e.get("address"),
-      postcode=e.get("postcode"),
-      city=e.get("city"),
-      state=e.get("state"),
-      sales_turnover=e.get("salesTurnover"),
-      total_expenditure=e.get("totalExpenditure"),
-      net_profit_loss=e.get("netProfitLoss"),
-      total_assets=e.get("totalAssets"),
-      total_liabilities=e.get("totalLiabilities"),
-      monthly_income=e.get("monthlyIncome"),
-      annual_income=e.get("annualIncome"),
-    )
-    person.owned_entities.append(entity)
-    db.flush()
-
-    owner_membership = EntityMember(
-        entity_id=entity.id,
-        person_id=person.id,
-        role="owner",
-        status="active",
-        joined_at=datetime.datetime.now(datetime.timezone.utc),
-    )
-    db.add(owner_membership)
-    _write_audit(db, entity.id, person.id, person.full_name,
-                 action="joined", target_name=person.full_name,
-                 detail="created entity and became owner")
-
   db.commit()
   db.refresh(person)
   return _serialize_person(person)
@@ -287,9 +265,9 @@ async def get_company_details(person_id: int = Path(gt=0), db: Session = Depends
   person = db.query(models.Person).filter(models.Person.id == person_id).first()
   if not person:
     raise HTTPException(status_code=404, detail="Person not found")
-  if not person.owned_entities:
+  if not person.entities:
     raise HTTPException(status_code=404, detail="No company found for this person")
-  return _serialize_entity(person.owned_entities[0])
+  return _serialize_entity(person.entities[0])
 
 
 @app.delete("/userDelete/{person_id}")
@@ -365,7 +343,7 @@ async def get_all_entities(person_id: int = Path(gt=0), db: Session = Depends(ge
   person = db.query(models.Person).filter(models.Person.id == person_id).first()
   if not person:
     raise HTTPException(status_code=404, detail="Person not found")
-  return [_serialize_entity(e) for e in person.owned_entities]
+  return [_serialize_entity(e) for e in person.entities]
 
 
 @app.post("/entities/{person_id}", status_code=201)
@@ -396,22 +374,6 @@ async def create_entity(person_id: int, payload: dict, db: Session = Depends(get
     annual_income=payload.get("annualIncome"),
   )
   db.add(entity)
-  db.flush()
-
-  # Auto-create Owner membership for the person who created this entity
-  membership = EntityMember(
-      entity_id=entity.id,
-      person_id=person_id,
-      role="owner",
-      status="active",
-      joined_at=datetime.datetime.now(datetime.timezone.utc),
-  )
-  db.add(membership)
-  creator = db.query(models.Person).filter(models.Person.id == person_id).first()
-  _write_audit(db, entity.id, person_id,
-               creator.full_name if creator else "Unknown",
-               action="joined", target_name=creator.full_name if creator else None,
-               detail="created entity and became owner")
   db.commit()
   db.refresh(entity)
   return _serialize_entity(entity)
@@ -452,299 +414,17 @@ async def update_entity(entity_id: int, payload: dict, db: Session = Depends(get
   return _serialize_entity(entity)
 
 
-@app.get("/entities/by-ssm/{ssm_no}")
-async def get_entity_by_ssm(ssm_no: str, db: Session = Depends(get_db)):
+@app.get("/entities/detail/{entity_id}")
+async def get_entity_by_id(entity_id: int = Path(gt=0), db: Session = Depends(get_db)):
   """
-  Look up an entity by SSM registration number.
-  Used by the existing-account registration path so a new user can link
-  themselves to a company that another user has already registered.
-  Returns { id, name, ssmNo, entityType } on match, 404 if not found.
-  """
-  entity = db.query(models.Entity).filter(models.Entity.ssm_no == ssm_no.strip()).first()
-  if not entity:
-    raise HTTPException(status_code=404, detail="No entity found with that SSM number")
-  return {
-    "id":         entity.id,
-    "name":       entity.name,
-    "ssmNo":      entity.ssm_no,
-    "entityType": entity.entity_type,
-    "city":       entity.city,
-    "state":      entity.state,
-  }
-
-
-def _write_audit(db, entity_id: int, actor_id: int, actor_name: str,
-                 action: str, target_name: str = None, target_email: str = None, detail: str = None):
-  """Write a single immutable audit-log row. Call before db.commit() so it lands in the same transaction."""
-  entry = AuditLog(
-      entity_id=entity_id,
-      actor_id=actor_id,
-      actor_name=actor_name,
-      action=action,
-      target_name=target_name,
-      target_email=target_email,
-      detail=detail,
-  )
-  db.add(entry)
-
-
-def _serialize_member(m: EntityMember) -> dict:
-  """Serialise an EntityMember row for the permissions API."""
-  return {
-    "id":           m.id,
-    "entityId":     m.entity_id,
-    "personId":     m.person_id,
-    "role":         m.role,
-    "status":       m.status,
-    "invitedEmail": m.invited_email,
-    "name":         m.person.full_name if m.person else None,
-    "email":        m.person.email     if m.person else m.invited_email,
-    "invitedAt":    m.invited_at.strftime("%Y-%m-%d %H:%M:%S") if m.invited_at else None,
-    "joinedAt":     m.joined_at.strftime("%Y-%m-%d %H:%M:%S") if m.joined_at else None,
-  }
-
-
-@app.get("/entities/{entity_id}/members")
-async def get_entity_members(entity_id: int = Path(gt=0), db: Session = Depends(get_db)):
-  """Return all members (with roles) for a given entity."""
-  entity = db.query(models.Entity).filter(models.Entity.id == entity_id).first()
-  if not entity:
-    raise HTTPException(status_code=404, detail="Entity not found")
-  return [_serialize_member(m) for m in entity.members]
-
-
-@app.post("/entities/{entity_id}/members", status_code=201)
-async def invite_entity_member(entity_id: int, payload: dict, db: Session = Depends(get_db)):
-  """
-  Invite a user to an entity by email.
-  If the email belongs to a registered person, the membership is created immediately.
-  If not, a pending row is stored with invited_email so it can be claimed on sign-up.
-  Expects: { email, role, actorPersonId (optional) }
+  Fetch a single entity by its database ID.
+  Used by the dashboard pages to load the currently active entity's data
+  from localStorage('activeEntityId') without needing the person_id.
   """
   entity = db.query(models.Entity).filter(models.Entity.id == entity_id).first()
   if not entity:
     raise HTTPException(status_code=404, detail="Entity not found")
-
-  email    = payload.get("email", "").strip().lower()
-  role     = payload.get("role", "viewer")
-  actor_id = payload.get("actorPersonId")
-
-  # Resolve actor name for the audit log
-  actor = db.query(models.Person).filter(models.Person.id == actor_id).first() if actor_id else None
-  actor_name = actor.full_name if actor else "System"
-
-  person = db.query(models.Person).filter(models.Person.email == email).first()
-  if person:
-    existing = db.query(EntityMember).filter(
-      EntityMember.entity_id == entity_id,
-      EntityMember.person_id == person.id,
-    ).first()
-    if existing:
-      raise HTTPException(status_code=409, detail="This person is already a member of this entity")
-
-  pending = db.query(EntityMember).filter(
-    EntityMember.entity_id == entity_id,
-    EntityMember.invited_email == email,
-  ).first()
-  if pending:
-    raise HTTPException(status_code=409, detail="An invite has already been sent to this email")
-
-  membership = EntityMember(
-    entity_id=entity_id,
-    person_id=person.id if person else None,
-    role=role,
-    status="active"  if person else "pending",
-    invited_email=None if person else email,
-    joined_at=datetime.datetime.now(datetime.timezone.utc) if person else None,
-  )
-  db.add(membership)
-
-  target_name  = person.full_name if person else email
-  _write_audit(db, entity_id, actor_id, actor_name,
-               action="invited",
-               target_name=target_name, target_email=email,
-               detail=f"invited as {role}")
-  db.commit()
-  db.refresh(membership)
-  return _serialize_member(membership)
-
-
-@app.put("/entities/{entity_id}/members/{member_id}")
-async def update_entity_member(entity_id: int, member_id: int, payload: dict, db: Session = Depends(get_db)):
-  """
-  Update the role for a member.
-  - The actor (actorPersonId) must be an Owner of this entity.
-  - The Owner role itself is immutable — it cannot be reassigned.
-  """
-  # Verify the actor is an owner of this entity
-  actor_id    = payload.get("actorPersonId")
-  actor_membership = db.query(EntityMember).filter(
-    EntityMember.entity_id == entity_id,
-    EntityMember.person_id == actor_id,
-  ).first() if actor_id else None
-
-  if not actor_membership or actor_membership.role != "owner":
-    raise HTTPException(status_code=403, detail="Only an Owner of this entity can change member roles")
-
-  membership = db.query(EntityMember).filter(
-    EntityMember.id == member_id,
-    EntityMember.entity_id == entity_id,
-  ).first()
-  if not membership:
-    raise HTTPException(status_code=404, detail="Member not found")
-  if membership.role == "owner":
-    raise HTTPException(status_code=403, detail="The Owner role cannot be reassigned")
-
-  old_role = membership.role
-  if "role" in payload:
-    new_role = payload["role"]
-    if new_role != old_role:
-      actor_id   = payload.get("actorPersonId")
-      actor      = db.query(models.Person).filter(models.Person.id == actor_id).first() if actor_id else None
-      actor_name = actor.full_name if actor else "System"
-      target_name = membership.person.full_name if membership.person else membership.invited_email
-      _write_audit(db, entity_id, actor_id, actor_name,
-                   action="role_changed",
-                   target_name=target_name,
-                   detail=f"role changed from {old_role} to {new_role}")
-      membership.role = new_role
-  db.commit()
-  db.refresh(membership)
-  return _serialize_member(membership)
-
-
-@app.delete("/entities/{entity_id}/members/{member_id}", status_code=200)
-async def remove_entity_member(
-  entity_id: int,
-  member_id: int,
-  actor_person_id: Optional[int] = Query(default=None),
-  db: Session = Depends(get_db),
-):
-  """
-  Remove a member from an entity.
-  - actor_person_id (query param) must be an Owner of this entity.
-  - Owners themselves cannot be removed.
-  """
-  actor_membership = db.query(EntityMember).filter(
-    EntityMember.entity_id == entity_id,
-    EntityMember.person_id == actor_person_id,
-  ).first() if actor_person_id else None
-
-  if not actor_membership or actor_membership.role != "owner":
-    raise HTTPException(status_code=403, detail="Only an Owner of this entity can remove members")
-
-  membership = db.query(EntityMember).filter(
-    EntityMember.id == member_id,
-    EntityMember.entity_id == entity_id,
-  ).first()
-  if not membership:
-    raise HTTPException(status_code=404, detail="Member not found")
-  if membership.role == "owner":
-    raise HTTPException(status_code=403, detail="The owner cannot be removed from their entity")
-
-  target_name  = membership.person.full_name if membership.person else membership.invited_email
-  target_email = membership.person.email    if membership.person else membership.invited_email
-  actor        = actor_membership.person
-  _write_audit(db, entity_id, actor_person_id,
-               actor.full_name if actor else "System",
-               action="removed",
-               target_name=target_name, target_email=target_email,
-               detail="removed from entity")
-  db.delete(membership)
-  db.commit()
-  return {"message": "Member removed", "memberId": member_id}
-
-
-@app.post("/entities/{entity_id}/link-person/{person_id}", status_code=201)
-async def link_person_to_entity(entity_id: int, person_id: int, payload: dict, db: Session = Depends(get_db)):
-  """
-  Link an existing registered person to an entity they found via SSM lookup.
-  Called by the existing-account registration path after a successful SSM search.
-  The new person is added with the role specified in the payload (default: editor).
-  """
-  entity = db.query(models.Entity).filter(models.Entity.id == entity_id).first()
-  if not entity:
-    raise HTTPException(status_code=404, detail="Entity not found")
-  person = db.query(models.Person).filter(models.Person.id == person_id).first()
-  if not person:
-    raise HTTPException(status_code=404, detail="Person not found")
-
-  existing = db.query(EntityMember).filter(
-    EntityMember.entity_id == entity_id,
-    EntityMember.person_id == person_id,
-  ).first()
-  if existing:
-    raise HTTPException(status_code=409, detail="This person is already linked to this entity")
-
-  # Also claim any pending invite sent to this email
-  pending = db.query(EntityMember).filter(
-    EntityMember.entity_id == entity_id,
-    EntityMember.invited_email == person.email,
-  ).first()
-  # Users who join via SSM lookup are always assigned 'viewer' until an owner promotes them
-  assigned_role = "viewer"
-
-  if pending:
-    pending.person_id     = person_id
-    pending.role          = assigned_role  # override whatever role the invite had
-    pending.status        = "active"
-    pending.invited_email = None
-    pending.joined_at     = datetime.datetime.now(datetime.timezone.utc)
-    _write_audit(db, entity_id, person_id, person.full_name,
-                 action="joined",
-                 target_name=person.full_name, target_email=person.email,
-                 detail=f"joined {entity.name} via SSM lookup as {assigned_role}")
-    db.commit()
-    db.refresh(pending)
-    return _serialize_member(pending)
-
-  membership = EntityMember(
-    entity_id=entity_id,
-    person_id=person_id,
-    role=assigned_role,
-    status="active",
-    joined_at=datetime.datetime.now(datetime.timezone.utc),
-  )
-  db.add(membership)
-  _write_audit(db, entity_id, person_id, person.full_name,
-               action="joined",
-               target_name=person.full_name, target_email=person.email,
-               detail=f"joined {entity.name} via SSM lookup as {assigned_role}")
-  db.commit()
-  db.refresh(membership)
-  return _serialize_member(membership)
-
-
-@app.get("/entities/{entity_id}/audit-log")
-async def get_audit_log(
-  entity_id: int = Path(gt=0),
-  limit: int = Query(default=50, le=200),
-  db: Session = Depends(get_db),
-):
-  """Return the most recent audit-log entries for an entity, newest first."""
-  entity = db.query(models.Entity).filter(models.Entity.id == entity_id).first()
-  if not entity:
-    raise HTTPException(status_code=404, detail="Entity not found")
-
-  rows = (
-    db.query(AuditLog)
-      .filter(AuditLog.entity_id == entity_id)
-      .order_by(AuditLog.created_at.desc())
-      .limit(limit)
-      .all()
-  )
-  return [
-    {
-      "id":          r.id,
-      "actor":       r.actor_name or "System",
-      "action":      r.action,
-      "target":      r.target_name,
-      "targetEmail": r.target_email,
-      "detail":      r.detail,
-      "timestamp":   r.created_at.strftime("%Y-%m-%d %H:%M"),
-    }
-    for r in rows
-  ]
+  return _serialize_entity(entity)
 
 
 # ── Document upload helpers ──────────────────────────────────────────────────
