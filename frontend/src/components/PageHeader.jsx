@@ -187,6 +187,14 @@ function PageHeader({ onLogout }) {
   const navigate = useNavigate(); // 5. Added initialization hook
 
   const handleLogout = () => {
+    // Clear every user-scoped key so the next login (even a different account
+    // in the same browser) never inherits stale state — this was the cause of
+    // a second test user seeing the previous user's selected entity on login.
+    localStorage.removeItem('userId');
+    localStorage.removeItem('userFullName');
+    localStorage.removeItem('userEmail');
+    localStorage.removeItem('activeEntityId');
+
     onLogout();     // Changes isAuthenticated state to false
     navigate('/');  // Sends user back to landing page
   };

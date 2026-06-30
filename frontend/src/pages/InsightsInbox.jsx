@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getEntityById } from '../services/api';
+import { getAllEntities } from '../services/api';
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 
@@ -286,9 +286,21 @@ function InsightsInbox() {
 
   useEffect(() => {
     const loadEntity = async () => {
-      const entityId = localStorage.getItem('activeEntityId');
-      if (!entityId) return;
-      try { setActiveEntity(await getEntityById(parseInt(entityId))); } catch (_) {}
+      const userId = localStorage.getItem('userId');
+      if (!userId) return;
+      try {
+        // Don't assume activeEntityId already exists — this page can be the
+        // first one a user lands on right after login. Resolve a default
+        // entity here too, the same way Overview and ManageAccount do.
+        const entities = await getAllEntities(userId).catch(() => []);
+        const storedId = parseInt(localStorage.getItem('activeEntityId') || '0');
+        let entity = entities.find((e) => e.id === storedId);
+        if (!entity && entities.length > 0) {
+          entity = entities[0];
+          localStorage.setItem('activeEntityId', String(entity.id));
+        }
+        setActiveEntity(entity || null);
+      } catch (_) {}
     };
     loadEntity();
     window.addEventListener('entitySwitch', loadEntity);

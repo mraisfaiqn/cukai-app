@@ -415,15 +415,27 @@ async def update_entity(entity_id: int, payload: dict, db: Session = Depends(get
 
 
 @app.get("/entities/detail/{entity_id}")
-async def get_entity_by_id(entity_id: int = Path(gt=0), db: Session = Depends(get_db)):
+async def get_entity_by_id(
+  entity_id: int = Path(gt=0),
+  user_id: Optional[int] = Query(default=None),
+  db: Session = Depends(get_db),
+):
   """
   Fetch a single entity by its database ID.
   Used by the dashboard pages to load the currently active entity's data
-  from localStorage('activeEntityId') without needing the person_id.
+  from localStorage('activeEntityId').
+
+  If user_id is supplied, the entity must belong to that person — this guards
+  against a stale/foreign activeEntityId in localStorage (e.g. left over from
+  a previous account in the same browser) silently leaking another user's
+  business data into the dashboard. user_id is optional for now since there's
+  no session/auth layer yet, but every frontend call should pass it.
   """
   entity = db.query(models.Entity).filter(models.Entity.id == entity_id).first()
   if not entity:
     raise HTTPException(status_code=404, detail="Entity not found")
+  if user_id is not None and entity.person_id != user_id:
+    raise HTTPException(status_code=403, detail="This entity does not belong to the requesting user")
   return _serialize_entity(entity)
 
 

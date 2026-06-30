@@ -9,7 +9,7 @@
 //  - Both carousels use dot-navigation to page through items.
 
 import React, { useState, useEffect } from 'react';
-import { getPersonalDetails, getEntityById } from '../../services/api';
+import { getPersonalDetails, getAllEntities } from '../../services/api';
 // Keep your imports exactly as they are—they act as excellent fallback mock data!
 import { stats as initialStats, account as initialAccount, piecharts as initialPieCharts, opportunities, deadlines, alert, piecharts } from '../../data/dashboardData';
 import DashboardHeader from '../../components/Dashboard/DashboardHeader';
@@ -217,18 +217,37 @@ export default function Overview() {
   const [livePieCharts, setLivePieCharts] = useState(initialPieCharts);
   const [loading, setLoading] = useState(true);
 
-  // Load dashboard data for the currently active entity
+  // Load dashboard data for the currently active entity.
+  // IMPORTANT: this must not assume activeEntityId already exists in localStorage.
+  // Right after login, Overview is often the FIRST page the user lands on —
+  // ManageAccount (which used to be the only place that picked a default entity)
+  // may never have run yet. So Overview resolves and persists its own default
+  // here, the same way ManageAccount does, instead of depending on it.
   const fetchDashboardMetrics = React.useCallback(async () => {
     try {
-      const userId      = localStorage.getItem('userId');
-      const entityId    = localStorage.getItem('activeEntityId');
+      const userId = localStorage.getItem('userId');
       if (!userId) return;
 
-      // Fetch person and active entity in parallel
-      const [person, activeEntity] = await Promise.all([
+      // Fetch person details and the user's full entity list in parallel.
+      const [person, entities] = await Promise.all([
         getPersonalDetails(userId),
-        entityId ? getEntityById(parseInt(entityId)) : Promise.resolve(null),
+        getAllEntities(userId).catch(() => []),
       ]);
+
+      // Resolve which entity should be active:
+      // 1. Use the stored activeEntityId ONLY if it actually belongs to this user.
+      // 2. Otherwise fall back to the user's first entity and persist that choice.
+      // 3. If the user has no entities at all, there's nothing to show.
+      let storedEntityId = parseInt(localStorage.getItem('activeEntityId') || '0');
+      const storedIsValid = entities.some((e) => e.id === storedEntityId);
+
+      let activeEntity = null;
+      if (storedIsValid) {
+        activeEntity = entities.find((e) => e.id === storedEntityId);
+      } else if (entities.length > 0) {
+        activeEntity = entities[0];
+        localStorage.setItem('activeEntityId', String(activeEntity.id));
+      }
 
       if (activeEntity) {
         const turnover  = parseFloat(activeEntity.salesTurnover)    || 0;

@@ -74,8 +74,9 @@ export const updateEntity = async (entityId, payload) => {
  * Fetch a single entity by its database ID.
  * Used by dashboard pages to load the active entity from localStorage('activeEntityId').
  */
-export const getEntityById = async (entityId) => {
-  const { data } = await api.get(`/entities/detail/${entityId}`);
+export const getEntityById = async (entityId, userId = null) => {
+  const params = userId ? { user_id: userId } : {};
+  const { data } = await api.get(`/entities/detail/${entityId}`, { params });
   return data;
 };
 

@@ -114,11 +114,18 @@ function ManageAccount() {
             const mapped = entities.map(remapEntityFromApi);
             setEntityData(mapped);
 
-            // Default to first entity if none stored yet
+            // Validate the stored activeEntityId actually belongs to THIS user's
+            // entities. If it doesn't — e.g. it's a leftover from a different
+            // account that logged in earlier in this browser — fall back to the
+            // first entity instead of silently pointing at someone else's data.
             const stored = parseInt(localStorage.getItem('activeEntityId') || '0');
-            if (!stored && mapped.length > 0) {
+            const storedBelongsToUser = mapped.some((ent) => ent.id === stored);
+
+            if ((!stored || !storedBelongsToUser) && mapped.length > 0) {
               localStorage.setItem('activeEntityId', String(mapped[0].id));
               setActiveEntityId(mapped[0].id);
+            } else if (storedBelongsToUser) {
+              setActiveEntityId(stored);
             }
           }
         } catch (entityErr) {
