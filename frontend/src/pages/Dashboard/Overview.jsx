@@ -9,13 +9,17 @@
 //  - Both carousels use dot-navigation to page through items.
 
 import React, { useState, useEffect } from 'react';
-import { getPersonalDetails, getAllEntities } from '../../services/api';
+import { useNavigate } from 'react-router-dom';
+import { getPersonalDetails, getAllEntities, getTaxProfileSummary } from '../../services/api';
 // Keep your imports exactly as they are—they act as excellent fallback mock data!
-import { stats as initialStats, account as initialAccount, piecharts as initialPieCharts, opportunities, deadlines, alert, piecharts } from '../../data/dashboardData';
+import { stats as initialStats, account as initialAccount, piecharts as initialPieCharts, opportunities, deadlines, alert as initialAlert } from '../../data/dashboardData';
 import DashboardHeader from '../../components/Dashboard/DashboardHeader';
 import ActionBanner from '../../components/Dashboard/ActionBanner';
 import StatsGrid from '../../components/Dashboard/StatsGrid';
 import OpportunitiesCard from '../../components/Dashboard/OpportunitiesCard';
+
+// Route for the Cukai Account page's document upload tab.
+const UPLOAD_TAB_ROUTE = '/account?tab=upload';
 
 // Time-of-day greeting — computed once at render, not stored in state.
 function timeOfDayGreeting() {
@@ -23,6 +27,16 @@ function timeOfDayGreeting() {
   if (h < 12) return 'Good morning';
   if (h < 18) return 'Good afternoon';
   return 'Good evening';
+}
+
+// Form B (sole-prop) statutory e-Filing deadline is 30 June each year.
+// Returns how many whole days remain until the next occurrence of that date.
+function daysToFormBDeadline(today = new Date()) {
+  const year = today.getFullYear();
+  let deadline = new Date(year, 5, 30); // June is month index 5
+  if (today > deadline) deadline = new Date(year + 1, 5, 30);
+  const msPerDay = 1000 * 60 * 60 * 24;
+  return Math.max(0, Math.ceil((deadline - today) / msPerDay));
 }
 
 // ── Urgency helpers (mirrors DeadlinesCard logic) ──────────────────────────────
@@ -104,6 +118,31 @@ function buildSlices(segments, cx, cy, r, inner) {
 const fmtRM = (v) => 'RM ' + Number(v).toLocaleString('en-MY', { maximumFractionDigits: 0 });
 const pct = (v, t) => t ? ((v / t) * 100).toFixed(1) + '%' : '0%';
 
+// Color palette cycled across categories so charts stay readable regardless
+// of how many distinct categories a user's documents happen to produce.
+const SEGMENT_PALETTE = ['#0D9488', '#F59E0B', '#6366F1', '#EC4899', '#10B981', '#F97316', '#3B82F6', '#8B5CF6', '#EF4444', '#14B8A6'];
+
+// Groups a list of document-derived entries (each with `category` and
+// `amountNumeric`) into chart segments, summing amounts per category.
+function segmentsByCategory(entries) {
+  const totals = new Map();
+  (entries || []).forEach((e) => {
+    const label = e.category || 'Uncategorised';
+    totals.set(label, (totals.get(label) || 0) + (e.amountNumeric || 0));
+  });
+  return Array.from(totals.entries())
+    .filter(([, value]) => value > 0)
+    .map(([label, value], i) => ({ label, value, color: SEGMENT_PALETTE[i % SEGMENT_PALETTE.length] }));
+}
+
+// Same idea, but for the already-grouped relief breakdown the backend
+// returns (each item has `category` and `cappedTotal`).
+function segmentsFromReliefBreakdown(breakdown) {
+  return (breakdown || [])
+    .filter((b) => (b.cappedTotal || 0) > 0)
+    .map((b, i) => ({ label: b.category, value: b.cappedTotal, color: SEGMENT_PALETTE[i % SEGMENT_PALETTE.length] }));
+}
+
 // ── PieChartsCarousel ──────────────────────────────────────────────────────────
 // Cycles through 3 donut charts (Business, Personal, Tax Summary) with dots.
 // Fills the right col of the body grid — the space previously held by DeadlinesCard.
@@ -113,7 +152,7 @@ function PieChartsCarousel({ charts }) {
   const [mouse, setMouse] = useState({ x: 0, y: 0 });
   const chart = charts[idx];
 
-  const SIZE = 120;
+  const SIZE = 150;
   const CX = SIZE / 2, CY = SIZE / 2;
   const R = SIZE * 0.39, INNER = SIZE * 0.22;
   const { slices, total } = buildSlices(chart.segments, CX, CY, R, INNER);
@@ -137,60 +176,69 @@ function PieChartsCarousel({ charts }) {
 
       <p className="text-xs font-medium text-muted shrink-0 mb-2">Expense Breakdown</p>
 
-      {/* Chart title */}
-      <div className="text-center shrink-0 mb-2">
-        <p className="text-xs font-semibold text-headings">{chart.title}</p>
-        {chart.subtitle && <p className="text-[10px] text-muted mt-0.5">{chart.subtitle}</p>}
-      </div>
-
-      {/* Donut */}
-      <div className="flex justify-center shrink-0">
-        {total === 0 ? (
-          <div style={{ width: SIZE, height: SIZE }} className="flex items-center justify-center rounded-full border-2 border-dashed border-border">
-            <p className="text-[9px] text-muted text-center px-2">No data yet</p>
+      {/* 2-column body: legend + total on the left, title + donut on the right.
+          Splitting these (rather than stacking title/donut above legend/total)
+          gives the donut more room to breathe and is easier to read at a glance. */}
+      <div className="flex-1 min-h-0 grid grid-cols-2 gap-4">
+        {/* Left column — legend (scrollable) + footer total */}
+        <div className="flex flex-col min-h-0">
+          <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5">
+            {slices.length === 0 ? (
+              <p className="text-[10px] text-muted">No data yet</p>
+            ) : (
+              slices.map(sl => (
+                <div key={sl.label} className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: sl.color }} />
+                    <span className="truncate text-[10px] text-muted">{sl.label}</span>
+                  </div>
+                  <span className="text-[10px] font-semibold text-headings shrink-0">{pct(sl.value, total)}</span>
+                </div>
+              ))
+            )}
           </div>
-        ) : (
-          <div className="relative" style={{ width: SIZE, height: SIZE }}>
-            <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
-              onMouseLeave={() => setHovered(null)} style={{ overflow: 'visible' }}>
-              {slices.map(sl => (
-                <path key={sl.label} d={sl.d} fill={sl.color} fillRule="evenodd"
-                  opacity={hovered && hovered.label !== sl.label ? 0.4 : 1}
-                  style={{ cursor: 'pointer', transition: 'opacity 0.15s, transform 0.1s',
-                    transformOrigin: `${CX}px ${CY}px`,
-                    transform: hovered?.label === sl.label ? 'scale(1.04)' : 'scale(1)' }}
-                  onMouseEnter={e => { setMouse({ x: e.clientX, y: e.clientY }); setHovered(sl); }}
-                  onMouseMove={e => setMouse({ x: e.clientX, y: e.clientY })} />
-              ))}
-              <text x={CX} y={CY - 4} textAnchor="middle" fontSize={SIZE * 0.07} fill="var(--color-muted, #94A3B8)" fontFamily="sans-serif">total</text>
-              <text x={CX} y={CY + 9} textAnchor="middle" fontSize={SIZE * 0.075} fill="var(--color-headings, #0F172A)" fontWeight="700" fontFamily="sans-serif">
-                {fmtRM(total)}
-              </text>
-            </svg>
-          </div>
-        )}
-      </div>
 
-      {/* Legend — scrollable if many items */}
-      <div className="mt-3 flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5">
-        {slices.map(sl => (
-          <div key={sl.label} className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5 min-w-0">
-              <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: sl.color }} />
-              <span className="truncate text-[10px] text-muted">{sl.label}</span>
+          {chart.footerLabel && (
+            <div className="shrink-0 mt-2 border-t border-border pt-2 flex justify-between items-center">
+              <span className="text-[10px] text-muted">{chart.footerLabel}</span>
+              <span className="text-[10px] font-bold" style={{ color: chart.footerColor || 'inherit' }}>{fmtRM(total)}</span>
             </div>
-            <span className="text-[10px] font-semibold text-headings shrink-0">{pct(sl.value, total)}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* Footer total row */}
-      {chart.footerLabel && (
-        <div className="shrink-0 mt-2 border-t border-border pt-2 flex justify-between items-center">
-          <span className="text-[10px] text-muted">{chart.footerLabel}</span>
-          <span className="text-[10px] font-bold" style={{ color: chart.footerColor || 'inherit' }}>{fmtRM(total)}</span>
+          )}
         </div>
-      )}
+
+        {/* Right column — chart title + bigger donut */}
+        <div className="flex flex-col items-center justify-center min-h-0">
+          <div className="text-center shrink-0 mb-2">
+            <p className="text-xs font-semibold text-headings">{chart.title}</p>
+            {chart.subtitle && <p className="text-[10px] text-muted mt-0.5">{chart.subtitle}</p>}
+          </div>
+
+          {total === 0 ? (
+            <div style={{ width: SIZE, height: SIZE }} className="flex items-center justify-center rounded-full border-2 border-dashed border-border">
+              <p className="text-[9px] text-muted text-center px-2">No data yet</p>
+            </div>
+          ) : (
+            <div className="relative" style={{ width: SIZE, height: SIZE }}>
+              <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
+                onMouseLeave={() => setHovered(null)} style={{ overflow: 'visible' }}>
+                {slices.map(sl => (
+                  <path key={sl.label} d={sl.d} fill={sl.color} fillRule="evenodd"
+                    opacity={hovered && hovered.label !== sl.label ? 0.4 : 1}
+                    style={{ cursor: 'pointer', transition: 'opacity 0.15s, transform 0.1s',
+                      transformOrigin: `${CX}px ${CY}px`,
+                      transform: hovered?.label === sl.label ? 'scale(1.04)' : 'scale(1)' }}
+                    onMouseEnter={e => { setMouse({ x: e.clientX, y: e.clientY }); setHovered(sl); }}
+                    onMouseMove={e => setMouse({ x: e.clientX, y: e.clientY })} />
+                ))}
+                <text x={CX} y={CY - 4} textAnchor="middle" fontSize={SIZE * 0.07} fill="var(--color-muted, #94A3B8)" fontFamily="sans-serif">total</text>
+                <text x={CX} y={CY + 9} textAnchor="middle" fontSize={SIZE * 0.075} fill="var(--color-headings, #0F172A)" fontWeight="700" fontFamily="sans-serif">
+                  {fmtRM(total)}
+                </text>
+              </svg>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Dot navigation */}
       <div className="flex items-center justify-center gap-1.5 shrink-0 pt-2">
@@ -211,10 +259,13 @@ function PieChartsCarousel({ charts }) {
 
 // ── Overview ───────────────────────────────────────────────────────────────────
 export default function Overview() {
+  const navigate = useNavigate();
+
   // 1. Establish state variables using the static data as default placeholders
   const [liveAccount, setLiveAccount] = useState(initialAccount);
   const [liveStats, setLiveStats] = useState(initialStats);
   const [livePieCharts, setLivePieCharts] = useState(initialPieCharts);
+  const [liveAlert, setLiveAlert] = useState(initialAlert);
   const [loading, setLoading] = useState(true);
 
   // Load dashboard data for the currently active entity.
@@ -228,7 +279,12 @@ export default function Overview() {
       const userId = localStorage.getItem('userId');
       if (!userId) return;
 
-      // Fetch person details and the user's full entity list in parallel.
+      const assessmentYear = new Date().getFullYear();
+
+      // Fetch person details and the user's full entity list first — we need
+      // to know which entity is active before requesting an entity-scoped
+      // tax summary, otherwise switching entities wouldn't change anything
+      // shown on this page.
       const [person, entities] = await Promise.all([
         getPersonalDetails(userId),
         getAllEntities(userId).catch(() => []),
@@ -249,25 +305,94 @@ export default function Overview() {
         localStorage.setItem('activeEntityId', String(activeEntity.id));
       }
 
-      if (activeEntity) {
+      // Now fetch the document-derived tax summary scoped to the resolved
+      // active entity, so the stats/pie charts/banner update on entity switch.
+      const summary = await getTaxProfileSummary(
+        assessmentYear, userId, activeEntity?.id ?? null,
+      ).catch(() => null);
+
+      const cy = summary?.currentYear;
+      const totals = cy?.totals;
+      const docCount = cy?.documentCount ?? 0;
+      const pendingReview = cy?.pendingReviewCount ?? 0;
+      const daysLeft = daysToFormBDeadline();
+
+      // ── Stats grid: derived from uploaded-document totals when available,
+      // falling back to the raw entity figures if no documents have been
+      // processed yet for this year.
+      if (totals) {
+        setLiveStats([
+          { label: 'Total Income',      value: fmtRM(totals.totalIncome || 0),
+            change: `${docCount} document${docCount === 1 ? '' : 's'}`, trend: 'up' },
+          { label: 'Total Deductions',  value: fmtRM(totals.q3TotalDeductions || 0),
+            change: 'From receipts',  trend: 'down' },
+          { label: 'Chargeable Income', value: fmtRM(totals.estimatedChargeableIncome || 0),
+            change: 'Calculated',     trend: totals.estimatedChargeableIncome >= 0 ? 'up' : 'down' },
+          { label: 'Est. Tax Payable',  value: fmtRM(totals.estimatedTaxPayable || 0),
+            change: 'Formulaic',      trend: 'neutral' },
+        ]);
+      } else if (activeEntity) {
         const turnover  = parseFloat(activeEntity.salesTurnover)    || 0;
-        const expenses  = parseFloat(activeEntity.totalExpenditure)  || 0;
-        const netProfit = parseFloat(activeEntity.netProfitLoss)     || (turnover - expenses);
+        const expenses  = parseFloat(activeEntity.totalExpenditure) || 0;
+        const netProfit = parseFloat(activeEntity.netProfitLoss)    || (turnover - expenses);
         const estimatedTax = netProfit > 5000 ? netProfit * 0.03 : 0;
 
         setLiveStats([
-          { label: 'Sales Turnover',    value: `RM ${turnover.toLocaleString()}`,    change: 'Live Sync',  trend: 'up' },
-          { label: 'Total Expenditure', value: `RM ${expenses.toLocaleString()}`,    change: 'Live Sync',  trend: 'down' },
-          { label: 'Net Profit / Loss', value: `RM ${netProfit.toLocaleString()}`,   change: 'Calculated', trend: netProfit >= 0 ? 'up' : 'down' },
-          { label: 'Est. Tax Payable',  value: `RM ${estimatedTax.toLocaleString()}`, change: 'Formulaic',  trend: 'neutral' },
+          { label: 'Sales Turnover',    value: fmtRM(turnover),    change: 'Live Sync',  trend: 'up' },
+          { label: 'Total Expenditure', value: fmtRM(expenses),    change: 'Live Sync',  trend: 'down' },
+          { label: 'Net Profit / Loss', value: fmtRM(netProfit),   change: 'Calculated', trend: netProfit >= 0 ? 'up' : 'down' },
+          { label: 'Est. Tax Payable',  value: fmtRM(estimatedTax), change: 'Formulaic',  trend: 'neutral' },
         ]);
+      }
 
+      // ── Pie charts: each page built from a different slice of the
+      // document-derived totals, so they repopulate as the user uploads more.
+      // NOTE: q1BusinessIncome / q3Deductions / etc. live under
+      // `currentYear`, not on the summary root — only currentYear, priorYear,
+      // yearlyTrend, and projection are top-level keys.
+      setLivePieCharts([
+        {
+          title: 'Business Income',
+          subtitle: `YA ${assessmentYear}`,
+          segments: segmentsByCategory(cy?.q1BusinessIncome),
+          footerLabel: 'Total Business Income',
+          footerColor: '#0D9488',
+        },
+        {
+          title: 'Deductible Expenses',
+          subtitle: `YA ${assessmentYear}`,
+          segments: segmentsByCategory(cy?.q3Deductions),
+          footerLabel: 'Total Deductions',
+          footerColor: '#F59E0B',
+        },
+        {
+          title: 'Personal Reliefs',
+          subtitle: `YA ${assessmentYear}`,
+          segments: segmentsFromReliefBreakdown(totals?.q4ReliefsBreakdown),
+          footerLabel: 'Total Reliefs Claimed',
+          footerColor: '#6366F1',
+        },
+      ]);
+
+      // ── Action banner: reflects documents waiting on review in the Upload
+      // Documents tab. Hidden entirely once nothing needs attention.
+      setLiveAlert(
+        pendingReview > 0
+          ? {
+              title: 'Action Required',
+              message: `${pendingReview} of ${docCount} uploaded document${docCount === 1 ? '' : 's'} need${pendingReview === 1 ? 's' : ''} your review before filing.`,
+              actionLabel: 'Review',
+            }
+          : null
+      );
+
+      if (activeEntity) {
         setLiveAccount({
           name:           person?.fullName || 'Taxpayer',
           entity:         activeEntity.name || 'My Business',
           msic:           activeEntity.businessCode ? `MSIC ${activeEntity.businessCode}` : 'No MSIC Set',
-          assessmentYear: 'YA 2026',
-          deadlineNote:   'Form B Sync Active',
+          assessmentYear: `YA ${assessmentYear}`,
+          deadlineNote:   `${daysLeft} day${daysLeft === 1 ? '' : 's'} to Form B`,
         });
       }
     } catch (err) {
@@ -285,7 +410,7 @@ export default function Overview() {
     window.addEventListener('entitySwitch', handleEntitySwitch);
     return () => window.removeEventListener('entitySwitch', handleEntitySwitch);
   }, [fetchDashboardMetrics]);
-  
+
   return (
     <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body">
       <div className="flex h-full w-full flex-col gap-3 p-3">
@@ -299,12 +424,17 @@ export default function Overview() {
         deadlineNote={liveAccount.deadlineNote}
       />
 
-      <ActionBanner
-        title={alert.title}
-        message={alert.message}
-        actionLabel={alert.actionLabel}
-        compact
-      />
+      {/* ── Action banner reflects pending-review documents in the Upload tab;
+            hidden entirely once nothing needs the user's attention ── */}
+      {liveAlert && (
+        <ActionBanner
+          title={liveAlert.title}
+          message={liveAlert.message}
+          actionLabel={liveAlert.actionLabel}
+          onAction={() => navigate(UPLOAD_TAB_ROUTE)}
+          compact
+        />
+      )}
 
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-4">
@@ -321,7 +451,7 @@ export default function Overview() {
               Col 3:   Pie Charts Carousel */}
         <div className="grid min-h-0 flex-1 grid-cols-3 gap-3">
           <div className="col-span-2 min-h-0">
-            <PieChartsCarousel charts={piecharts} />
+            <PieChartsCarousel charts={livePieCharts} />
           </div>
           <div className="col-span-1 min-h-0">
             <OpportunitiesCard opportunities={opportunities} scrollable />
