@@ -1,7 +1,25 @@
 import { useState } from "react";
 import { useNavigate, NavLink } from "react-router-dom";
 import cukaiLogo from '../../assets/cukai-logo.png';
-import { registerUser, getEntityBySsm, linkPersonToEntity } from "../../services/api";
+import { registerUser } from "../../services/api";
+
+// ── Malaysia Standard Industrial Classification (MSIC 2008) reference ───────────
+// A curated subset covering the solopreneur / SME categories this wizard offers.
+// `label` is shown to the user; `code` is the real 5-digit MSIC code stored as
+// the entity's businessCode, and `activity` is the official MSIC activity title
+// stored as businessActivity (so reports reference the correct LHDN classification).
+const MSIC_CODES = [
+  { code: "70200", label: "Consulting / Advisory",                      activity: "Management consultancy activities" },
+  { code: "74100", label: "Freelance Creative (Design, Writing, Video)", activity: "Specialised design activities" },
+  { code: "62010", label: "Tech / Software",                            activity: "Computer programming activities" },
+  { code: "47910", label: "E-commerce / Retail",                        activity: "Retail sale via internet" },
+  { code: "56101", label: "Food & Beverage",                            activity: "Restaurants and mobile food service activities" },
+  { code: "85499", label: "Education / Coaching",                       activity: "Other education n.e.c." },
+  { code: "86900", label: "Healthcare / Wellness",                      activity: "Other human health activities" },
+  { code: "69200", label: "Finance / Accounting",                       activity: "Accounting, bookkeeping and auditing activities; tax consultancy" },
+  { code: "73100", label: "Marketing / Agency",                         activity: "Advertising" },
+  { code: "96090", label: "Other",                                      activity: "Other personal service activities n.e.c." },
+];
 
 // ── Shared UI primitives ────────────────────────────────────────────────────────
 
@@ -204,66 +222,6 @@ function Step0_Account({ data, setData, onNext }) {
   );
 }
 
-function Step1_Employment({ data, setData, onBack, onNext }) {
-  const options = [
-    {
-      id: "new",
-      icon: (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-4"/>
-          <line x1="9" y1="12" x2="9" y2="12.5"/><line x1="9" y1="15" x2="9" y2="15.5"/>
-          <line x1="13" y1="15" x2="13" y2="15.5"/><line x1="13" y1="18" x2="13" y2="18.5"/>
-        </svg>
-      ),
-      label: "New Company Cukai Account",
-      desc: "Register your company with Cukai for the first time. We'll help you set up your tax profile from scratch.",
-    },
-    {
-      id: "existing",
-      icon: (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <rect x="2" y="7" width="20" height="14" rx="2"/>
-          <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
-          <path d="M9 12l2 2 4-4"/>
-        </svg>
-      ),
-      label: "Existing Company Cukai Account",
-      desc: "Your company is already registered with SSM. Link your existing company to access and manage its tax records.",
-    },
-  ];
-
-  return (
-    <Card>
-      <h2 className="text-base font-bold text-[#0F172A] mb-0.5">Set up your company account</h2>
-      <p className="text-xs text-[#64748B] mb-3">Choose how you'd like to get started with Cukai.ai.</p>
-
-      <div className="grid grid-cols-1 gap-2">
-        {options.map(opt => (
-          <button
-            key={opt.id}
-            onClick={() => setData({ ...data, accountType: opt.id })}
-            className={`flex items-start gap-3 p-3 rounded-xl border-2 text-left transition-all duration-150 ${
-              data.accountType === opt.id
-                ? "border-[#10B981] bg-[#F0FDF9]"
-                : "border-[#E2E8F0] hover:border-[#10B981] hover:bg-[#F8FAFC]"
-            }`}
-          >
-            <div className={`p-2 rounded-xl flex-shrink-0 mt-0.5 ${data.accountType === opt.id ? "bg-[#D1FAE5] text-[#10B981]" : "bg-[#F1F5F9] text-[#64748B]"}`}>
-              {opt.icon}
-            </div>
-            <div>
-              <p className="font-semibold text-[#0F172A] text-xs">{opt.label}</p>
-              <p className="text-[10px] text-[#64748B] mt-0.5 leading-relaxed">{opt.desc}</p>
-            </div>
-          </button>
-        ))}
-      </div>
-
-      <NavButtons onBack={onBack} onNext={onNext} nextDisabled={!data.accountType} />
-    </Card>
-  );
-}
-
 function Step2_Income({ data, setData, onBack, onNext }) {
   const [mode, setMode] = useState("monthly");
 
@@ -417,12 +375,10 @@ function Step4_Savings({ data, setData, onBack, onNext }) {
 }
 
 function Step5_BusinessProfile({ data, setData, onBack, onNext }) {
-  const industries = [
-    "Consulting / Advisory", "Freelance Creative (Design, Writing, Video)",
-    "Tech / Software", "E-commerce / Retail", "Food & Beverage",
-    "Education / Coaching", "Healthcare / Wellness", "Finance / Accounting",
-    "Marketing / Agency", "Other",
-  ];
+  // Malaysia Standard Industrial Classification (MSIC 2008) 5-digit codes.
+  // Each wizard-friendly label maps to the closest real MSIC code so the
+  // backend stores a proper business_code instead of the free-text label.
+  const industries = MSIC_CODES;
 
   return (
     <Card>
@@ -467,14 +423,27 @@ function Step5_BusinessProfile({ data, setData, onBack, onNext }) {
         <div className="border-t border-[#F1F5F9] pt-3">
           <SectionLabel>Industry / Business Type</SectionLabel>
           <select
-            value={data.industry || ""}
-            onChange={e => setData({ ...data, industry: e.target.value })}
+            value={data.industryCode || ""}
+            onChange={e => {
+              const selected = industries.find(i => i.code === e.target.value);
+              setData({
+                ...data,
+                industryCode:    selected?.code     || "",
+                industryLabel:   selected?.label    || "",
+                industryActivity: selected?.activity || "",
+              });
+            }}
             className="w-full px-3 py-2 rounded-xl border border-[#E2E8F0] text-xs text-[#0F172A] bg-white focus:outline-none focus:ring-2 focus:ring-[#10B981] appearance-none"
             style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2364748B' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 16px center" }}
           >
             <option value="">Select your industry</option>
-            {industries.map(i => <option key={i} value={i}>{i}</option>)}
+            {industries.map(i => <option key={i.code} value={i.code}>{i.label} — MSIC {i.code}</option>)}
           </select>
+          {data.industryCode && (
+            <p className="text-[10px] text-[#94A3B8] mt-1.5">
+              MSIC code <span className="font-semibold text-[#0F172A]">{data.industryCode}</span> will be saved to your business profile.
+            </p>
+          )}
         </div>
 
         <div className="border-t border-[#F1F5F9] pt-3">
@@ -605,118 +574,7 @@ function StepSavings({ data, onNext }) {
   );
 }
 
-// ── Existing-account path: link by SSM number ───────────────────────────────────
-function StepExistingSSM({ data, setData, onBack, onNext, onNotFound }) {
-  const [searching, setSearching]       = useState(false);
-  const [foundEntity, setFoundEntity]   = useState(null);   // entity returned by the lookup
-  const [lookupError, setLookupError]   = useState(null);
-  const hasInput = (data.existingSsmNumber || "").trim().length > 0;
 
-  const handleFind = async () => {
-    setSearching(true);
-    setLookupError(null);
-    setFoundEntity(null);
-    try {
-      const entity = await getEntityBySsm(data.existingSsmNumber);
-      // SSM found — store the entity id so the parent can link after registration
-      setFoundEntity(entity);
-      setData({ ...data, linkedEntityId: entity.id, linkedEntityName: entity.name });
-    } catch (err) {
-      if (err.response?.status === 404) {
-        // Entity not in the system — send user back to register as new company
-        setLookupError("No company found with that SSM number. It may not be registered in cukai.ai yet.");
-      } else {
-        setLookupError("Something went wrong. Please check your connection and try again.");
-      }
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  return (
-    <Card>
-      <h2 className="text-base font-bold text-[#0F172A] mb-0.5">Find your company</h2>
-      <p className="text-xs text-[#64748B] mb-3">Enter your SSM number to link your account to an existing company.</p>
-
-      <div className="space-y-3">
-        <div>
-          <label className="block text-[10px] font-semibold text-[#64748B] uppercase tracking-wide mb-1">SSM Registration Number</label>
-          <div className="flex items-center border border-[#E2E8F0] rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-[#10B981]">
-            <span className="px-3 py-2 text-[10px] font-semibold text-[#64748B] bg-[#F8FAFC] border-r border-[#E2E8F0] whitespace-nowrap">SSM No.</span>
-            <input
-              type="text"
-              placeholder="e.g. 202301012345"
-              value={data.existingSsmNumber || ""}
-              onChange={e => {
-                setData({ ...data, existingSsmNumber: e.target.value });
-                setFoundEntity(null);
-                setLookupError(null);
-              }}
-              className="flex-1 px-3 py-2 text-xs text-[#0F172A] placeholder-[#CBD5E1] focus:outline-none"
-            />
-          </div>
-          <p className="text-[10px] text-[#94A3B8] mt-1.5">Found on your SSM certificate or mycoid.ssm.com.my.</p>
-        </div>
-
-        {/* SSM found — show entity card */}
-        {foundEntity && (
-          <div className="p-3 rounded-xl bg-[#F0FDF9] border border-[#D1FAE5]">
-            <p className="text-[10px] font-bold text-[#0D9488] uppercase tracking-wide mb-1">Company found</p>
-            <p className="text-xs font-semibold text-[#0F172A]">{foundEntity.name}</p>
-            <p className="text-[10px] text-[#64748B] mt-0.5">{foundEntity.entityType} · {foundEntity.city}{foundEntity.state ? `, ${foundEntity.state}` : ""}</p>
-          </div>
-        )}
-
-        {/* Lookup error — with option to go back and register as new */}
-        {lookupError && (
-          <div className="p-3 rounded-xl bg-red-50 border border-red-100">
-            <p className="text-[11px] text-red-600 font-medium mb-2">⚠️ {lookupError}</p>
-            <button
-              onClick={onNotFound}
-              className="text-[10px] font-semibold text-red-600 underline underline-offset-2 hover:text-red-700"
-            >
-              ← Register as a new company instead
-            </button>
-          </div>
-        )}
-
-        {!foundEntity && !lookupError && (
-          <div className="p-3 rounded-xl bg-[#F0FDF9] border border-[#D1FAE5]">
-            <p className="text-[10px] text-[#0D9488] leading-relaxed">
-              <span className="font-semibold">Where to find it?</span> Your SSM number appears on your business registration certificate, or log in to <span className="font-medium">mycoid.ssm.com.my</span>.
-            </p>
-          </div>
-        )}
-      </div>
-
-      <div className="flex justify-between items-center mt-4 pt-3 border-t border-[#F1F5F9]">
-        <button onClick={onBack} className="text-[#64748B] font-medium text-xs hover:text-[#0F172A] transition-colors px-2 py-1">
-          Back
-        </button>
-        {!foundEntity ? (
-          <button
-            onClick={handleFind}
-            disabled={!hasInput || searching}
-            className={`px-5 py-2 rounded-xl font-semibold text-xs transition-all duration-200 ${
-              !hasInput || searching
-                ? "bg-[#D1FAE5] text-[#6EE7B7] cursor-not-allowed"
-                : "bg-[#10B981] hover:bg-[#0D9488] text-white shadow-sm hover:shadow-md"
-            }`}
-          >
-            {searching ? "Searching…" : "Find Company"}
-          </button>
-        ) : (
-          <button
-            onClick={onNext}
-            className="px-5 py-2 rounded-xl font-semibold text-xs bg-[#10B981] hover:bg-[#0D9488] text-white shadow-sm hover:shadow-md transition-all duration-200"
-          >
-            Link & Continue →
-          </button>
-        )}
-      </div>
-    </Card>
-  );
-}
 
 // ── Main component ──────────────────────────────────────────────────────────────
 
@@ -726,8 +584,6 @@ export default function GetStarted({ onLogin }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const navigate = useNavigate();
-
-  const isExisting = data.accountType === "existing";
 
   const handleRegisterUser = async (onSuccess) => {
     setLoading(true);
@@ -770,15 +626,11 @@ export default function GetStarted({ onLogin }) {
         hasLifestylePurchases:        data.lifestylePurchases              || false,
         hasSspnEvOther:               data.sspn                            || false,
       },
-      // skipEntity tells the backend not to create a new entity for this person.
-      // Used by the existing-account path — they're joining an existing company via SSM.
-      skipEntity: isExisting,
-
-      entity: isExisting ? {} : {
+      entity: {
         entityType:       "sole-prop",
         name:             data.companyName || `${data.fullName || "Solopreneur"}'s Business`,
-        businessCode:     data.industry || "",
-        businessActivity: data.industry || "",
+        businessCode:     data.industryCode     || "",
+        businessActivity: data.industryActivity || "",
         ssmNo:            data.ssmNumber || "",
         tin:              "",
         address:          "",
@@ -804,9 +656,7 @@ export default function GetStarted({ onLogin }) {
         localStorage.setItem("userId",       String(response.id));
         localStorage.setItem("userFullName", response.fullName || data.fullName || "");
         localStorage.setItem("userEmail",    data.email || "");
-        // For new-company path: default to the entity just created.
-        // For existing-company path: activeEntityId is set after linkPersonToEntity succeeds.
-        if (!isExisting && response.entities && response.entities.length > 0) {
+        if (response.entities && response.entities.length > 0) {
           localStorage.setItem("activeEntityId", String(response.entities[0].id));
         }
       }
@@ -814,120 +664,61 @@ export default function GetStarted({ onLogin }) {
       await onSuccess(response?.id);
     } catch (err) {
       console.error("Registration failed:", err);
-      const detail = err.response?.data?.detail || "Network request failed. Is your backend server up?";
-      // For existing-account path, "Email already registered" means the user already has an account
-      if (isExisting && detail.toLowerCase().includes("email already")) {
-        setError("This email is already registered. Please log in to link your account to this company.");
-      } else {
-        setError(detail);
-      }
+      setError(err.response?.data?.detail || "Network request failed. Is your backend server up?");
     } finally {
       setLoading(false);
     }
   };
 
-  const newAccountStepsConfig = [
+  // Single registration flow — every account creates one person with one entity.
+  // Additional entities are created later from Account Settings (ManageProfile).
+  const stepsConfig = [
     { label: "Account" },
-    { label: "Account Type" },
     { label: "Income" },
     { label: "Personal & Family" },
     { label: "Savings & Insurance" },
     { label: "Business Profile" },
   ];
 
-  const existingAccountStepsConfig = [
-    { label: "Account" },
-    { label: "Account Type" },
-    { label: "Link Company" },
-  ];
-
   const WIZARD_STEPS = {};
 
-  // Shared steps (both paths begin here)
   WIZARD_STEPS[0] = (
     <>
-      <ProgressBar current={0} total={isExisting ? 3 : 6} steps={isExisting ? existingAccountStepsConfig : newAccountStepsConfig} />
+      <ProgressBar current={0} total={5} steps={stepsConfig} />
       <Step0_Account data={data} setData={setData} onNext={() => setStep(1)} />
     </>
   );
   WIZARD_STEPS[1] = (
     <>
-      <ProgressBar current={1} total={isExisting ? 3 : 6} steps={isExisting ? existingAccountStepsConfig : newAccountStepsConfig} />
-      <Step1_Employment data={data} setData={setData} onBack={() => setStep(0)} onNext={() => {
-        if (data.accountType === "existing") {
-          setStep(2);
-        } else {
-          setStep(10);
-        }
-      }} />
+      <ProgressBar current={1} total={5} steps={stepsConfig} />
+      <Step2_Income data={data} setData={setData} onBack={() => setStep(0)} onNext={() => setStep(2)} />
     </>
   );
-
-  // Existing-account path diverges here
   WIZARD_STEPS[2] = (
     <>
-      <ProgressBar current={2} total={3} steps={existingAccountStepsConfig} />
-      <StepExistingSSM
-        data={data}
-        setData={setData}
-        onBack={() => setStep(1)}
-        onNotFound={() => setStep(1)}
-        onNext={() => handleRegisterUser(async (personId) => {
-          // After registration, link the new user to the found entity
-          if (data.linkedEntityId && personId) {
-            try {
-              await linkPersonToEntity(data.linkedEntityId, personId);
-              // Now that we're linked to the found entity, scope the active context to it
-              localStorage.setItem("activeEntityId", String(data.linkedEntityId));
-            } catch (linkErr) {
-              if (linkErr.response?.status === 409) {
-                // User is already a member of this entity — don't silently fail
-                setError("Your account is already linked to this company. Please log in instead.");
-              } else {
-                console.warn("Could not auto-link to entity:", linkErr);
-              }
-            }
-          }
-          setStep(50);
-        })}
-      />
+      <ProgressBar current={2} total={5} steps={stepsConfig} />
+      <Step3_Personal data={data} setData={setData} onBack={() => setStep(1)} onNext={() => setStep(3)} />
     </>
   );
-  WIZARD_STEPS[50] = <StepUpload onBack={() => setStep(2)} onNext={() => setStep(51)} onSkip={() => setStep(51)} />;
-  WIZARD_STEPS[51] = <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />;
-
-  // New-account path
-  WIZARD_STEPS[10] = (
+  WIZARD_STEPS[3] = (
     <>
-      <ProgressBar current={2} total={6} steps={newAccountStepsConfig} />
-      <Step2_Income data={data} setData={setData} onBack={() => setStep(1)} onNext={() => setStep(11)} />
+      <ProgressBar current={3} total={5} steps={stepsConfig} />
+      <Step4_Savings data={data} setData={setData} onBack={() => setStep(2)} onNext={() => setStep(4)} />
     </>
   );
-  WIZARD_STEPS[11] = (
+  WIZARD_STEPS[4] = (
     <>
-      <ProgressBar current={3} total={6} steps={newAccountStepsConfig} />
-      <Step3_Personal data={data} setData={setData} onBack={() => setStep(10)} onNext={() => setStep(12)} />
-    </>
-  );
-  WIZARD_STEPS[12] = (
-    <>
-      <ProgressBar current={4} total={6} steps={newAccountStepsConfig} />
-      <Step4_Savings data={data} setData={setData} onBack={() => setStep(11)} onNext={() => setStep(13)} />
-    </>
-  );
-  WIZARD_STEPS[13] = (
-    <>
-      <ProgressBar current={5} total={6} steps={newAccountStepsConfig} />
+      <ProgressBar current={4} total={5} steps={stepsConfig} />
       <Step5_BusinessProfile
         data={data}
         setData={setData}
-        onBack={() => setStep(12)}
-        onNext={() => handleRegisterUser(async () => setStep(14))}
+        onBack={() => setStep(3)}
+        onNext={() => handleRegisterUser(async () => setStep(5))}
       />
     </>
   );
-  WIZARD_STEPS[14] = <StepUpload onBack={() => setStep(13)} onNext={() => setStep(15)} />;
-  WIZARD_STEPS[15] = <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />;
+  WIZARD_STEPS[5] = <StepUpload onBack={() => setStep(4)} onNext={() => setStep(6)} />;
+  WIZARD_STEPS[6] = <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />;
 
   const currentView = WIZARD_STEPS[step];
 
@@ -948,19 +739,17 @@ export default function GetStarted({ onLogin }) {
             <p>⚠️ {error}</p>
             {error.toLowerCase().includes("email") && (
               <div className="flex gap-2 mt-2">
-                {!isExisting && (
-                  <button
-                    onClick={() => { setError(null); setStep(0); }}
-                    className="px-3 py-1 rounded-lg bg-white border border-red-200 text-red-600 text-[10px] font-semibold hover:bg-red-50 transition-colors"
-                  >
-                    ← Change email
-                  </button>
-                )}
+                <button
+                  onClick={() => { setError(null); setStep(0); }}
+                  className="px-3 py-1 rounded-lg bg-white border border-red-200 text-red-600 text-[10px] font-semibold hover:bg-red-50 transition-colors"
+                >
+                  ← Change email
+                </button>
                 <button
                   onClick={() => navigate("/login")}
                   className="px-3 py-1 rounded-lg bg-red-600 text-white text-[10px] font-semibold hover:bg-red-700 transition-colors"
                 >
-                  {isExisting ? "Log in to link your account" : "Log in instead"}
+                  Log in instead
                 </button>
               </div>
             )}

@@ -1,8 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
-import UserNavigation from '../../components/UserNavigation';
 import ManageProfile from './ManageProfile';
-import ManagePermission from './ManagePermissions';
 import { getPersonalDetails, updateProfile, getAllEntities, createEntity, updateEntity } from '../../services/api';
 
 /**
@@ -226,15 +223,15 @@ function ManageAccount() {
     }
   };
 
-  /** Persist the active entity selection so all pages scope their data to it. */
+  /**
+   * Persist the active entity selection and notify all mounted pages to
+   * re-fetch their entity-scoped data via a custom browser event.
+   */
   const handleSwitchEntity = (entityId) => {
     localStorage.setItem('activeEntityId', String(entityId));
     setActiveEntityId(entityId);
+    window.dispatchEvent(new CustomEvent('entitySwitch', { detail: { entityId } }));
   };
-
-  // Pass full entity objects so ManagePermission can use entity.id for API calls
-  const entityNames = entityData.map((e) => e.name).filter(Boolean);
-  const entityDataForPermissions = entityData.filter((e) => e.id && e.name);
 
   return (
     <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body flex flex-col">
@@ -242,11 +239,7 @@ function ManageAccount() {
 
         <div className="shrink-0">
           <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Account Settings</h1>
-          <p className="text-xs text-[#64748B] mt-1">Manage your business entities, team members, and interface preferences.</p>
-        </div>
-
-        <div className="shrink-0">
-          <UserNavigation />
+          <p className="text-xs text-[#64748B] mt-1">Manage your personal details and business entities.</p>
         </div>
 
         {loadError && (
@@ -256,27 +249,15 @@ function ManageAccount() {
         )}
 
         <div className="flex-1 min-h-0">
-          <Routes>
-            <Route index element={<Navigate to="profile" replace />} />
-            <Route
-              path="profile"
-              element={
-                <ManageProfile
-                  initialProfile={profileData}
-                  initialEntities={entityData}
-                  activeEntityId={activeEntityId}
-                  onSavePersonal={handleSavePersonal}
-                  onCreateEntity={handleCreateEntity}
-                  onSaveEntity={handleSaveEntity}
-                  onSwitchEntity={handleSwitchEntity}
-                />
-              }
-            />
-            <Route
-              path="permissions"
-              element={<ManagePermission entityData={entityDataForPermissions} />}
-            />
-          </Routes>
+          <ManageProfile
+            initialProfile={profileData}
+            initialEntities={entityData}
+            activeEntityId={activeEntityId}
+            onSavePersonal={handleSavePersonal}
+            onCreateEntity={handleCreateEntity}
+            onSaveEntity={handleSaveEntity}
+            onSwitchEntity={handleSwitchEntity}
+          />
         </div>
       </div>
     </main>

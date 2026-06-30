@@ -9,7 +9,7 @@
 //  - Both carousels use dot-navigation to page through items.
 
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import { getPersonalDetails, getEntityById } from '../../services/api';
 // Keep your imports exactly as they are—they act as excellent fallback mock data!
 import { stats as initialStats, account as initialAccount, piecharts as initialPieCharts, opportunities, deadlines, alert, piecharts } from '../../data/dashboardData';
 import DashboardHeader from '../../components/Dashboard/DashboardHeader';
@@ -217,58 +217,55 @@ export default function Overview() {
   const [livePieCharts, setLivePieCharts] = useState(initialPieCharts);
   const [loading, setLoading] = useState(true);
 
-  // 2. Fetch active metrics from your database on mount
-  useEffect(() => {
-    const fetchDashboardMetrics = async () => {
-      try {
-        const userId = localStorage.getItem("userId");
-        if (!userId) return;
+  // Load dashboard data for the currently active entity
+  const fetchDashboardMetrics = React.useCallback(async () => {
+    try {
+      const userId      = localStorage.getItem('userId');
+      const entityId    = localStorage.getItem('activeEntityId');
+      if (!userId) return;
 
-       // Fetch both endpoints simultaneously to match your existing main.py paths
-        const [personalRes, companyRes] = await Promise.all([
-          axios.get(`http://localhost:8000/personalDetails/${userId}`),
-          axios.get(`http://localhost:8000/companyDetails/${userId}`)
+      // Fetch person and active entity in parallel
+      const [person, activeEntity] = await Promise.all([
+        getPersonalDetails(userId),
+        entityId ? getEntityById(parseInt(entityId)) : Promise.resolve(null),
+      ]);
+
+      if (activeEntity) {
+        const turnover  = parseFloat(activeEntity.salesTurnover)    || 0;
+        const expenses  = parseFloat(activeEntity.totalExpenditure)  || 0;
+        const netProfit = parseFloat(activeEntity.netProfitLoss)     || (turnover - expenses);
+        const estimatedTax = netProfit > 5000 ? netProfit * 0.03 : 0;
+
+        setLiveStats([
+          { label: 'Sales Turnover',    value: `RM ${turnover.toLocaleString()}`,    change: 'Live Sync',  trend: 'up' },
+          { label: 'Total Expenditure', value: `RM ${expenses.toLocaleString()}`,    change: 'Live Sync',  trend: 'down' },
+          { label: 'Net Profit / Loss', value: `RM ${netProfit.toLocaleString()}`,   change: 'Calculated', trend: netProfit >= 0 ? 'up' : 'down' },
+          { label: 'Est. Tax Payable',  value: `RM ${estimatedTax.toLocaleString()}`, change: 'Formulaic',  trend: 'neutral' },
         ]);
 
-        const person = personalRes.data;
-        const activeEntity = companyRes.data;
-
-        if (activeEntity) {
-          // Dynamic calculation: Safely fallback to 0 if null
-          const turnover = activeEntity.sales_turnover || 0;
-          const expenses = activeEntity.total_expenditure || 0;
-          const netProfit = activeEntity.net_profit_loss || (turnover - expenses);
-          
-          // Estimation: Simple Malaysian individual/sole-prop tax estimation logic 
-          // (You can replace this with your backend formula later)
-          const estimatedTax = netProfit > 5000 ? netProfit * 0.03 : 0; 
-
-          // Inject raw database values cleanly into your beautiful stats layout structure!
-          setLiveStats([
-            { label: 'Sales Turnover', value: `RM ${turnover.toLocaleString()}`, change: 'Live Sync', trend: 'up' },
-            { label: 'Total Expenditure', value: `RM ${expenses.toLocaleString()}`, change: 'Live Sync', trend: 'down' },
-            { label: 'Net Profit / Loss', value: `RM ${netProfit.toLocaleString()}`, change: 'Calculated', trend: netProfit >= 0 ? 'up' : 'down' },
-            { label: 'Est. Tax Payable', value: `RM ${estimatedTax.toLocaleString()}`, change: 'Formulaic', trend: 'neutral' },
-          ]);
-
-          // Dynamically update header account contexts
-          setLiveAccount({
-            name: person?.fullName || person?.full_name || 'Taxpayer',
-            entity: activeEntity.name || 'Sole Proprietorship',
-            msic: activeEntity.businessCode || activeEntity.business_code ? `MSIC ${activeEntity.businessCode || activeEntity.business_code}` : 'No Code Set',
-            assessmentYear: 'YA 2026',
-            deadlineNote: 'Form B Sync Active',
-          });
-        }
-      } catch (err) {
-        console.error("Error updating dashboard view context:", err);
-      } finally {
-        setLoading(false);
+        setLiveAccount({
+          name:           person?.fullName || 'Taxpayer',
+          entity:         activeEntity.name || 'My Business',
+          msic:           activeEntity.businessCode ? `MSIC ${activeEntity.businessCode}` : 'No MSIC Set',
+          assessmentYear: 'YA 2026',
+          deadlineNote:   'Form B Sync Active',
+        });
       }
-    };
-
-    fetchDashboardMetrics();
+    } catch (err) {
+      console.error('Error fetching dashboard metrics:', err);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  // Initial load and listen for entity switches triggered from ManageProfile
+  useEffect(() => {
+    fetchDashboardMetrics();
+
+    const handleEntitySwitch = () => fetchDashboardMetrics();
+    window.addEventListener('entitySwitch', handleEntitySwitch);
+    return () => window.removeEventListener('entitySwitch', handleEntitySwitch);
+  }, [fetchDashboardMetrics]);
   
   return (
     <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body">

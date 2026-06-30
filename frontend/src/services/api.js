@@ -70,6 +70,15 @@ export const updateEntity = async (entityId, payload) => {
   return data;
 };
 
+/**
+ * Fetch a single entity by its database ID.
+ * Used by dashboard pages to load the active entity from localStorage('activeEntityId').
+ */
+export const getEntityById = async (entityId) => {
+  const { data } = await api.get(`/entities/detail/${entityId}`);
+  return data;
+};
+
 // ── Documents ─────────────────────────────────────────────────────────────────
 
 /**
@@ -153,71 +162,6 @@ export const reclassifyDocument = async (docId, status, category, userId = null)
     { status, category },
     { params },
   );
-  return data;
-};
-
-// ── Entity membership (permissions) ──────────────────────────────────────────
-
-/**
- * Look up an entity by SSM registration number.
- * Returns { id, name, ssmNo, entityType, city, state } or throws 404.
- */
-export const getEntityBySsm = async (ssmNo) => {
-  const { data } = await api.get(`/entities/by-ssm/${encodeURIComponent(ssmNo.trim())}`);
-  return data;
-};
-
-/**
- * Fetch all members (with roles and statuses) for a given entity.
- */
-export const getEntityMembers = async (entityId) => {
-  const { data } = await api.get(`/entities/${entityId}/members`);
-  return data;
-};
-
-/**
- * Invite a person to an entity by email address.
- * If they are already registered they get an 'active' membership immediately;
- * otherwise a 'pending' invite row is stored until they sign up.
- */
-export const inviteEntityMember = async (entityId, email, role = 'viewer') => {
-  const { data } = await api.post(`/entities/${entityId}/members`, { email, role });
-  return data;
-};
-
-/**
- * Update the role for an existing member.
- */
-export const updateEntityMember = async (entityId, memberId, role, actorPersonId = null) => {
-  const payload = { role };
-  if (actorPersonId) payload.actorPersonId = actorPersonId;
-  const { data } = await api.put(`/entities/${entityId}/members/${memberId}`, payload);
-  return data;
-};
-
-/**
- * Remove a member from an entity.
- */
-export const removeEntityMember = async (entityId, memberId, actorPersonId = null) => {
-  const params = actorPersonId ? { actor_person_id: actorPersonId } : {};
-  const { data } = await api.delete(`/entities/${entityId}/members/${memberId}`, { params });
-  return data;
-};
-
-/**
- * Link a newly registered person to an entity found via SSM lookup.
- * Called at the end of the existing-account registration path.
- */
-export const linkPersonToEntity = async (entityId, personId, role = 'editor') => {
-  const { data } = await api.post(`/entities/${entityId}/link-person/${personId}`, { role });
-  return data;
-};
-
-/**
- * Fetch the audit log for an entity (newest first, up to `limit` rows).
- */
-export const getEntityAuditLog = async (entityId, limit = 50) => {
-  const { data } = await api.get(`/entities/${entityId}/audit-log`, { params: { limit } });
   return data;
 };
 
