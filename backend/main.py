@@ -420,6 +420,26 @@ async def update_entity(entity_id: int, payload: dict, db: Session = Depends(get
   return _serialize_entity(entity)
 
 
+@app.delete("/entities/{entity_id}")
+async def delete_entity(entity_id: int = Path(gt=0), db: Session = Depends(get_db)):
+  """Delete an entity. Refuses to delete a person's only remaining entity."""
+  entity = db.query(models.Entity).filter(models.Entity.id == entity_id).first()
+  if not entity:
+    raise HTTPException(status_code=404, detail="Entity not found")
+
+  sibling_count = (
+    db.query(models.Entity)
+    .filter(models.Entity.person_id == entity.person_id)
+    .count()
+  )
+  if sibling_count <= 1:
+    raise HTTPException(status_code=400, detail="Cannot delete your only entity")
+
+  db.delete(entity)
+  db.commit()
+  return {"deleted": True, "id": entity_id}
+
+
 @app.get("/entities/detail/{entity_id}")
 async def get_entity_by_id(
   entity_id: int = Path(gt=0),

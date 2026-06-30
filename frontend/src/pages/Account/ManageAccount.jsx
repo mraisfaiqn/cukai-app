@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import ManageProfile from './ManageProfile';
-import { getPersonalDetails, updateProfile, getAllEntities, createEntity, updateEntity } from '../../services/api';
+import { getPersonalDetails, updateProfile, getAllEntities, createEntity, updateEntity, deleteEntity } from '../../services/api';
 
 /**
  * Remap a backend Entity record to the shape ManageProfile expects.
@@ -230,6 +230,30 @@ function ManageAccount() {
     }
   };
 
+  /** DELETE an entity on the backend and remove it from local state on success. */
+  const handleDeleteEntity = async (entityId) => {
+    try {
+      const res = await deleteEntity(entityId);
+      if (res && res.deleted) {
+        const remaining = entityData.filter((e) => e.id !== entityId);
+        setEntityData(remaining);
+
+        // If the deleted entity was the active one, fall back to whatever's left
+        const stored = parseInt(localStorage.getItem('activeEntityId') || '0');
+        if (stored === entityId && remaining.length > 0) {
+          localStorage.setItem('activeEntityId', String(remaining[0].id));
+          setActiveEntityId(remaining[0].id);
+          window.dispatchEvent(new CustomEvent('entitySwitch', { detail: { entityId: remaining[0].id } }));
+        }
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error('Error deleting entity:', err);
+      return false;
+    }
+  };
+
   /**
    * Persist the active entity selection and notify all mounted pages to
    * re-fetch their entity-scoped data via a custom browser event.
@@ -263,6 +287,7 @@ function ManageAccount() {
             onSavePersonal={handleSavePersonal}
             onCreateEntity={handleCreateEntity}
             onSaveEntity={handleSaveEntity}
+            onDeleteEntity={handleDeleteEntity}
             onSwitchEntity={handleSwitchEntity}
           />
         </div>
