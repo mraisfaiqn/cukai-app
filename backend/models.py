@@ -141,11 +141,11 @@ class Document(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'processing', 'completed', 'failed')",
+            "status IN ('pending', 'processing', 'completed', 'failed', 'archived')",
             name="ck_document_status",
         ),
         CheckConstraint(
-            "tax_status IS NULL OR tax_status IN ('income', 'deductible', 'mixed', 'not_applicable', 'relief', 'non_deductible')",
+            "tax_status IS NULL OR tax_status IN ('income', 'deductible', 'mixed', 'not_applicable', 'relief', 'non_deductible', 'capital')",
             name="ck_document_tax_status",
         ),
         CheckConstraint(

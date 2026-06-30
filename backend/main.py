@@ -3,6 +3,7 @@ import concurrent.futures
 import datetime
 import logging
 import os
+import re
 import uuid
 import bcrypt
 from datetime import date
@@ -20,7 +21,11 @@ from sqlalchemy.orm import Session
 from database import init_db, SessionLocal
 import models
 from models import Document, FormBProfile
-from pipeline import run_document_pipeline, validate_upload
+from pipeline import (
+  run_document_pipeline, validate_upload,
+  CATEGORY_STATUS_MAP, ALL_Q1, ALL_Q2, ALL_Q3, ALL_Q4,
+  REVIEW_CATEGORY, NON_TAX_CATEGORY,
+)
 
 _pipeline_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="pipeline")
 
@@ -550,6 +555,142 @@ async def batch_upload_documents(
   }
 
 
+def _quadrant_for_category(category: str) -> str | None:
+  if category in ALL_Q1: return "Q1"
+  if category in ALL_Q2: return "Q2"
+  if category in ALL_Q3: return "Q3"
+  if category in ALL_Q4: return "Q4"
+  if category == NON_TAX_CATEGORY: return "NonTax"
+  return None
+
+
+def _generate_manual_receipt_text(payload: dict, line_items: list[dict], total: float) -> str:
+  """
+  Render a plain-text receipt for manually-entered documents. Keeps the
+  Document row's file_path requirement satisfied with a real, viewable file,
+  without pulling in a new PDF/image dependency.
+  """
+  lines = [
+    f"{payload.get('document_type', 'Document')}".upper(),
+    "=" * 50,
+    f"Vendor:        {payload.get('vendor', '')}",
+  ]
+  if payload.get("vendor_addr"):
+    lines.append(f"Address:       {payload['vendor_addr']}")
+  lines += [
+    f"Document No.:  {payload.get('doc_no', '')}",
+    f"Date:          {payload.get('date', '')}",
+    "-" * 50,
+    f"{'Description':<35}{'Amount (RM)':>15}",
+    "-" * 50,
+  ]
+  for li in line_items:
+    desc = str(li.get("desc", ""))[:34]
+    amt  = float(li.get("amt", 0) or 0)
+    lines.append(f"{desc:<35}{amt:>15,.2f}")
+  lines += [
+    "-" * 50,
+    f"{'TOTAL':<35}{total:>15,.2f}",
+    "=" * 50,
+  ]
+  if payload.get("notes"):
+    lines += ["", f"Notes: {payload['notes']}"]
+  lines += ["", "This document was manually entered by the user (no OCR was performed)."]
+  return "\n".join(lines)
+
+
+@app.post("/api/documents/manual", status_code=201)
+@limiter.limit("30/minute")
+def create_manual_document(
+  request: Request,
+  payload: dict,
+  user_id:   Optional[str] = Query(default=None),
+  entity_id: Optional[int] = Query(default=None),
+  db: Session = Depends(get_db),
+):
+  """
+  Persist a document the user entered by hand (no file, no OCR pipeline).
+  Used by the "Manually add a document" flow when a receipt can't be
+  uploaded as a file. A plain-text receipt is generated and stored on disk
+  so the record behaves consistently with every other Document row.
+  """
+  vendor    = (payload.get("vendor") or "").strip()
+  doc_no    = (payload.get("doc_no") or "").strip()
+  doc_date  = (payload.get("date") or "").strip()
+  category  = payload.get("category") or REVIEW_CATEGORY
+  doc_type  = (payload.get("document_type") or "Manual Entry").strip()
+  line_items = payload.get("line_items") or []
+
+  if not vendor:
+    raise HTTPException(status_code=422, detail="Vendor is required.")
+  if not doc_no:
+    raise HTTPException(status_code=422, detail="Document number is required.")
+  if not re.match(r"^\d{4}-\d{2}-\d{2}$", doc_date):
+    raise HTTPException(status_code=422, detail=f"Invalid date '{doc_date}'. Expected YYYY-MM-DD.")
+  if not line_items or not all(
+    isinstance(li, dict) and str(li.get("desc", "")).strip() and float(li.get("amt", 0) or 0) > 0
+    for li in line_items
+  ):
+    raise HTTPException(status_code=422, detail="At least one line item with a description and amount > 0 is required.")
+  if category not in CATEGORY_STATUS_MAP:
+    raise HTTPException(status_code=422, detail=f"Unknown category '{category}'.")
+
+  total = sum(float(li.get("amt", 0) or 0) for li in line_items)
+  tax_status = CATEGORY_STATUS_MAP[category]
+  quadrant   = _quadrant_for_category(category)
+
+  receipt_text = _generate_manual_receipt_text(payload, line_items, total)
+  safe_filename  = f"{uuid.uuid4().hex}_manual_{doc_no.replace(' ', '_')}.txt"
+  safe_file_path = os.path.join(STORAGE_DIR, safe_filename)
+  if not os.path.realpath(safe_file_path).startswith(os.path.realpath(STORAGE_DIR)):
+    raise HTTPException(status_code=400, detail="Invalid file path.")
+  with open(safe_file_path, "w", encoding="utf-8") as buf:
+    buf.write(receipt_text)
+
+  display_name = f"{doc_type.replace(' ', '_')}_{vendor.replace(' ', '_')}_{doc_date}.txt"
+
+  extracted_data = {
+    "is_tax_relevant": True,
+    "file_kind": "manual",
+    "quadrant": quadrant,
+    "ita_section": None,
+    "vendor": vendor,
+    "vendor_addr": payload.get("vendor_addr"),
+    "doc_no": doc_no,
+    "date": doc_date,
+    "date_precision": "day",
+    "date_raw": doc_date,
+    "tax_year": doc_date[:4],
+    "amount": total,
+    "currency": "MYR",
+    "note": payload.get("notes") or "Manually entered by user.",
+    "confidence": 100,
+    "line_items": [
+      {"desc": li.get("desc", ""), "amt": float(li.get("amt", 0) or 0)}
+      for li in line_items
+    ],
+    "manual_entry": True,
+  }
+
+  db_doc = Document(
+    user_id=user_id,
+    entity_id=entity_id,
+    file_name=display_name,
+    file_path=safe_file_path,
+    status="completed",
+    document_type=doc_type,
+    category=category,
+    tax_status=tax_status,
+    year_of_assessment=int(doc_date[:4]),
+    extracted_data=extracted_data,
+  )
+  db.add(db_doc)
+  db.commit()
+  db.refresh(db_doc)
+
+  return _serialize_doc(db_doc)
+
+
 @app.get("/api/documents")
 def get_all_documents(
   user_id:   Optional[str] = Query(default=None),
@@ -643,6 +784,44 @@ def delete_document(
   return {"message": f"Document ID {doc_id} deleted.", "document_id": doc_id}
 
 
+@app.patch("/api/documents/{doc_id}/retry", status_code=202)
+def retry_document(
+  doc_id: int,
+  user_id:   Optional[str] = Query(default=None),
+  entity_id: Optional[int] = Query(default=None),
+  db: Session = Depends(get_db),
+):
+  """
+  Re-run the OCR/classification pipeline on a previously failed document,
+  using the file already stored on disk — no re-upload required.
+  """
+  q = db.query(Document).filter(Document.id == doc_id)
+  if user_id:
+    q = q.filter(Document.user_id == user_id)
+  if entity_id:
+    q = q.filter(Document.entity_id == entity_id)
+  doc = q.first()
+  if not doc:
+    raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
+  if doc.status != "failed":
+    raise HTTPException(status_code=422, detail=f"Document ID {doc_id} is not in a failed state (status: {doc.status}).")
+  if not doc.file_path or not os.path.isfile(doc.file_path):
+    raise HTTPException(status_code=410, detail=f"Stored file for document ID {doc_id} is missing — please re-upload.")
+
+  doc.status = "pending"
+  doc.document_type = "Unclassified"
+  doc.category = None
+  doc.tax_status = None
+  doc.year_of_assessment = None
+  doc.extracted_data = None
+  db.commit()
+
+  loop = asyncio.get_event_loop()
+  loop.run_in_executor(_pipeline_executor, run_document_pipeline, doc.id, doc.file_path, SessionLocal)
+
+  return {"message": f"Document ID {doc_id} re-queued for classification.", "document_id": doc_id, "status": "pending"}
+
+
 @app.patch("/api/documents/{doc_id}/archive", status_code=200)
 def archive_document(
   doc_id: int,
@@ -682,9 +861,21 @@ def reclassify_document(
 
   new_status   = payload.get("status")
   new_category = payload.get("category")
-  valid_statuses = {"income", "deductible", "mixed", "relief", "non_deductible", "not_applicable"}
+  new_amount   = payload.get("amount")
+  new_date     = payload.get("date")
+  valid_statuses = {"income", "deductible", "mixed", "relief", "non_deductible", "not_applicable", "capital"}
   if new_status and new_status not in valid_statuses:
     raise HTTPException(status_code=422, detail=f"Invalid status '{new_status}'.")
+  if new_amount is not None:
+    try:
+      new_amount = float(new_amount)
+      if new_amount < 0:
+        raise ValueError()
+    except (TypeError, ValueError):
+      raise HTTPException(status_code=422, detail=f"Invalid amount '{payload.get('amount')}'.")
+  if new_date is not None:
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(new_date)):
+      raise HTTPException(status_code=422, detail=f"Invalid date '{new_date}'. Expected YYYY-MM-DD.")
 
   if new_status:
     doc.tax_status = new_status
@@ -696,6 +887,13 @@ def reclassify_document(
   ed["user_reclassified"] = True
   ed["user_reclassified_status"]   = new_status
   ed["user_reclassified_category"] = new_category
+  if new_amount is not None:
+    ed["amount"] = new_amount
+    ed["user_entered_amount"] = True
+  if new_date is not None:
+    ed["date"] = new_date
+    ed["date_precision"] = "day"
+    ed["user_entered_date"] = True
   doc.extracted_data = ed
   db.commit()
   return _serialize_doc(doc)
@@ -786,9 +984,9 @@ def get_tax_profile_summary(
         income_q2.append({**entry, "formEa": ed.get("form_ea"), "fsiSourceCountry": ed.get("fsi_source_country")})
       elif quadrant == "Q3":
         has_installment = ed.get("installment_amount") is not None
-        if tax_status == "not_applicable" and not has_installment:
+        if tax_status == "capital":
           capital_assets.append({**entry, "assetClass": ed.get("asset_class"), "iaRatePct": ed.get("ia_rate_pct"), "aaRatePct": ed.get("aa_rate_pct")})
-        elif not has_installment:
+        elif not has_installment and tax_status != "not_applicable":
           deductions_q3.append(entry)
       elif quadrant == "Q4":
         if tax_status == "relief":
