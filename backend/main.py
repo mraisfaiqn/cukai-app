@@ -20,13 +20,12 @@ from sqlalchemy.orm import Session
 
 from database import init_db, SessionLocal
 import models
-from models import Document, FormBProfile, FormBCalculation
+from models import Document, FormBProfile
 from pipeline import (
   run_document_pipeline, validate_upload,
   CATEGORY_STATUS_MAP, ALL_Q1, ALL_Q2, ALL_Q3, ALL_Q4,
   REVIEW_CATEGORY, NON_TAX_CATEGORY,
 )
-import calculations
 
 _pipeline_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="pipeline")
 
@@ -341,19 +340,6 @@ async def update_profile(person_id: int, payload: dict, db: Session = Depends(ge
 
   db.commit()
   db.refresh(person)
-
-  # Marital status / dependants drive automatic reliefs (spouse, child) in
-  # the Form B calculation independently of any document — recompute every
-  # year that already has a calculation so the report stays in sync.
-  relief_affecting = {"maritalStatus", "assessmentType", "numberOfChildren", "hasDisabledDependents"}
-  if relief_affecting & payload.keys():
-    existing_years = [
-      r[0] for r in db.query(FormBCalculation.year_of_assessment)
-      .filter(FormBCalculation.person_id == person_id).distinct().all()
-    ]
-    for ya in existing_years:
-      calculations.recalculate_form_b(db, str(person_id), ya)
-
   return _serialize_person(person)
 
 
@@ -808,10 +794,8 @@ def delete_document(
   if not doc:
     raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
   file_path = doc.file_path
-  deleted_user_id, deleted_ya = doc.user_id, doc.year_of_assessment
   db.delete(doc)
   db.commit()
-  calculations.recalculate_form_b(db, deleted_user_id, deleted_ya)
   try:
     if file_path and os.path.isfile(file_path):
       os.remove(file_path)
@@ -875,7 +859,6 @@ def archive_document(
     raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
   doc.status = "archived"
   db.commit()
-  calculations.recalculate_form_b(db, doc.user_id, doc.year_of_assessment)
   return {"message": f"Document ID {doc_id} archived.", "document_id": doc_id, "status": "archived"}
 
 
@@ -933,7 +916,6 @@ def reclassify_document(
     ed["user_entered_date"] = True
   doc.extracted_data = ed
   db.commit()
-  calculations.recalculate_form_b(db, doc.user_id, doc.year_of_assessment)
   return _serialize_doc(doc)
 
 
@@ -1376,83 +1358,3 @@ def get_form_b_profile(
     "confidence":                record.confidence,
     "createdAt":                 record.created_at.strftime("%Y-%m-%d %H:%M:%S"),
   }
-
-
-# ── Form B report (backend-computed, drives the Generate Report tab) ───────
-
-def _serialize_form_b_calc(record: FormBCalculation) -> dict:
-  return {
-    "personId":                 record.person_id,
-    "yearOfAssessment":         record.year_of_assessment,
-    "statutoryIncome4a":        record.statutory_income_4a,
-    "statutoryIncome4b":        record.statutory_income_4b,
-    "statutoryIncome4c":        record.statutory_income_4c,
-    "statutoryIncome4d":        record.statutory_income_4d,
-    "statutoryIncome4e":        record.statutory_income_4e,
-    "statutoryIncome4f":        record.statutory_income_4f,
-    "aggregateIncome":          record.aggregate_income,
-    "businessLossClaimed":      record.business_loss_claimed,
-    "businessLossApplied":      record.business_loss_applied,
-    "businessLossUnabsorbed":   record.business_loss_unabsorbed,
-    "approvedDonationsClaimed": record.approved_donations_claimed,
-    "approvedDonationsApplied": record.approved_donations_applied,
-    "totalIncome":              record.total_income,
-    "reliefBreakdown":          record.relief_breakdown,
-    "totalPersonalReliefs":     record.total_personal_reliefs,
-    "chargeableIncome":         record.chargeable_income,
-    "taxBeforeRebate":          record.tax_before_rebate,
-    "individualRebate":         record.individual_rebate,
-    "zakatRebate":              record.zakat_rebate,
-    "totalRebate":              record.total_rebate,
-    "taxPayable":               record.tax_payable,
-    "cp500TotalPaid":           record.cp500_total_paid,
-    "balancePayableRefundable": record.balance_payable_refundable,
-    "totalBusinessIncome":      record.total_business_income,
-    "totalBusinessDeductions":  record.total_business_deductions,
-    "totalNonDeductible":       record.total_non_deductible,
-    "pendingReviewAmount":      record.pending_review_amount,
-    "pendingReviewCount":       record.pending_review_count,
-    "documentCount":            record.document_count,
-    "averageConfidence":        record.average_confidence,
-    "sourceDocumentIds":        record.source_document_ids,
-    "calculationVersion":       record.calculation_version,
-    "computedAt":               record.computed_at.strftime("%Y-%m-%d %H:%M:%S") if record.computed_at else None,
-    "updatedAt":                record.updated_at.strftime("%Y-%m-%d %H:%M:%S") if record.updated_at else None,
-  }
-
-
-@app.get("/api/reports/form-b/{person_id}")
-def get_form_b_report(
-  person_id: int = Path(gt=0),
-  year:      int = Query(..., description="Year of assessment, e.g. 2025"),
-  db: Session = Depends(get_db),
-):
-  record = (
-    db.query(FormBCalculation)
-    .filter(FormBCalculation.person_id == person_id, FormBCalculation.year_of_assessment == year)
-    .first()
-  )
-  if not record:
-    raise HTTPException(
-      status_code=404,
-      detail=f"No Form B calculation found for person {person_id}, YA {year}. "
-             f"Upload and classify at least one document for that year first.",
-    )
-  return _serialize_form_b_calc(record)
-
-
-@app.post("/api/reports/form-b/{person_id}/recalculate")
-def recalculate_form_b_report(
-  person_id: int = Path(gt=0),
-  year:      int = Query(..., description="Year of assessment, e.g. 2025"),
-  db: Session = Depends(get_db),
-):
-  """Manually re-run the Form B calculation — useful right after the person
-  edits their personal/relief profile (marital status, dependants, etc.),
-  which changes the automatic reliefs without any document changing.
-  """
-  try:
-    record = calculations.calculate_form_b_for_person(db, person_id, year)
-  except ValueError as e:
-    raise HTTPException(status_code=404, detail=str(e))
-  return _serialize_form_b_calc(record)

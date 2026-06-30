@@ -249,28 +249,3 @@ export const getFormBProfile = async (year, userId = null) => {
   const { data } = await api.get(`/api/profile/form-b/${year}`, { params });
   return data;
 };
-
-// ── Form B report (backend-computed — drives the Generate Report tab) ─────
-
-/**
- * Fetch the backend-computed Form B figures for one person/year, derived
- * from all of that person's classified documents. Recomputed automatically
- * whenever a document is uploaded, reclassified, archived, or deleted (see
- * calculations.py). Throws (404) if no documents have been classified yet
- * for that year — callers should catch and show an empty/"upload documents
- * first" state rather than treating it as a hard error.
- */
-export const getFormBReport = async (personId, year) => {
-  const { data } = await api.get(`/api/reports/form-b/${personId}`, { params: { year } });
-  return data;
-};
-
-/**
- * Force a fresh recalculation, e.g. right after the person edits marital
- * status / dependants in Manage Profile (which the backend also triggers
- * automatically, but this lets the UI request an immediate refresh).
- */
-export const recalculateFormBReport = async (personId, year) => {
-  const { data } = await api.post(`/api/reports/form-b/${personId}/recalculate`, null, { params: { year } });
-  return data;
-};
