@@ -39,6 +39,20 @@ function daysToFormBDeadline(today = new Date()) {
   return Math.max(0, Math.ceil((deadline - today) / msPerDay));
 }
 
+// Form B is filed for income earned in YEAR by 30 June of YEAR+1. So the YA
+// actively being filed right now is last calendar year, up until this year's
+// 30 June deadline passes, after which it rolls forward to the year that just
+// ended. This MUST match currentFilingYear() in CukaiAccount.jsx — documents
+// are tagged with the YA they're actually for, not today's calendar year, so
+// querying the wrong year here means the dashboard silently misses anything
+// (stats, pending-review counts) filed under the real active YA.
+function currentFilingYear(today = new Date()) {
+  const year = today.getFullYear();
+  const juneCutoff = new Date(year, 5, 30);
+  const deadlineYear = today > juneCutoff ? year + 1 : year;
+  return deadlineYear - 1;
+}
+
 // ── Urgency helpers (mirrors DeadlinesCard logic) ──────────────────────────────
 function urgencyFor(daysLeft) {
   if (daysLeft <= 7)  return { bar: 'bg-critical', pill: 'bg-critical-bg text-critical' };
@@ -279,7 +293,7 @@ export default function Overview() {
       const userId = localStorage.getItem('userId');
       if (!userId) return;
 
-      const assessmentYear = new Date().getFullYear();
+      const assessmentYear = currentFilingYear();
 
       // Fetch person details and the user's full entity list first — we need
       // to know which entity is active before requesting an entity-scoped
