@@ -232,10 +232,13 @@ export const reclassifyDocument = async (docId, status, category, userId = null,
 /**
  * Fetch the aggregated tax profile summary for a given year of assessment.
  * Includes income, deductions, reliefs, CP500, YoY trend, and projections.
+ * Pass entityId to scope the summary to a single business entity — omit it
+ * to aggregate across all of the user's entities.
  */
-export const getTaxProfileSummary = async (year, userId = null) => {
+export const getTaxProfileSummary = async (year, userId = null, entityId = null) => {
   const params = { year };
-  if (userId) params.user_id = userId;
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
   const { data } = await api.get('/api/profile/summary', { params });
   return data;
 };

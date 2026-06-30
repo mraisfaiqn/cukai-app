@@ -5,23 +5,18 @@ import cukaiLogo from '../assets/cukai-logo.png';
 // ─── Design tokens (matches ManageAccount + UserNavigation) ───────────────────
 // Primary teal: #0F6E56  Active: #0D9488  Text: #0F172A  Muted: #64748B  Border: #E2E8F0
 
-// ─── User scenarios ───────────────────────────────────────────────────────────
-const USER_SCENARIOS = {
-  A: {
-    label: 'Sole Proprietor', description: 'You operate as a sole proprietor.',
-    canViewFormP: false, canFileFormP: false, canFileFormB: true, firm: null,
-  },
-  B: {
-    label: 'Principal Partner', description: 'You are the principal partner of Meridian Print Studio.',
-    canViewFormP: true, canFileFormP: true, canFileFormB: true,
-    firm: { name: 'Meridian Print Studio', msic: '1811', type: 'Partnership', share: '50%' },
-  },
-  C: {
-    label: 'Partner (Non-Principal)', description: 'You are a partner of Meridian Print Studio, but not the principal partner.',
-    canViewFormP: true, canFileFormP: false, canFileFormB: true,
-    firm: { name: 'Meridian Print Studio', msic: '1811', type: 'Partnership', share: '30%' },
-  },
-};
+// ─── Current filing year ──────────────────────────────────────────────────────
+// Form B (sole-prop) is filed for income earned in YEAR by 30 June of YEAR+1.
+// So at any given moment the YA actively being filed is: last calendar year,
+// up until this year's 30 June deadline passes, after which it rolls forward
+// to the year that just ended. Mirrors the deadline math used in the
+// dashboard header so both pages agree on "today's" filing year.
+function currentFilingYear(today = new Date()) {
+  const year = today.getFullYear();
+  const juneCutoff = new Date(year, 5, 30); // June is month index 5
+  const deadlineYear = today > juneCutoff ? year + 1 : year;
+  return deadlineYear - 1;
+}
 
 // ─── Backend category taxonomy (mirrors pipeline.py exactly) ─────────────────
 const Q1_CATEGORIES = [
@@ -1355,7 +1350,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
 }
 
 // ─── PDF Preview slide-over ───────────────────────────────────────────────────
-function PdfPreview({ formId, formData, sc, onClose }) {
+function PdfPreview({ formId, formData, filingYear, onClose }) {
   const [zoom, setZoom] = useState(100);
   const [visible, setVisible] = useState(false);
   useEffect(() => { requestAnimationFrame(() => setVisible(true)); }, []);
@@ -1364,6 +1359,7 @@ function PdfPreview({ formId, formData, sc, onClose }) {
 
   const { deductibleTotal, nonDeductibleTotal, reviewTotal, totalIncome, chargeableIncome,
     taxCharged, lessInstalment, taxPayable } = formData;
+  const dueDate = `30 Jun ${filingYear + 1}`;
 
   return (
     <div className="fixed inset-0 z-50 flex" onClick={handleClose}>
@@ -1374,7 +1370,7 @@ function PdfPreview({ formId, formData, sc, onClose }) {
         <div className="flex items-center justify-between border-b border-[#E2E8F0] px-5 py-3 bg-[#F8FAFC] shrink-0">
           <div>
             <p className="text-sm font-bold text-[#0F172A]">
-              Form {formId} Preview — {formId === 'B' ? 'YA 2025 Personal Return' : `${sc.firm?.name || 'Partnership'} Return`}
+              Form B Preview — YA {filingYear} Personal Return
             </p>
             <p className="text-[10px] text-[#64748B] mt-0.5">This is a pre-filled draft for your reference. Verify all values before submitting to LHDN.</p>
           </div>
@@ -1411,172 +1407,87 @@ function PdfPreview({ formId, formData, sc, onClose }) {
                     cukai<span className="text-[#10B981]">.</span><span className="font-light text-[#64748B]">ai</span>
                   </span>
                   <p className="text-[10px] text-[#64748B] mt-0.5">
-                    {formId === 'B' ? 'Pre-filled draft of your personal income tax return' : 'Pre-filled draft of your partnership return'}
+                    Pre-filled draft of your personal income tax return
                   </p>
                 </div>
                 <div className="ml-auto shrink-0 text-right">
                   <p className="text-[9px] text-[#94A3B8] uppercase tracking-wider">Form</p>
-                  <p className="text-2xl font-black leading-none text-[#0F6E56]">{formId}</p>
-                  <p className="text-[9px] text-[#94A3B8] mt-0.5">YA 2025</p>
+                  <p className="text-2xl font-black leading-none text-[#0F6E56]">B</p>
+                  <p className="text-[9px] text-[#94A3B8] mt-0.5">YA {filingYear}</p>
                 </div>
               </div>
 
               <div className="px-6 py-5 space-y-5 text-[11px]">
-                {formId === 'B' ? (
-                  <>
-                    <PreviewSection title="BASIC PARTICULARS">
-                      <PreviewField label="1  Name" value="Aisyah binti Ahmad" />
-                      <PreviewField label="2  Tax Identification No. (TIN)" value="SG 12345678901" />
-                      <PreviewField label="3  Identification No." value="900101-14-5678" />
-                      <PreviewField label="4  Correspondence address" value="No. 12, Jalan Damai 3, 50450 Kuala Lumpur" />
-                    </PreviewSection>
+                <PreviewSection title="BASIC PARTICULARS">
+                  <PreviewField label="1  Name" value="Aisyah binti Ahmad" />
+                  <PreviewField label="2  Tax Identification No. (TIN)" value="SG 12345678901" />
+                  <PreviewField label="3  Identification No." value="900101-14-5678" />
+                  <PreviewField label="4  Correspondence address" value="No. 12, Jalan Damai 3, 50450 Kuala Lumpur" />
+                </PreviewSection>
 
-                    <PreviewSection title="PART A — PARTICULARS OF INDIVIDUAL">
-                      <PreviewField label="A1  Citizen" value="MYS" /><PreviewField label="A2  Gender" value="Female" />
-                      <PreviewField label="A3  Date of birth" value="01/01/1990" /><PreviewField label="A4  Status" value="Married" />
-                      <PreviewField label="A6  Record-keeping" value="Yes" /><PreviewField label="A7  Type of assessment" value="3 – Separate" />
-                    </PreviewSection>
+                <PreviewSection title="PART A — PARTICULARS OF INDIVIDUAL">
+                  <PreviewField label="A1  Citizen" value="MYS" /><PreviewField label="A2  Gender" value="Female" />
+                  <PreviewField label="A3  Date of birth" value="01/01/1990" /><PreviewField label="A4  Status" value="Married" />
+                  <PreviewField label="A6  Record-keeping" value="Yes" /><PreviewField label="A7  Type of assessment" value="3 – Separate" />
+                </PreviewSection>
 
-                    <PreviewSection title="PART B — COMPUTATION OF INCOME TAX">
-                      <PreviewField label="B1   Statutory income from businesses in Malaysia" value={fmtRM(deductibleTotal)} highlight />
-                      <PreviewField label="B2   Statutory income from partnerships in Malaysia" value="RM 235,000" highlight />
-                      <PreviewField label="B4   Aggregate statutory income from businesses" value={fmtRM(deductibleTotal + 235000)} />
-                      <PreviewField label="B7   Statutory income from employment" value="—" />
-                      <PreviewField label="B8   Statutory income from rents" value="—" />
-                      <PreviewField label="B11  AGGREGATE INCOME" value={fmtRM(totalIncome)} bold />
-                      <PreviewField label="B17  Less: Approved donations / gifts" value="—" />
-                      <PreviewField label="B20  TOTAL INCOME [SELF]" value={fmtRM(totalIncome)} bold />
-                      <PreviewField label="B23  Total Relief" value="RM 18,000" />
-                      <PreviewField label="B24  CHARGEABLE INCOME" value={fmtRM(chargeableIncome)} highlight bold />
-                      <PreviewField label="B26  Total Income Tax" value={fmtRM(taxCharged)} />
-                      <PreviewField label="B27  Less: Rebates (self)" value="RM 400" />
-                      <PreviewField label="B28  TOTAL TAX CHARGED" value={fmtRM(Math.max(0, taxCharged - 400))} bold />
-                      <PreviewField label="B33  Less: CP500 instalments paid" value={fmtRM(lessInstalment)} />
-                      <PreviewField label="B34  BALANCE TAX PAYABLE" value={fmtRM(taxPayable)} highlight bold />
-                    </PreviewSection>
+                <PreviewSection title="PART B — COMPUTATION OF INCOME TAX">
+                  <PreviewField label="B1   Statutory income from businesses in Malaysia" value={fmtRM(deductibleTotal)} highlight />
+                  <PreviewField label="B7   Statutory income from employment" value="—" />
+                  <PreviewField label="B8   Statutory income from rents" value="—" />
+                  <PreviewField label="B11  AGGREGATE INCOME" value={fmtRM(totalIncome)} bold />
+                  <PreviewField label="B17  Less: Approved donations / gifts" value="—" />
+                  <PreviewField label="B20  TOTAL INCOME [SELF]" value={fmtRM(totalIncome)} bold />
+                  <PreviewField label="B23  Total Relief" value="RM 18,000" />
+                  <PreviewField label="B24  CHARGEABLE INCOME" value={fmtRM(chargeableIncome)} highlight bold />
+                  <PreviewField label="B26  Total Income Tax" value={fmtRM(taxCharged)} />
+                  <PreviewField label="B27  Less: Rebates (self)" value="RM 400" />
+                  <PreviewField label="B28  TOTAL TAX CHARGED" value={fmtRM(Math.max(0, taxCharged - 400))} bold />
+                  <PreviewField label="B33  Less: CP500 instalments paid" value={fmtRM(lessInstalment)} />
+                  <PreviewField label="B34  BALANCE TAX PAYABLE" value={fmtRM(taxPayable)} highlight bold />
+                </PreviewSection>
 
-                    <PreviewSection title="PART H — RELIEF">
-                      <PreviewField label="H1   Individual and dependent relatives" value="RM 9,000" />
-                      <PreviewField label="H2   Expenses for parents" value="—" />
-                      <PreviewField label="H5   Education fees (Self)" value="—" />
-                      <PreviewField label="H6   Medical expenses (serious diseases)" value="—" />
-                      <PreviewField label="H9   Lifestyle (books, internet, devices)" value="—" />
-                      <PreviewField label="H13  SSPN net deposit" value="—" />
-                      <PreviewField label="H14  Husband / wife" value="—" />
-                      <PreviewField label="H16  Child relief" value="—" />
-                      <PreviewField label="H17  Life insurance and EPF" value="RM 7,000" />
-                      <PreviewField label="H18  Private retirement scheme" value="—" />
-                      <PreviewField label="H19  Education and medical insurance" value="RM 2,000" />
-                      <PreviewField label="H20  SOCSO contribution" value="—" />
-                      <PreviewField label="H22  TOTAL RELIEF" value="RM 18,000" bold highlight />
-                    </PreviewSection>
+                <PreviewSection title="PART H — RELIEF">
+                  <PreviewField label="H1   Individual and dependent relatives" value="RM 9,000" />
+                  <PreviewField label="H2   Expenses for parents" value="—" />
+                  <PreviewField label="H5   Education fees (Self)" value="—" />
+                  <PreviewField label="H6   Medical expenses (serious diseases)" value="—" />
+                  <PreviewField label="H9   Lifestyle (books, internet, devices)" value="—" />
+                  <PreviewField label="H13  SSPN net deposit" value="—" />
+                  <PreviewField label="H14  Husband / wife" value="—" />
+                  <PreviewField label="H16  Child relief" value="—" />
+                  <PreviewField label="H17  Life insurance and EPF" value="RM 7,000" />
+                  <PreviewField label="H18  Private retirement scheme" value="—" />
+                  <PreviewField label="H19  Education and medical insurance" value="RM 2,000" />
+                  <PreviewField label="H20  SOCSO contribution" value="—" />
+                  <PreviewField label="H22  TOTAL RELIEF" value="RM 18,000" bold highlight />
+                </PreviewSection>
 
-                    <PreviewSection title="PART N — FINANCIAL PARTICULARS (MAIN BUSINESS)">
-                      <PreviewField label="N1   Name of business" value="Meridian Print Studio (Sole Prop)" />
-                      <PreviewField label="N2   Business code (MSIC)" value="1811" />
-                      <PreviewField label="N3   Sales or turnover" value={fmtRM(deductibleTotal + 12000)} />
-                      <PreviewField label="N7   Cost of sales" value="—" />
-                      <PreviewField label="N8   Gross Profit / Loss" value={fmtRM(deductibleTotal + 12000)} />
-                      <PreviewField label="N14  Total other income" value="—" />
-                      <PreviewField label="N15  Loan interest" value="—" />
-                      <PreviewField label="N16  Salaries and wages" value={fmtRM(14500)} />
-                      <PreviewField label="N17  Rental / lease" value={fmtRM(1240)} />
-                      <PreviewField label="N22  Repairs and maintenance" value="—" />
-                      <PreviewField label="N23  Promotion and advertisement" value={fmtRM(3200)} />
-                      <PreviewField label="N25  TOTAL EXPENDITURE" value={fmtRM(deductibleTotal)} bold />
-                      <PreviewField label="N26  NET PROFIT / LOSS" value={fmtRM(deductibleTotal + 12000 - deductibleTotal)} bold highlight />
-                      <PreviewField label="N27  Non-allowable expenses" value={fmtRM(nonDeductibleTotal)} />
-                    </PreviewSection>
+                <PreviewSection title="PART N — FINANCIAL PARTICULARS (MAIN BUSINESS)">
+                  <PreviewField label="N2   Business code (MSIC)" value="1811" />
+                  <PreviewField label="N3   Sales or turnover" value={fmtRM(deductibleTotal + 12000)} />
+                  <PreviewField label="N7   Cost of sales" value="—" />
+                  <PreviewField label="N8   Gross Profit / Loss" value={fmtRM(deductibleTotal + 12000)} />
+                  <PreviewField label="N14  Total other income" value="—" />
+                  <PreviewField label="N15  Loan interest" value="—" />
+                  <PreviewField label="N16  Salaries and wages" value={fmtRM(14500)} />
+                  <PreviewField label="N17  Rental / lease" value={fmtRM(1240)} />
+                  <PreviewField label="N22  Repairs and maintenance" value="—" />
+                  <PreviewField label="N23  Promotion and advertisement" value={fmtRM(3200)} />
+                  <PreviewField label="N25  TOTAL EXPENDITURE" value={fmtRM(deductibleTotal)} bold />
+                  <PreviewField label="N26  NET PROFIT / LOSS" value={fmtRM(deductibleTotal + 12000 - deductibleTotal)} bold highlight />
+                  <PreviewField label="N27  Non-allowable expenses" value={fmtRM(nonDeductibleTotal)} />
+                </PreviewSection>
 
-                    {reviewTotal > 0 && (
-                      <div className="rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-4 py-3">
-                        <p className="text-[10px] font-semibold text-[#B45309]">⚠ {fmtRM(reviewTotal)} in expenses are still under review</p>
-                        <p className="text-[9px] text-[#92400E] mt-0.5">Classify all mixed items in the OCR Evidence tab before final submission to LHDN.</p>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <PreviewSection title="PARTNERSHIP DETAILS">
-                      <PreviewField label="1   Name of partnership" value="Meridian Print Studio" />
-                      <PreviewField label="2   Income tax no." value="D 1234567890" />
-                      <PreviewField label="3   Reference no. (Reg no.)" value="ROB/2020/001234" />
-                      <PreviewField label="4   Number of partners" value="3" />
-                      <PreviewField label="5   Basis of apportionment" value="Profit-sharing ratio" />
-                      <PreviewField label="6   Record-keeping" value="Yes" />
-                    </PreviewSection>
-
-                    <PreviewSection title="PART A — BUSINESS INCOME">
-                      <PreviewField label="A1  Business code (MSIC)" value="1811 — Printing of newspapers" />
-                      <PreviewField label="A2  Divisible income / loss" value="RM 450,000" highlight bold />
-                      <PreviewField label="A3  Partners' benefits (salaries + interest)" value="RM 160,000" />
-                      <PreviewField label="A4  Balancing charge" value="—" />
-                      <PreviewField label="A5  Balancing allowance and capital allowance" value="RM 60,000" />
-                    </PreviewSection>
-
-                    <PreviewSection title="PART F — PARTICULARS OF PARTNERSHIP">
-                      <PreviewField label="F1  Registered address" value="No. 12, Jalan Damai 3, 50450 Kuala Lumpur" />
-                      <PreviewField label="F2  Main business address" value="Lot 5, Jalan Industri 2, Shah Alam" />
-                      <PreviewField label="F5  Employer's no." value="E 1234567890" />
-                      <PreviewField label="F6  Precedent partner's name" value="Aisyah binti Ahmad" />
-                      <PreviewField label="F7  Telephone no." value="03-1234 5678" />
-                    </PreviewSection>
-
-                    <PreviewSection title="PART G — PARTICULARS OF PARTNERS">
-                      <div className="bg-[#F8FAFC] rounded-lg overflow-hidden border border-[#F1F5F9]">
-                        <table className="w-full text-[10px]">
-                          <thead>
-                            <tr className="bg-[#F1F5F9]">
-                              {['Partner', 'ID No.', 'Share', 'Salary', 'Profit Share', 'Total Allocated'].map(h => (
-                                <th key={h} className="px-2 py-1.5 text-left text-[9px] font-semibold text-[#64748B]">{h}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {[
-                              { name: 'Aisyah', id: '900101-14-5678', share: '50%', salary: 'RM 60,000', profit: 'RM 175,000', total: 'RM 235,000' },
-                              { name: 'Bopha', id: '880212-10-3456', share: '30%', salary: 'RM 40,000', profit: 'RM 105,000', total: 'RM 145,000' },
-                              { name: 'Chong', id: '910330-08-7890', share: '20%', salary: '—', profit: 'RM 70,000', total: 'RM 70,000' },
-                            ].map((p, i) => (
-                              <tr key={p.name} className={i % 2 === 0 ? '' : 'bg-[#FAFBFC]'}>
-                                <td className="px-2 py-1.5 font-semibold text-[#0F172A]">{p.name}</td>
-                                <td className="px-2 py-1.5 text-[#64748B]">{p.id}</td>
-                                <td className="px-2 py-1.5">{p.share}</td>
-                                <td className="px-2 py-1.5">{p.salary}</td>
-                                <td className="px-2 py-1.5">{p.profit}</td>
-                                <td className="px-2 py-1.5 font-semibold text-[#0F6E56]">{p.total}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </PreviewSection>
-
-                    <PreviewSection title="PART H — FINANCIAL PARTICULARS">
-                      <PreviewField label="H2   Sales or turnover" value="RM 920,000" bold />
-                      <PreviewField label="H3   Opening stock" value="—" />
-                      <PreviewField label="H4   Purchases and cost of production" value="RM 310,000" />
-                      <PreviewField label="H6   Cost of sales" value="RM 310,000" />
-                      <PreviewField label="H7   GROSS PROFIT" value="RM 610,000" bold />
-                      <PreviewField label="H14  Loan interest" value="—" />
-                      <PreviewField label="H15  Salaries and wages" value="RM 100,000" />
-                      <PreviewField label="H16  Rental / lease" value="RM 24,000" />
-                      <PreviewField label="H22  Other expenses" value="RM 36,000" />
-                      <PreviewField label="H24  TOTAL EXPENDITURE" value="RM 160,000" bold />
-                      <PreviewField label="H25  NET PROFIT" value="RM 450,000" bold highlight />
-                    </PreviewSection>
-
-                    {!sc.canFileFormP && (
-                      <div className="rounded-lg border border-[#E0E7FF] bg-[#EEF2FF] px-4 py-3">
-                        <p className="text-[10px] font-semibold text-[#4338CA]">View only — submission by Aisyah (Principal Partner)</p>
-                        <p className="text-[9px] text-[#4338CA]/80 mt-0.5">You can review this form but only the principal partner can submit Form P to LHDN.</p>
-                      </div>
-                    )}
-                  </>
+                {reviewTotal > 0 && (
+                  <div className="rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-4 py-3">
+                    <p className="text-[10px] font-semibold text-[#B45309]">⚠ {fmtRM(reviewTotal)} in expenses are still under review</p>
+                    <p className="text-[9px] text-[#92400E] mt-0.5">Classify all mixed items in the OCR Evidence tab before final submission to LHDN.</p>
+                  </div>
                 )}
 
                 <div className="border-t border-[#E2E8F0] pt-4 text-[9px] text-[#94A3B8] text-center">
-                  <p>This is a cukai.ai pre-filled draft — for reference only. File via mytax.hasil.gov.my · Due: 30 Jun 2025</p>
+                  <p>This is a cukai.ai pre-filled draft — for reference only. File via mytax.hasil.gov.my · Due: {dueDate}</p>
                   <p className="mt-0.5">Contact Hasil Care Line: 03-8911 1000 (Local) / 603-8911 1000 (Overseas)</p>
                 </div>
               </div>
@@ -1613,14 +1524,14 @@ function PreviewField({ label, value, highlight, bold }) {
 }
 
 // ─── Generate Report Tab ──────────────────────────────────────────────────────
-function GenerateTab({ docs, scenario, activeScenario, setActiveScenario, selectedForm, setSelectedForm, showPreview, setShowPreview }) {
-  const sc = USER_SCENARIOS[activeScenario];
-
+// This app is tailored to sole proprietors, so there's only ever one form to
+// generate — Form B, Personal Return — for whichever YA is currently being
+// filed. No scenario switching, no form picker.
+function GenerateTab({ docs, filingYear, showPreview, setShowPreview }) {
   const deductibleTotal    = docs.filter(d => d.status === 'deductible').reduce((s, d) => s + parseAmt(d.amount), 0);
   const nonDeductibleTotal = docs.filter(d => d.status === 'non_deductible').reduce((s, d) => s + parseAmt(d.amount), 0);
   const reviewTotal        = docs.filter(d => d.status === 'mixed').reduce((s, d) => s + parseAmt(d.amount), 0);
-  const partnerShare       = sc.firm ? 235000 : 0;
-  const totalIncome        = deductibleTotal + partnerShare;
+  const totalIncome        = deductibleTotal;
   const chargeableIncome   = Math.max(0, totalIncome - 18000);
 
   const calcTax = (ci) => {
@@ -1644,172 +1555,71 @@ function GenerateTab({ docs, scenario, activeScenario, setActiveScenario, select
   const formData = { deductibleTotal, nonDeductibleTotal, reviewTotal, totalIncome,
     chargeableIncome, taxCharged, lessInstalment, taxPayable };
 
-  const forms = [
-    sc.canFileFormB && { id: 'B', title: 'Form B', subtitle: 'Personal income tax — resident who carries on business', tag: 'YA 2025', canGenerate: true, readOnly: false },
-    (sc.canViewFormP || sc.canFileFormP) && { id: 'P', title: 'Form P', subtitle: sc.firm ? `${sc.firm.name} · Partnership Return` : 'Partnership Return', tag: sc.firm ? `MSIC ${sc.firm.msic}` : 'Partnership', canGenerate: sc.canFileFormP, readOnly: !sc.canFileFormP },
-  ].filter(Boolean);
-
   return (
     <>
-      {showPreview && selectedForm && (
-        <PdfPreview formId={selectedForm} formData={formData} sc={sc} onClose={() => setShowPreview(false)} />
+      {showPreview && (
+        <PdfPreview formId="B" formData={formData} filingYear={filingYear} onClose={() => setShowPreview(false)} />
       )}
       <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto pr-1">
-        {/* Scenario switcher */}
-        <div className="shrink-0 rounded-xl border border-[#E2E8F0] bg-[#F8FAFC] p-4">
-          <div className="flex items-start justify-between gap-3 flex-wrap">
+        {/* Form summary + actions */}
+        <div className="shrink-0 rounded-xl border border-[#E2E8F0] bg-white overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3 bg-[#F8FAFC] border-b border-[#E2E8F0]">
             <div>
-              <p className="text-xs font-semibold text-[#0F172A]">{sc.label}</p>
-              <p className="text-[10px] text-[#64748B] mt-0.5">{sc.description}</p>
+              <p className="text-xs font-semibold text-[#0F172A]">Form B — Personal Return YA {filingYear}</p>
+              <p className="text-[10px] text-[#64748B] mt-0.5">Auto-populated from uploaded documents · Verify before submitting to LHDN</p>
             </div>
-            <div className="flex gap-1.5 flex-wrap">
-              {Object.entries(USER_SCENARIOS).map(([k, v]) => (
-                <button key={k} onClick={() => { setActiveScenario(k); setSelectedForm(null); }}
-                  className={`rounded-full px-3 py-1 text-[10px] font-medium transition-colors ${
-                    activeScenario === k ? 'bg-[#0F6E56] text-white' : 'bg-white border border-[#E2E8F0] text-[#64748B] hover:border-[#0D9488]'
-                  }`}>{v.label}</button>
-              ))}
+            <div className="flex items-center gap-2">
+              <button onClick={() => setShowPreview(true)}
+                className="flex items-center gap-1.5 rounded-lg border border-[#0F6E56] bg-white px-3 py-2 text-xs font-semibold text-[#0F6E56] hover:bg-[#ECFDF5] transition-colors">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+                </svg>
+                Preview
+              </button>
+              <button onClick={() => setShowPreview(true)}
+                className="flex items-center gap-1.5 rounded-lg bg-[#0F6E56] px-3 py-2 text-xs font-semibold text-white hover:bg-[#0A5140] transition-colors">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                Export PDF
+              </button>
             </div>
           </div>
-          {sc.firm && (
-            <div className="mt-3 flex items-center gap-3 flex-wrap border-t border-[#E2E8F0] pt-3">
-              <span className="text-[10px] text-[#64748B]">Firm: <span className="font-semibold text-[#0F172A]">{sc.firm.name}</span></span>
-              <span className="text-[10px] text-[#64748B]">Share: <span className="font-semibold text-[#0F172A]">{sc.firm.share}</span></span>
-              {sc.canFileFormP
-                ? <span className="rounded-full bg-[#ECFDF5] px-2 py-0.5 text-[10px] font-semibold text-[#0F6E56]">Principal Partner</span>
-                : <span className="rounded-full bg-[#F1F5F9] px-2 py-0.5 text-[10px] font-semibold text-[#64748B]">Partner</span>}
-            </div>
-          )}
+
+          <div className="px-5 py-4 space-y-4">
+            <InlineSummary title="Part B — Income Computation">
+              <SRow label="B1  Business income (sole prop / expense deductions)" value={fmtRM(deductibleTotal)} />
+              <SRow label="B11 Aggregate income" value={fmtRM(totalIncome)} bold />
+              <SRow label="B17 Less: Donations / gifts" value="—" />
+              <SRow label="B23 Total relief" value="RM 18,000" />
+              <SRow label="B24 Chargeable income" value={fmtRM(chargeableIncome)} bold highlight />
+              <SRow label="B26 Total income tax" value={fmtRM(taxCharged)} />
+              <SRow label="B28 Tax charged (after rebate RM 400)" value={fmtRM(Math.max(0, taxCharged - 400))} bold />
+              <SRow label="B33 Less: CP500 instalments" value={fmtRM(lessInstalment)} />
+              <SRow label="B34 Balance tax payable" value={fmtRM(taxPayable)} bold highlight />
+            </InlineSummary>
+            <InlineSummary title="Part H — Relief Breakdown">
+              <SRow label="H1  Individual & dependent relatives" value="RM 9,000" />
+              <SRow label="H17 Life insurance & EPF" value="RM 7,000" />
+              <SRow label="H19 Education & medical insurance" value="RM 2,000" />
+              <SRow label="H22 TOTAL RELIEF" value="RM 18,000" bold highlight />
+            </InlineSummary>
+            <InlineSummary title="Part N — Business Financial Particulars">
+              <SRow label="N3  Sales / turnover (estimated)" value={fmtRM(deductibleTotal + 12000)} />
+              <SRow label="N16 Salaries and wages" value="RM 14,500" />
+              <SRow label="N17 Rental / lease" value="RM 1,240" />
+              <SRow label="N23 Marketing and promotion" value="RM 3,200" />
+              <SRow label="N25 Total expenditure" value={fmtRM(deductibleTotal)} bold />
+              <SRow label="N27 Non-allowable (personal) expenses" value={fmtRM(nonDeductibleTotal)} />
+            </InlineSummary>
+            {reviewTotal > 0 && (
+              <div className="rounded-lg border border-[#FDE68A] bg-[#FFFBEB] p-3">
+                <p className="text-[10px] font-semibold text-[#B45309]">⚠ {fmtRM(reviewTotal)} still under review</p>
+                <p className="text-[9px] text-[#92400E] mt-0.5">Classify remaining items in the OCR Evidence tab before filing.</p>
+              </div>
+            )}
+          </div>
         </div>
-
-        {/* Form cards */}
-        <div className="shrink-0 grid gap-3 sm:grid-cols-2">
-          {forms.map(form => (
-            <button key={form.id} onClick={() => setSelectedForm(form.id)}
-              className={`text-left rounded-xl border-2 p-4 transition-all ${
-                selectedForm === form.id ? 'border-[#0D9488] bg-[#ECFDF5] shadow-sm' : 'border-[#E2E8F0] bg-white hover:border-[#0D9488]'
-              } ${form.readOnly ? 'opacity-75' : ''}`}>
-              <div className="flex items-start justify-between gap-2 mb-3">
-                <div className="h-10 w-10 rounded-xl bg-[#0F6E56] flex items-center justify-center">
-                  <span className="text-base font-black text-white">{form.id}</span>
-                </div>
-                <div className="flex flex-col items-end gap-1">
-                  <span className="rounded-full bg-[#F1F5F9] px-2 py-0.5 text-[9px] font-medium text-[#64748B]">{form.tag}</span>
-                  {form.readOnly && <span className="rounded-full bg-[#FEF3C7] px-2 py-0.5 text-[9px] font-medium text-[#B45309]">View Only</span>}
-                </div>
-              </div>
-              <p className="text-xs font-bold text-[#0F172A]">{form.title}</p>
-              <p className="text-[10px] text-[#64748B] mt-0.5 leading-tight">{form.subtitle}</p>
-              {!form.readOnly
-                ? <p className="mt-2 text-[10px] text-[#0D9488] font-medium">Click to prepare →</p>
-                : <p className="mt-2 text-[10px] text-[#B45309]">Principal partner files this form.</p>}
-            </button>
-          ))}
-        </div>
-
-        {/* Form summary + actions */}
-        {selectedForm && (() => {
-          const form = forms.find(f => f.id === selectedForm);
-          return (
-            <div className="shrink-0 rounded-xl border border-[#E2E8F0] bg-white overflow-hidden">
-              <div className="flex items-center justify-between px-5 py-3 bg-[#F8FAFC] border-b border-[#E2E8F0]">
-                <div>
-                  <p className="text-xs font-semibold text-[#0F172A]">
-                    Form {selectedForm} — {selectedForm === 'B' ? 'Personal Return YA 2025' : `${sc.firm?.name || 'Partnership'} Return YA 2025`}
-                  </p>
-                  <p className="text-[10px] text-[#64748B] mt-0.5">Auto-populated from uploaded documents · Verify before submitting to LHDN</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => setShowPreview(true)}
-                    className="flex items-center gap-1.5 rounded-lg border border-[#0F6E56] bg-white px-3 py-2 text-xs font-semibold text-[#0F6E56] hover:bg-[#ECFDF5] transition-colors">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-                    </svg>
-                    Preview
-                  </button>
-                  {!form?.readOnly && (
-                    <button onClick={() => setShowPreview(true)}
-                      className="flex items-center gap-1.5 rounded-lg bg-[#0F6E56] px-3 py-2 text-xs font-semibold text-white hover:bg-[#0A5140] transition-colors">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-                      </svg>
-                      Export PDF
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <div className="px-5 py-4 space-y-4">
-                {selectedForm === 'B' ? (
-                  <>
-                    <InlineSummary title="Part B — Income Computation">
-                      <SRow label="B1  Business income (sole prop / expense deductions)" value={fmtRM(deductibleTotal)} />
-                      <SRow label="B2  Partnership income (Meridian Print Studio)" value={sc.firm ? 'RM 235,000' : '—'} />
-                      <SRow label="B4  Aggregate business income" value={fmtRM(deductibleTotal + (sc.firm ? 235000 : 0))} />
-                      <SRow label="B11 Aggregate income" value={fmtRM(totalIncome)} bold />
-                      <SRow label="B17 Less: Donations / gifts" value="—" />
-                      <SRow label="B23 Total relief" value="RM 18,000" />
-                      <SRow label="B24 Chargeable income" value={fmtRM(chargeableIncome)} bold highlight />
-                      <SRow label="B26 Total income tax" value={fmtRM(taxCharged)} />
-                      <SRow label="B28 Tax charged (after rebate RM 400)" value={fmtRM(Math.max(0, taxCharged - 400))} bold />
-                      <SRow label="B33 Less: CP500 instalments" value={fmtRM(lessInstalment)} />
-                      <SRow label="B34 Balance tax payable" value={fmtRM(taxPayable)} bold highlight />
-                    </InlineSummary>
-                    <InlineSummary title="Part H — Relief Breakdown">
-                      <SRow label="H1  Individual & dependent relatives" value="RM 9,000" />
-                      <SRow label="H17 Life insurance & EPF" value="RM 7,000" />
-                      <SRow label="H19 Education & medical insurance" value="RM 2,000" />
-                      <SRow label="H22 TOTAL RELIEF" value="RM 18,000" bold highlight />
-                    </InlineSummary>
-                    <InlineSummary title="Part N — Business Financial Particulars">
-                      <SRow label="N3  Sales / turnover (estimated)" value={fmtRM(deductibleTotal + 12000)} />
-                      <SRow label="N16 Salaries and wages" value="RM 14,500" />
-                      <SRow label="N17 Rental / lease" value="RM 1,240" />
-                      <SRow label="N23 Marketing and promotion" value="RM 3,200" />
-                      <SRow label="N25 Total expenditure" value={fmtRM(deductibleTotal)} bold />
-                      <SRow label="N27 Non-allowable (personal) expenses" value={fmtRM(nonDeductibleTotal)} />
-                    </InlineSummary>
-                    {reviewTotal > 0 && (
-                      <div className="rounded-lg border border-[#FDE68A] bg-[#FFFBEB] p-3">
-                        <p className="text-[10px] font-semibold text-[#B45309]">⚠ {fmtRM(reviewTotal)} still under review</p>
-                        <p className="text-[9px] text-[#92400E] mt-0.5">Classify remaining items in the OCR Evidence tab before filing.</p>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <InlineSummary title="Part A — Business Income (Partnership)">
-                      <SRow label="A1  Business code (MSIC)" value="1811" />
-                      <SRow label="A2  Divisible income" value="RM 450,000" bold highlight />
-                      <SRow label="A3  Partners' benefits (salaries + interest)" value="RM 160,000" />
-                      <SRow label="A5  Capital allowances" value="RM 60,000" />
-                    </InlineSummary>
-                    <InlineSummary title="Part G — Partner Profit Allocation">
-                      <SRow label="Aisyah (YOU) · 50% · Salary RM 60,000" value="Total RM 235,000" bold highlight />
-                      <SRow label="Bopha · 30% · Salary RM 40,000" value="Total RM 145,000" />
-                      <SRow label="Chong · 20% · No salary" value="Total RM 70,000" />
-                    </InlineSummary>
-                    <InlineSummary title="Part H — Financial Particulars">
-                      <SRow label="H2  Revenue" value="RM 920,000" />
-                      <SRow label="H6  Cost of sales" value="RM 310,000" />
-                      <SRow label="H7  Gross profit" value="RM 610,000" bold />
-                      <SRow label="H15 Salaries and wages" value="RM 100,000" />
-                      <SRow label="H16 Rental" value="RM 24,000" />
-                      <SRow label="H24 Total expenditure" value="RM 160,000" bold />
-                      <SRow label="H25 NET PROFIT (divisible income)" value="RM 450,000" bold highlight />
-                    </InlineSummary>
-                    {!sc.canFileFormP && (
-                      <div className="rounded-lg border border-[#E0E7FF] bg-[#EEF2FF] p-3">
-                        <p className="text-[10px] text-[#4338CA] font-semibold">You can view but cannot submit Form P.</p>
-                        <p className="text-[9px] text-[#4338CA]/80 mt-0.5">Only Aisyah (principal partner) can file this form with LHDN.</p>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          );
-        })()}
       </div>
     </>
   );
@@ -1841,7 +1651,6 @@ function CukaiAccount() {
   const [docs, setDocs]     = useState([]);       // resolved backend docs (mapped)
   const [uploads, setUploads] = useState([]);     // in-flight upload entries
   const [docsLoading, setDocsLoading] = useState(true);
-  const [userScenario]      = useState('B');
   const [activeEntity, setActiveEntity] = useState(null);
 
   // Load the active entity name and listen for switches from ManageProfile
@@ -2031,36 +1840,76 @@ function CukaiAccount() {
   // ── Retry failed upload ─────────────────────────────────────────────────────
   // The original file is still stored on disk server-side, so retry re-queues
   // it through the pipeline directly — no re-upload needed from the user.
+  //
+  // Two things have to both be true for retry to look right:
+  //  1. VISIBLE while it's running — the table only renders docs whose
+  //     status isn't 'pending'/'processing' (see `completedDocs` below); those
+  //     in-flight statuses are meant to be shown via the `uploads` progress
+  //     row instead. So we add an `uploads` entry here, same as a fresh
+  //     upload, purely to drive the animated "Classifying…" row.
+  //  2. NEVER LOST — unlike a fresh upload, the doc already exists in `docs`.
+  //     We update it in place (status -> 'processing') rather than filtering
+  //     it out, so even if the `uploads` entry is somehow lost (tab switch,
+  //     remount, etc.) before polling resolves, the document itself is still
+  //     sitting in `docs` and a page refresh will show its real backend
+  //     status — it can never just disappear.
   const retryDoc = useCallback(async (doc) => {
     const userId = localStorage.getItem('userId');
     const entityId = activeEntity?.id || null;
-    setDocs(prev => prev.map(d => d.id === doc.id ? { ...d, status: 'pending' } : d));
+    const localId = `retry-${doc.id}`;
+
+    setDocs(prev => prev.map(d => d.id === doc.id ? { ...d, status: 'processing', taxStatus: null } : d));
     setUploads(prev => [...prev, {
-      localId: `retry-${doc.id}`,
+      localId,
       fileName: doc.name,
       file: null,
       docId: doc.id,
       phase: 'processing',
       objectUrl: doc._localObjectUrl || null,
     }]);
+
     try {
       await API.retryDocument(doc.id, userId, entityId);
-      setDocs(prev => prev.filter(d => d.id !== doc.id));
-      pollUntilResolved(`retry-${doc.id}`, doc.id, doc._localObjectUrl || null);
     } catch (e) {
       console.error('[Retry]', e);
-      setUploads(prev => prev.filter(u => u.localId !== `retry-${doc.id}`));
+      setUploads(prev => prev.filter(u => u.localId !== localId));
       try {
         const full = await API.getDocument(doc.id, userId, entityId);
         setDocs(prev => prev.map(d => d.id === doc.id ? mapApiDoc(full) : d));
-      } catch (_) {}
+      } catch (_) {
+        setDocs(prev => prev.map(d => d.id === doc.id ? { ...d, status: 'failed' } : d));
+      }
+      return;
     }
-  }, [activeEntity?.id, pollUntilResolved]);
+
+    // Poll until the pipeline resolves. The doc row stays in `docs` the
+    // whole time (status 'processing' keeps it out of the visible table,
+    // same as a fresh upload) — we just update it in place once resolved,
+    // and drop the transient progress row.
+    const INTERVALS = [2000, 3000, 3000, 5000, 5000, 8000, 10000];
+    let attempt = 0;
+    const poll = async () => {
+      try {
+        const statusData = await API.getDocumentStatus(doc.id, userId, entityId);
+        if (statusData.status === 'completed' || statusData.status === 'failed') {
+          try {
+            const full = await API.getDocument(doc.id, userId, entityId);
+            setDocs(prev => prev.map(d => d.id === doc.id ? mapApiDoc(full) : d));
+          } catch (_) {
+            setDocs(prev => prev.map(d => d.id === doc.id ? { ...d, status: statusData.status } : d));
+          }
+          setUploads(prev => prev.filter(u => u.localId !== localId));
+          return;
+        }
+      } catch (_) {}
+      const delay = INTERVALS[Math.min(attempt++, INTERVALS.length - 1)];
+      setTimeout(poll, delay);
+    };
+    setTimeout(poll, INTERVALS[attempt++]);
+  }, [activeEntity?.id]);
 
   // Generate Report tab state lifted to root so the Generate tab retains its
-  // selected scenario/form when switching away to Upload and back.
-  const [activeScenario, setActiveScenario] = useState('B');
-  const [selectedForm, setSelectedForm] = useState(null);
+  // preview state when switching away to Upload and back.
   const [showPreview, setShowPreview] = useState(false);
 
   return (
@@ -2119,9 +1968,8 @@ function CukaiAccount() {
             )}
             {tab === 'generate' && (
               <GenerateTab
-                docs={docs} scenario={userScenario}
-                activeScenario={activeScenario} setActiveScenario={setActiveScenario}
-                selectedForm={selectedForm} setSelectedForm={setSelectedForm}
+                docs={docs}
+                filingYear={currentFilingYear()}
                 showPreview={showPreview} setShowPreview={setShowPreview}
               />
             )}

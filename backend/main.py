@@ -502,8 +502,13 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
   db.commit()
   db.refresh(db_doc)
 
-  loop = asyncio.get_event_loop()
-  loop.run_in_executor(_pipeline_executor, run_document_pipeline, db_doc.id, safe_file_path, SessionLocal)
+  # Submit straight to the thread pool rather than going through
+  # asyncio.get_event_loop().run_in_executor(...) — the latter requires an
+  # event loop to already exist on the *calling* thread, which breaks (as of
+  # Python 3.12) whenever this is invoked from a sync endpoint that FastAPI
+  # runs in a worker thread. ThreadPoolExecutor.submit() needs no event loop
+  # at all, so this works regardless of which thread calls it from.
+  _pipeline_executor.submit(run_document_pipeline, db_doc.id, safe_file_path, SessionLocal)
 
   return {"document_id": db_doc.id, "file_name": original_name, "status": "pending"}
 
@@ -836,8 +841,12 @@ def retry_document(
   doc.extracted_data = None
   db.commit()
 
-  loop = asyncio.get_event_loop()
-  loop.run_in_executor(_pipeline_executor, run_document_pipeline, doc.id, doc.file_path, SessionLocal)
+  # Same fix as _save_and_queue: submit directly to the thread pool. This
+  # endpoint is a sync `def`, so FastAPI runs it in a worker thread that has
+  # no event loop of its own — asyncio.get_event_loop() raises here on
+  # Python 3.12 ("no current event loop in thread"). submit() sidesteps the
+  # event loop requirement entirely.
+  _pipeline_executor.submit(run_document_pipeline, doc.id, doc.file_path, SessionLocal)
 
   return {"message": f"Document ID {doc_id} re-queued for classification.", "document_id": doc_id, "status": "pending"}
 
