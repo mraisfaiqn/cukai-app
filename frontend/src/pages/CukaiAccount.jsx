@@ -105,7 +105,8 @@ const STATUS_META = {
   mixed:          { label: 'Needs Review',    color: '#B45309', bg: '#FFFBEB', dot: '#F59E0B' },
   relief:         { label: 'Relief',          color: '#7C3AED', bg: '#F5F3FF', dot: '#7C3AED' },
   non_deductible: { label: 'Personal',        color: '#DC2626', bg: '#FEF2F2', dot: '#DC2626' },
-  not_applicable: { label: 'Capital / N/A',   color: '#64748B', bg: '#F1F5F9', dot: '#94A3B8' },
+  capital:        { label: 'Capital Asset',   color: '#B45309', bg: '#FFFBEB', dot: '#D97706' },
+  not_applicable: { label: 'Not Applicable',  color: '#64748B', bg: '#F1F5F9', dot: '#94A3B8' },
   pending:        { label: 'Uploading…',      color: '#64748B', bg: '#F8FAFC', dot: '#CBD5E1' },
   processing:     { label: 'Classifying…',   color: '#0369A1', bg: '#EFF6FF', dot: '#0369A1' },
   failed:         { label: 'Failed',          color: '#DC2626', bg: '#FEF2F2', dot: '#DC2626' },
@@ -137,17 +138,51 @@ function CukaiTabNav({ active, onChange }) {
 }
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
+// ─── Date formatting ────────────────────────────────────────────────────────────
+// Documents can have a full day-precision date, or no usable date at all (when
+// OCR/the LLM couldn't extract one, or only captured a partial month/year —
+// see normalize_date() in the backend pipeline). Rather than guessing at a
+// display format for partial precision, we show a complete date when we have
+// one and an em dash otherwise — exactly mirroring how `amount` is handled —
+// and let the user fill in the date manually via the reclassify modal,
+// the same way they can for amount.
+const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function formatDocDate(date, precision) {
+  if (precision === 'day' && typeof date === 'string') {
+    const m = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) {
+      const [, y, mo, d] = m;
+      const monthIdx = parseInt(mo, 10) - 1;
+      if (monthIdx >= 0 && monthIdx < 12) {
+        return `${parseInt(d, 10)} ${MONTH_SHORT[monthIdx]} ${y}`;
+      }
+    }
+  }
+  return '—';
+}
+
 function mapApiDoc(apiDoc) {
   const ed = apiDoc.extractedData || {};
+  // Treat anything other than an explicit, well-formed day-precision date as
+  // "not captured" for display purposes — partial (month/year-only) dates
+  // are still stored for record-keeping but aren't shown as if they were a
+  // full date.
+  const datePrecision = ed.date_precision === 'day' ? 'day' : 'unknown';
   return {
     id:           apiDoc.id,
     name:         apiDoc.fileName,
     type:         apiDoc.documentType || 'Unclassified',
-    date:         ed.date || apiDoc.uploadedAt || '',
+    date:         ed.date || null,                 // canonical value when day-precision; otherwise raw partial/null
+    datePrecision,
+    dateDisplay:  formatDocDate(ed.date, datePrecision),
+    dateSortKey:  datePrecision === 'day' ? ed.date : null,
     amount:       ed.amount || '—',
     status:       apiDoc.status,           // 'pending'|'processing'|'completed'|'failed'|'archived'
-    taxStatus:    apiDoc.taxStatus,       // 'income'|'deductible'|'mixed'|'relief'|'non_deductible'|'not_applicable'
+    taxStatus:    apiDoc.taxStatus,       // 'income'|'deductible'|'mixed'|'relief'|'non_deductible'|'not_applicable'|'capital'
     category:     apiDoc.category || 'Mixed / Pending Review',
+    manual:       !!ed.manual_entry,
+    accent:       STATUS_META[apiDoc.taxStatus]?.color || '#64748B',
     quadrant:     ed.quadrant,
     ita_section:  ed.ita_section,
     vendor:       ed.vendor,
@@ -297,8 +332,17 @@ function ConfidenceBadge({ value }) {
 //   Image → <img>
 //   Excel/CSV → SpreadsheetTable (on structured data) or iframe
 function FilePreviewRenderer({ doc, fileUrl }) {
+  // Manually-entered documents are backed by a plain-text receipt on the
+  // server (so the record persists like any other), but that .txt file
+  // isn't meant for browser preview — always render the structured canvas
+  // receipt for these instead.
+  if (doc.manual && doc.lineItems && doc.lineItems.length > 0) {
+    return <DocumentCanvas doc={doc} />;
+  }
+
   if (!fileUrl) {
-    // Fallback canvas renderer for locally-generated manual docs
+    // Fallback canvas renderer for any other doc with structured line items
+    // but no resolvable file URL (e.g. file moved/missing server-side).
     if (doc.lineItems && doc.lineItems.length > 0) {
       return <DocumentCanvas doc={doc} />;
     }
@@ -410,7 +454,7 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
             <p className="text-sm font-bold text-[#0F172A] truncate">{doc.name}</p>
             <div className="flex items-center gap-2 mt-0.5">
               <p className="text-[10px] text-[#64748B]">{doc.type || 'Document'}</p>
-              {doc.date && <><span className="text-[#CBD5E1]">·</span><p className="text-[10px] text-[#64748B]">{doc.date}</p></>}
+              {doc.dateDisplay && <><span className="text-[#CBD5E1]">·</span><p className="text-[10px] text-[#64748B]">{doc.dateDisplay}</p></>}
               {doc.ocr_quality && doc.ocr_quality !== 'good' && (
                 <span className="rounded-full bg-[#FFFBEB] px-2 py-0.5 text-[9px] font-semibold text-[#B45309] border border-[#FDE68A]">
                   OCR: {doc.ocr_quality}
@@ -525,15 +569,22 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
 // Handles both "mixed" (undecided) and "re-classify" (override confirmed) modes.
 function ReclassifyModal({ doc, onConfirm, onCancel }) {
   const isMixed = doc.taxStatus === 'mixed' || doc.status === 'mixed';
+  const amountMissing = !doc.amount || doc.amount === '—';
+  const dateMissing = !doc.dateDisplay || doc.dateDisplay === '—';
 
   const [category, setCategory] = useState(doc.category || 'Mixed / Pending Review');
+  const [amountInput, setAmountInput] = useState('');
+  const [amountError, setAmountError] = useState('');
+  const [dateInput, setDateInput] = useState('');
+  const [dateError, setDateError] = useState('');
   const [saving, setSaving] = useState(false);
 
   // Derive status from selected category
   const deriveStatus = (cat) => {
     if (Q1_CATEGORIES.includes(cat) || Q2_CATEGORIES.includes(cat)) return 'income';
     if (Q3_CATEGORIES.filter(c => !['Q3 — Client Entertainment (50% cap)', 'Q3 — Client & Corporate Gifts', 'Q3 — Mixed-Use Vehicle Expenses', 'Q3 — Capital Assets & Equipment', 'Q3 — Capital Renovation & Fit-Out', 'Q3 — Hire Purchase & Leased Assets', 'Q3 — CP500 / Tax Installment'].includes(c)).includes(cat)) return 'deductible';
-    if (['Q3 — Capital Assets & Equipment', 'Q3 — Capital Renovation & Fit-Out', 'Q3 — CP500 / Tax Installment'].includes(cat)) return 'not_applicable';
+    if (['Q3 — Capital Assets & Equipment', 'Q3 — Capital Renovation & Fit-Out'].includes(cat)) return 'capital';
+    if (cat === 'Q3 — CP500 / Tax Installment') return 'not_applicable';
     if (['Q3 — Client Entertainment (50% cap)', 'Q3 — Client & Corporate Gifts', 'Q3 — Mixed-Use Vehicle Expenses', 'Q3 — Hire Purchase & Leased Assets'].includes(cat)) return 'mixed';
     if (Q4_RELIEF_CATEGORIES.includes(cat)) return 'relief';
     if (Q4_NON_DED_CATEGORIES.includes(cat)) return 'non_deductible';
@@ -548,9 +599,29 @@ function ReclassifyModal({ doc, onConfirm, onCancel }) {
     : { color: '#DC2626', bg: '#FEF2F2' };
 
   const handleConfirm = async () => {
+    if (amountMissing) {
+      const parsed = parseFloat(amountInput);
+      if (!amountInput.trim() || isNaN(parsed) || parsed < 0) {
+        setAmountError('Enter a valid amount to continue.');
+        return;
+      }
+    }
+    if (dateMissing) {
+      if (!dateInput) {
+        setDateError('Enter the document date to continue.');
+        return;
+      }
+    }
+    setAmountError('');
+    setDateError('');
     setSaving(true);
     try {
-      await onConfirm(derivedStatus, category);
+      await onConfirm(
+        derivedStatus,
+        category,
+        amountMissing ? parseFloat(amountInput) : null,
+        dateMissing ? dateInput : null,
+      );
     } finally {
       setSaving(false);
     }
@@ -639,6 +710,45 @@ function ReclassifyModal({ doc, onConfirm, onCancel }) {
           </div>
         )}
 
+        {/* Manual date entry — shown when OCR couldn't extract a date */}
+        {dateMissing && (
+          <div className="mb-3">
+            <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">
+              Date <span className="font-normal text-[#94A3B8]">(OCR couldn't read this — please enter it)</span>
+            </label>
+            <input
+              type="date"
+              value={dateInput}
+              onChange={e => { setDateInput(e.target.value); if (dateError) setDateError(''); }}
+              className={`w-full rounded-lg border bg-white px-3 py-2 text-xs text-[#0F172A] focus:outline-none ${dateError ? 'border-[#FCA5A5] focus:border-[#DC2626]' : 'border-[#E2E8F0] focus:border-[#0D9488]'}`}
+            />
+            {dateError && <p className="mt-1 text-[10px] text-[#DC2626]">{dateError}</p>}
+          </div>
+        )}
+
+        {/* Manual amount entry — shown when OCR couldn't extract an amount */}
+        {amountMissing && (
+          <div className="mb-3">
+            <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">
+              Amount <span className="font-normal text-[#94A3B8]">(OCR couldn't read this — please enter it)</span>
+            </label>
+            <div className="relative">
+              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-[#64748B]">RM</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                inputMode="decimal"
+                value={amountInput}
+                onChange={e => { setAmountInput(e.target.value); if (amountError) setAmountError(''); }}
+                placeholder="0.00"
+                className={`w-full rounded-lg border bg-white pl-9 pr-3 py-2 text-xs text-[#0F172A] focus:outline-none ${amountError ? 'border-[#FCA5A5] focus:border-[#DC2626]' : 'border-[#E2E8F0] focus:border-[#0D9488]'}`}
+              />
+            </div>
+            {amountError && <p className="mt-1 text-[10px] text-[#DC2626]">{amountError}</p>}
+          </div>
+        )}
+
         {/* Category picker */}
         <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">Select the correct category</label>
         <select
@@ -700,7 +810,7 @@ function DocumentCanvas({ doc }) {
     ctx.fillText(`No: ${doc.doc_no || doc.docNo || '—'}`, W - 36, 60);
     let y = 120;
     ctx.textAlign = 'left'; ctx.fillStyle = '#0F172A'; ctx.font = 'bold 12px sans-serif';
-    ctx.fillText(`Date: ${doc.date}`, 36, y); y += 26;
+    ctx.fillText(`Date: ${doc.dateDisplay || doc.date || ''}`, 36, y); y += 26;
     ctx.fillStyle = '#F1F5F9'; ctx.fillRect(36, y - 14, W - 72, 26);
     ctx.fillStyle = '#334155'; ctx.font = 'bold 11px sans-serif';
     ctx.fillText('Description', 44, y + 3); ctx.textAlign = 'right';
@@ -764,6 +874,8 @@ function ManualUploadModal({ onConfirm, onCancel }) {
   const [lineItems, setLineItems] = useState([{ desc: '', amt: '' }]);
   const [category, setCategory] = useState(Q3_CATEGORIES[0]);
   const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
   const updateLineItem = (i, field, value) =>
     setLineItems(prev => prev.map((li, idx) => idx === i ? { ...li, [field]: value } : li));
@@ -773,23 +885,30 @@ function ManualUploadModal({ onConfirm, onCancel }) {
   const total = lineItems.reduce((s, li) => s + (parseFloat(li.amt) || 0), 0);
   const formattedDate = date ? new Date(date).toLocaleDateString('en-MY', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
   const isValid = vendor.trim() && docNo.trim() && date && lineItems.every(li => li.desc.trim() && parseFloat(li.amt) > 0);
-  const derivedStatus = Q4_RELIEF_CATEGORIES.includes(category) ? 'relief'
-    : Q4_NON_DED_CATEGORIES.includes(category) ? 'non_deductible'
-    : (Q1_CATEGORIES.includes(category) || Q2_CATEGORIES.includes(category)) ? 'income'
-    : 'deductible';
 
-  const buildDoc = () => ({
-    id: Date.now() + Math.random(),
-    name: `${docType.replace(/\s+/g, '_')}_${(vendor || 'Manual').replace(/\s+/g, '_')}_${date || 'undated'}.pdf`,
-    type: docType, fileType: 'pdf', date: formattedDate, amount: fmtRM(total),
-    status: 'completed', taxStatus: derivedStatus, category,
-    note: notes || 'Manually entered by user.',
-    vendor, vendor_addr: vendorAddr, doc_no: docNo,
-    accent: derivedStatus === 'deductible' ? '#0F6E56' : derivedStatus === 'non_deductible' ? '#DC2626' : '#64748B',
-    lineItems: lineItems.map(li => ({ desc: li.desc, amt: parseFloat(li.amt) || 0 })),
-    confidence: 100,
-    manual: true,
+  const buildPayload = () => ({
+    document_type: docType,
+    vendor,
+    vendor_addr: vendorAddr,
+    doc_no: docNo,
+    date,
+    category,
+    notes,
+    line_items: lineItems.map(li => ({ desc: li.desc, amt: parseFloat(li.amt) || 0 })),
   });
+
+  const handleSubmit = async () => {
+    if (!isValid || saving) return;
+    setSaving(true);
+    setSaveError('');
+    try {
+      await onConfirm(buildPayload());
+    } catch (e) {
+      setSaveError(e?.response?.data?.detail || 'Could not save this document — please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" onClick={onCancel}>
@@ -877,18 +996,19 @@ function ManualUploadModal({ onConfirm, onCancel }) {
           </div>
         </div>
         <button
-          onClick={() => isValid && onConfirm(buildDoc())}
-          disabled={!isValid}
-          className={`w-full mt-6 rounded-xl px-4 py-3 text-sm font-bold transition-colors ${isValid ? 'bg-[#0F6E56] text-white hover:bg-[#0A5140] cursor-pointer' : 'bg-[#F1F5F9] text-[#CBD5E1] cursor-not-allowed'}`}>
-          Save Document
+          onClick={handleSubmit}
+          disabled={!isValid || saving}
+          className={`w-full mt-6 rounded-xl px-4 py-3 text-sm font-bold transition-colors ${isValid && !saving ? 'bg-[#0F6E56] text-white hover:bg-[#0A5140] cursor-pointer' : 'bg-[#F1F5F9] text-[#CBD5E1] cursor-not-allowed'}`}>
+          {saving ? 'Saving…' : 'Save Document'}
         </button>
-        {!isValid && <p className="text-[9px] text-[#94A3B8] text-center mt-2">Fill in vendor name, document number, date, and at least one line item.</p>}
+        {saveError && <p className="text-[10px] text-[#DC2626] text-center mt-2">{saveError}</p>}
+        {!isValid && !saveError && <p className="text-[9px] text-[#94A3B8] text-center mt-2">Fill in vendor name, document number, date, and at least one line item.</p>}
       </div>
     </div>
   );
 }
 
-function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, onUpdateStatus }) {
+function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, onUpdateStatus, onManualAdd }) {
   const inputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
   const [statusFilter, setStatusFilter] = useState('all');     // 'all'|taxStatus|'archived'
@@ -900,6 +1020,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
   const [reclassDoc, setReclassDoc] = useState(null);
   const [previewDoc, setPreviewDoc] = useState(null);
   const [manualUploadOpen, setManualUploadOpen] = useState(false);
+  const [limitToast, setLimitToast] = useState('');
 
   // Separate completed/failed docs from in-flight uploads
   const completedDocs = docs.filter(d => d.status !== 'pending' && d.status !== 'processing');
@@ -918,10 +1039,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
     { value: 'MIX',  label: 'Mixed / Pending Review' },
   ];
 
-  const availableYears = [...new Set(completedDocs.map(d => {
-    const m = (d.date || '').match(/\d{4}/);
-    return m ? m[0] : null;
-  }).filter(Boolean))].sort((a, b) => b - a);
+  const availableYears = [...new Set(completedDocs.map(d => d.date ? d.date.slice(0, 4) : null).filter(Boolean))].sort((a, b) => b - a);
 
   let filtered = completedDocs.filter(d => {
     if (showArchived) return d.status === 'archived';
@@ -940,8 +1058,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
       if (categoryFilter === 'MIX' && cat !== 'Mixed / Pending Review') return false;
     }
     if (yearFilter !== 'all') {
-      const m = (d.date || '').match(/\d{4}/);
-      if (!m || m[0] !== yearFilter) return false;
+      if (!d.date || d.date.slice(0, 4) !== yearFilter) return false;
     }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -953,26 +1070,61 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
   });
 
   filtered = [...filtered].sort((a, b) => {
-    if (sortBy === 'date_desc') return new Date(b.date || 0) - new Date(a.date || 0);
-    if (sortBy === 'date_asc') return new Date(a.date || 0) - new Date(b.date || 0);
+    if (sortBy === 'date_desc' || sortBy === 'date_asc') {
+      // Docs with no extractable date have nothing to compare on a timeline —
+      // always push them to the bottom, regardless of sort direction.
+      if (!a.dateSortKey && !b.dateSortKey) return 0;
+      if (!a.dateSortKey) return 1;
+      if (!b.dateSortKey) return -1;
+      return sortBy === 'date_desc'
+        ? b.dateSortKey.localeCompare(a.dateSortKey)
+        : a.dateSortKey.localeCompare(b.dateSortKey);
+    }
     if (sortBy === 'amount_desc') return parseAmt(b.amount) - parseAmt(a.amount);
     if (sortBy === 'amount_asc') return parseAmt(a.amount) - parseAmt(b.amount);
     if (sortBy === 'name_asc') return (a.name || '').localeCompare(b.name || '');
     return 0;
   });
 
-  const handleReclassifyConfirm = async (status, category) => {
-    await onUpdateStatus(reclassDoc.id, status, category);
+  const handleReclassifyConfirm = async (status, category, amount, date) => {
+    await onUpdateStatus(reclassDoc.id, status, category, amount, date);
     setReclassDoc(null);
     setPreviewDoc(null);
   };
 
+  const MAX_FILES = 10;
+
   const handleFiles = useCallback((files) => {
-    onFileDrop(Array.from(files));
+    const list = Array.from(files);
+    if (list.length > MAX_FILES) {
+      setLimitToast('You can add at most 10 attachments to a message. Please select fewer attachments.');
+      setTimeout(() => setLimitToast(''), 5000);
+      return;
+    }
+    onFileDrop(list);
   }, [onFileDrop]);
+
+  const handleInputChange = useCallback((e) => {
+    handleFiles(e.target.files);
+    // Reset the input's value so selecting the exact same file again (e.g.
+    // after deleting it) still fires onChange — browsers don't fire change
+    // events when the selected file list is unchanged from last time.
+    e.target.value = '';
+  }, [handleFiles]);
 
   return (
     <>
+      {limitToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 rounded-xl border border-[#FECACA] bg-[#FEF2F2] px-5 py-3 shadow-xl">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <p className="text-[11px] font-semibold text-[#DC2626]">{limitToast}</p>
+          <button onClick={() => setLimitToast('')} className="text-[#DC2626]/60 hover:text-[#DC2626] ml-1">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      )}
       {reclassDoc && (
         <ReclassifyModal doc={reclassDoc} onConfirm={handleReclassifyConfirm} onCancel={() => setReclassDoc(null)} />
       )}
@@ -987,7 +1139,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
       )}
       {manualUploadOpen && (
         <ManualUploadModal
-          onConfirm={(newDoc) => { onFileDrop([], newDoc); setManualUploadOpen(false); }}
+          onConfirm={async (payload) => { await onManualAdd(payload); setManualUploadOpen(false); }}
           onCancel={() => setManualUploadOpen(false)}
         />
       )}
@@ -1001,7 +1153,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
           onDragLeave={() => setDragging(false)}
           onDrop={e => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}>
           <input ref={inputRef} type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.xlsx,.xls,.csv"
-            className="hidden" onChange={e => handleFiles(e.target.files)} />
+            className="hidden" onChange={handleInputChange} />
           <div className="mx-auto mb-2 h-9 w-9 rounded-full bg-[#ECFDF5] flex items-center justify-center">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0F6E56" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
@@ -1038,33 +1190,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
 
         {/* Filter, search, sort bar */}
         <div className="shrink-0 flex items-center gap-2 flex-wrap">
-          {/* Archive toggle */}
-          <button
-            onClick={() => { setShowArchived(v => !v); setStatusFilter('all'); }}
-            className={`rounded-full px-3 py-1 text-[10px] font-medium transition-colors flex items-center gap-1 ${showArchived ? 'bg-[#64748B] text-white' : 'bg-[#F1F5F9] text-[#64748B] hover:bg-[#E2E8F0]'}`}>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>
-            </svg>
-            {showArchived ? 'Showing archived' : 'Archived'}
-          </button>
-
-          {!showArchived && [
-            { id: 'all', label: 'All' },
-            { id: 'income', label: 'Income' },
-            { id: 'deductible', label: 'Deductible' },
-            { id: 'relief', label: 'Relief' },
-            { id: 'non_deductible', label: 'Personal' },
-            { id: 'not_applicable', label: 'Capital / N/A' },
-            { id: 'mixed', label: `Review${mixed.length ? ` (${mixed.length})` : ''}` },
-            { id: 'failed', label: `Failed${failedDocs.length ? ` (${failedDocs.length})` : ''}` },
-          ].map(f => (
-            <button key={f.id} onClick={() => setStatusFilter(f.id)}
-              className={`rounded-full px-3 py-1 text-[10px] font-medium transition-colors ${statusFilter === f.id ? 'bg-[#0F6E56] text-white' : 'bg-[#F1F5F9] text-[#64748B] hover:bg-[#E2E8F0]'}`}>
-              {f.label}
-            </button>
-          ))}
-
-          <div className="ml-auto flex items-center gap-2">
+          <div className="flex items-center gap-2">
             {/* Search */}
             <div className="relative">
               <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#94A3B8]" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1078,18 +1204,43 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
                 className="rounded-lg border border-[#E2E8F0] bg-white pl-7 pr-3 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] w-44"
               />
             </div>
+
+            {/* Archive toggle — styled to match the dropdowns alongside it */}
+            <button
+              onClick={() => { setShowArchived(v => !v); setStatusFilter('all'); }}
+              className={`rounded-lg border px-2.5 py-1.5 text-[10px] font-medium transition-colors flex items-center gap-1.5 ${showArchived ? 'border-[#64748B] bg-[#64748B] text-white' : 'border-[#E2E8F0] bg-white text-[#334155] hover:border-[#0D9488]'}`}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>
+              </svg>
+              {showArchived ? 'Showing archived' : 'Archived'}
+            </button>
+          </div>
+
+          <div className="ml-auto flex items-center gap-2">
             {!showArchived && (
               <>
-                <select value={yearFilter} onChange={e => setYearFilter(e.target.value)}
+                <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
                   className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
-                  <option value="all">All years</option>
-                  {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+                  <option value="all">All classifications</option>
+                  <option value="income">Income</option>
+                  <option value="deductible">Deductible</option>
+                  <option value="relief">Relief</option>
+                  <option value="non_deductible">Personal</option>
+                  <option value="capital">Capital Asset</option>
+                  <option value="not_applicable">Not Applicable</option>
+                  <option value="mixed">{`Review${mixed.length ? ` (${mixed.length})` : ''}`}</option>
+                  <option value="failed">{`Failed${failedDocs.length ? ` (${failedDocs.length})` : ''}`}</option>
                 </select>
                 <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
                   className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
                   {CATEGORY_FILTER_OPTIONS.map(o => (
                     <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
+                </select>
+                <select value={yearFilter} onChange={e => setYearFilter(e.target.value)}
+                  className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
+                  <option value="all">All years</option>
+                  {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
                 <select value={sortBy} onChange={e => setSortBy(e.target.value)}
                   className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
@@ -1121,7 +1272,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
             <table className="w-full text-sm">
               <thead className="sticky top-0 z-10 bg-[#F8FAFC]">
                 <tr className="border-b border-[#E2E8F0]">
-                  {['File', 'Amount', 'Category', 'Status', 'Date', ''].map(h => (
+                  {['File', 'Amount', 'Category', 'Classification', 'Date', ''].map(h => (
                     <th key={h} className="py-2.5 px-3 first:pl-4 last:pr-4 text-left text-[10px] font-semibold text-[#64748B] last:text-right">{h}</th>
                   ))}
                 </tr>
@@ -1150,7 +1301,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
                     <td className="px-3 py-2.5">
                       <StatusBadge status={doc.taxStatus || doc.status} />
                     </td>
-                    <td className="px-3 py-2.5 text-[10px] text-[#64748B] whitespace-nowrap">{doc.date}</td>
+                    <td className="px-3 py-2.5 text-[10px] text-[#64748B] whitespace-nowrap">{doc.dateDisplay}</td>
                     <td className="py-2.5 pr-4">
                       <div className="flex items-center justify-end gap-2">
                         {/* Retry — only for failed docs */}
@@ -1742,13 +1893,9 @@ function CukaiAccount() {
   const [dupToast, setDupToast] = useState(null); // { fileName, existingId, retryHint }
 
   // ── File drop handler ───────────────────────────────────────────────────────
-  const handleFileDrop = useCallback(async (files, manualDoc = null) => {
+  const handleFileDrop = useCallback(async (files) => {
     const userId = localStorage.getItem('userId');
     const entityId = activeEntity?.id || null;
-    if (manualDoc) {
-      setDocs(prev => [manualDoc, ...prev]);
-      return;
-    }
     if (!files.length) return;
 
     const entries = files.map(f => ({
@@ -1783,6 +1930,17 @@ function CukaiAccount() {
         setUploads(prev => prev.filter(e => e.localId !== entry.localId));
       }
     }
+  }, [activeEntity?.id]);
+
+  // ── Manual document entry ────────────────────────────────────────────────────
+  // No file, no OCR — persisted directly via a dedicated backend endpoint so
+  // it survives reloads/entity switches like every other document. Throws on
+  // failure so ManualUploadModal can surface the error and keep itself open.
+  const manualAddDoc = useCallback(async (payload) => {
+    const userId = localStorage.getItem('userId');
+    const entityId = activeEntity?.id || null;
+    const created = await API.createManualDocument(payload, userId, entityId);
+    setDocs(prev => [mapApiDoc(created), ...prev]);
   }, [activeEntity?.id]);
 
   const pollUntilResolved = useCallback((localId, docId, objectUrl) => {
@@ -1848,12 +2006,19 @@ function CukaiAccount() {
   }, [activeEntity?.id]);
 
   // ── Re-classify ─────────────────────────────────────────────────────────────
-  const updateDocStatus = useCallback(async (id, status, category) => {
+  const updateDocStatus = useCallback(async (id, status, category, amount = null, date = null) => {
     const userId = localStorage.getItem('userId');
     const entityId = activeEntity?.id || null;
-    setDocs(prev => prev.map(d => d.id === id ? { ...d, taxStatus: status, category, status: 'completed' } : d));
+    setDocs(prev => prev.map(d => d.id === id
+      ? {
+          ...d, taxStatus: status, category, status: 'completed',
+          ...(amount !== null ? { amount: fmtRM(amount) } : {}),
+          ...(date !== null ? { date, datePrecision: 'day', dateDisplay: formatDocDate(date, 'day'), dateSortKey: date } : {}),
+        }
+      : d
+    ));
     try {
-      await API.reclassifyDocument(id, status, category, userId, entityId);
+      await API.reclassifyDocument(id, status, category, userId, entityId, amount, date);
     } catch (e) {
       console.error('[Reclassify]', e);
       try {
@@ -1864,17 +2029,33 @@ function CukaiAccount() {
   }, [activeEntity?.id]);
 
   // ── Retry failed upload ─────────────────────────────────────────────────────
-  // We don't retain the original File object once it has failed, so we delete
-  // the failed record (clearing the duplicate-check window) and prompt the user
-  // to drop the file again.
+  // The original file is still stored on disk server-side, so retry re-queues
+  // it through the pipeline directly — no re-upload needed from the user.
   const retryDoc = useCallback(async (doc) => {
     const userId = localStorage.getItem('userId');
     const entityId = activeEntity?.id || null;
-    try { await API.deleteDocument(doc.id, userId, entityId); } catch (_) {}
-    setDocs(prev => prev.filter(d => d.id !== doc.id));
-    setDupToast({ fileName: doc.name, existingId: null, retryHint: true });
-    setTimeout(() => setDupToast(null), 5000);
-  }, [activeEntity?.id]);
+    setDocs(prev => prev.map(d => d.id === doc.id ? { ...d, status: 'pending' } : d));
+    setUploads(prev => [...prev, {
+      localId: `retry-${doc.id}`,
+      fileName: doc.name,
+      file: null,
+      docId: doc.id,
+      phase: 'processing',
+      objectUrl: doc._localObjectUrl || null,
+    }]);
+    try {
+      await API.retryDocument(doc.id, userId, entityId);
+      setDocs(prev => prev.filter(d => d.id !== doc.id));
+      pollUntilResolved(`retry-${doc.id}`, doc.id, doc._localObjectUrl || null);
+    } catch (e) {
+      console.error('[Retry]', e);
+      setUploads(prev => prev.filter(u => u.localId !== `retry-${doc.id}`));
+      try {
+        const full = await API.getDocument(doc.id, userId, entityId);
+        setDocs(prev => prev.map(d => d.id === doc.id ? mapApiDoc(full) : d));
+      } catch (_) {}
+    }
+  }, [activeEntity?.id, pollUntilResolved]);
 
   // Generate Report tab state lifted to root so the Generate tab retains its
   // selected scenario/form when switching away to Upload and back.
@@ -1932,6 +2113,7 @@ function CukaiAccount() {
                   onArchive={archiveDoc}
                   onRetry={retryDoc}
                   onUpdateStatus={updateDocStatus}
+                  onManualAdd={manualAddDoc}
                 />
               )
             )}

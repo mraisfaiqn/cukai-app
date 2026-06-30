@@ -87,6 +87,21 @@ export const getEntityById = async (entityId, userId = null) => {
 // across upload, list, status, get, delete, archive, and reclassify calls.
 
 /**
+ * Persist a manually-entered document (no file, no OCR) — used by the
+ * "Manually add a document" flow when a receipt can't be uploaded as a file.
+ * `payload` should include: vendor, vendor_addr, doc_no, date (YYYY-MM-DD),
+ * document_type, category, line_items ([{desc, amt}]), notes.
+ * Returns the created Document record (already status: 'completed').
+ */
+export const createManualDocument = async (payload, userId = null, entityId = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.post('/api/documents/manual', payload, { params });
+  return data;
+};
+
+/**
  * Upload a single file for classification.
  * Returns { document_id, file_name, status }.
  */
@@ -170,16 +185,34 @@ export const archiveDocument = async (docId, userId = null, entityId = null) => 
 };
 
 /**
- * Override the AI classification with a user-confirmed status and category.
- * Returns the updated Document record.
+ * Re-run OCR/classification on a previously failed document using the file
+ * already stored on disk. Returns { document_id, status: 'pending' }.
  */
-export const reclassifyDocument = async (docId, status, category, userId = null, entityId = null) => {
+export const retryDocument = async (docId, userId = null, entityId = null) => {
   const params = {};
   if (userId)   params.user_id   = userId;
   if (entityId) params.entity_id = entityId;
+  const { data } = await api.patch(`/api/documents/${docId}/retry`, {}, { params });
+  return data;
+};
+
+/**
+ * Override the AI classification with a user-confirmed status and category.
+ * Pass `amount` and/or `date` when the original OCR extraction failed to
+ * capture them — each overwrites the corresponding extractedData field on
+ * the backend. `date` should be an ISO YYYY-MM-DD string.
+ * Returns the updated Document record.
+ */
+export const reclassifyDocument = async (docId, status, category, userId = null, entityId = null, amount = null, date = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
+  const body = { status, category };
+  if (amount !== null && amount !== undefined && amount !== '') body.amount = amount;
+  if (date !== null && date !== undefined && date !== '') body.date = date;
   const { data } = await api.patch(
     `/api/documents/${docId}/reclassify`,
-    { status, category },
+    body,
     { params },
   );
   return data;

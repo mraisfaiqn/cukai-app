@@ -161,8 +161,11 @@ ALL_CATEGORIES = (
 # mixed        — partially deductible or needs apportionment / user confirmation
 # relief       — personal tax relief reducing individual chargeable income (Q4 eligible items)
 # non_deductible — personal spend with no tax benefit (Q4 non-relief items)
-# not_applicable — non-financial document or capital asset (deductibility via Schedule 3 instead)
-VALID_STATUSES = {"income", "deductible", "mixed", "relief", "non_deductible", "not_applicable"}
+# capital      — capital asset (deductibility via Schedule 3 IA+AA, not directly) — its own
+#                bucket so the frontend never lumps it in with genuinely non-applicable documents
+# not_applicable — non-financial / non-deductible supporting document with no standalone
+#                  deductibility (e.g. CP500 installment notice, generic non-tax document)
+VALID_STATUSES = {"income", "deductible", "mixed", "relief", "non_deductible", "not_applicable", "capital"}
 
 # Default status per category
 CATEGORY_STATUS_MAP: dict[str, str] = {}
@@ -176,8 +179,8 @@ for cat in ALL_Q3:
 CATEGORY_STATUS_MAP["Q3 — Client Entertainment (50% cap)"]  = "mixed"
 CATEGORY_STATUS_MAP["Q3 — Client & Corporate Gifts"]        = "mixed"
 CATEGORY_STATUS_MAP["Q3 — Mixed-Use Vehicle Expenses"]      = "mixed"
-CATEGORY_STATUS_MAP["Q3 — Capital Assets & Equipment"]      = "not_applicable"  # via Schedule 3 IA+AA
-CATEGORY_STATUS_MAP["Q3 — Capital Renovation & Fit-Out"]    = "not_applicable"  # via Schedule 3 / IBA
+CATEGORY_STATUS_MAP["Q3 — Capital Assets & Equipment"]      = "capital"         # via Schedule 3 IA+AA
+CATEGORY_STATUS_MAP["Q3 — Capital Renovation & Fit-Out"]    = "capital"         # via Schedule 3 / IBA
 CATEGORY_STATUS_MAP["Q3 — Hire Purchase & Leased Assets"]   = "mixed"           # interest deductible; principal not
 CATEGORY_STATUS_MAP["Q3 — CP500 / Tax Installment"]         = "not_applicable"  # advance tax payment; not a deductible expense
 # Q4 relief items
@@ -224,7 +227,7 @@ _Q2_BLOCK = _fmt_cat_block(
   ALL_Q2,
 )
 _Q3_BLOCK = _fmt_cat_block(
-  "QUADRANT 3 — Business Expense  (status → deductible | mixed | not_applicable)",
+  "QUADRANT 3 — Business Expense  (status → deductible | mixed | capital | not_applicable)",
   ALL_Q3,
 )
 _Q4_BLOCK = _fmt_cat_block(
@@ -515,7 +518,7 @@ Identify the document type precisely from content headers, vendor names, and fil
       Signboards / signage:                  IA 20% + AA 10%/year
       Perpetual software licences:           IA 20% + AA 20%/year (treated as computer)
     Output MUST include: asset_class, ia_rate_pct, aa_rate_pct
-    → Q3 — Capital Assets & Equipment  [status: not_applicable; claim via Schedule 3 IA+AA]
+    → Q3 — Capital Assets & Equipment  [status: capital; claim via Schedule 3 IA+AA]
 
   Renovation Invoice
     → keywords: renovation, ubahsuai, naik taraf, refurbishment, fitting-out works,
@@ -796,8 +799,10 @@ STATUS DEFINITIONS:
                    reduces s.4(a) net profit
   mixed          → partially deductible or requires apportionment / user confirmation;
                    MUST include reason + question + source fields
-  not_applicable → capital asset (deducted via Schedule 3 IA+AA, not directly); or
-                   supporting document with no standalone deductibility
+  capital        → capital asset (deducted via Schedule 3 IA+AA, not directly) — equipment,
+                   renovation/fit-out, or similar capitalised expenditure
+  not_applicable → supporting document with no standalone deductibility (e.g. CP500 / tax
+                   installment notice, generic non-tax document)
   relief         → reduces individual chargeable income; claimed in the personal relief
                    section of Form B (Schedule 9); subject to annual caps
   non_deductible → personal spending with no tax benefit of any kind
@@ -1130,7 +1135,7 @@ OUTPUT FORMAT — return ONLY valid JSON, no markdown fences, no preamble
   "ita_section": "<s.4a | s.4aa | s.4b | s.4c | s.4d | s.4e | s.4f | s.33 | s.39 | sch3 | relief | nil>",
   "document_type": "<precise label from Step 2>",
   "category": "<exactly one category from Step 3>",
-  "status": "<income | deductible | mixed | not_applicable | relief | non_deductible>",
+  "status": "<income | deductible | mixed | capital | not_applicable | relief | non_deductible>",
   "vendor": "<vendor/company/payer name, or 'Unknown'>",
   "vendor_reg": "<SSM/ROC/ROB number if visible, else null>",
   "vendor_addr": "<vendor address if visible, else null>",
@@ -1503,10 +1508,85 @@ def validate_llm_result(llm_result: dict, filename: str) -> dict:
   return llm_result
 
 
+_MONTH_NAMES = {
+  'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
+  'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
+  'aug': 8, 'august': 8, 'sep': 9, 'sept': 9, 'september': 9, 'oct': 10, 'october': 10,
+  'nov': 11, 'november': 11, 'dec': 12, 'december': 12,
+}
+
+
+def normalize_date(raw_date: str | None, tax_year: str | int | None = None) -> dict:
+  """
+  Parse an LLM-extracted date string (which can arrive in inconsistent
+  formats, or be entirely absent) into a canonical shape the frontend can
+  reliably sort, filter, and display:
+
+    { "date": "YYYY-MM-DD" | "YYYY-MM" | "YYYY" | None, "date_precision": "day" | "month" | "year" | "unknown" }
+
+  Falls back to tax_year (year-only precision) when no usable date string
+  is present, and to "unknown" only when nothing at all is extractable —
+  this is common for documents that genuinely carry no date (e.g. a torn
+  receipt) or that only ever state a year/month (e.g. annual summaries).
+  We deliberately do not fabricate a day (e.g. defaulting to the 1st) for
+  month/year-only documents, since that would silently imply false precision.
+  """
+  s = (raw_date or "").strip()
+
+  if s:
+    # DD Mon YYYY / DD Month YYYY  e.g. "15 Jun 2024", "5 June 2024"
+    m = re.match(r"^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$", s)
+    if m:
+      day, mon_name, year = m.groups()
+      month = _MONTH_NAMES.get(mon_name.lower())
+      if month and 1 <= int(day) <= 31:
+        return {"date": f"{year}-{month:02d}-{int(day):02d}", "date_precision": "day"}
+
+    # YYYY-MM-DD (already ISO)
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", s)
+    if m:
+      return {"date": s, "date_precision": "day"}
+
+    # DD/MM/YYYY or DD-MM-YYYY
+    m = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", s)
+    if m:
+      day, month, year = m.groups()
+      if 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
+        return {"date": f"{year}-{int(month):02d}-{int(day):02d}", "date_precision": "day"}
+
+    # Mon YYYY / Month YYYY  e.g. "Jun 2024", "June 2024"  — month precision only
+    m = re.match(r"^([A-Za-z]+)\s+(\d{4})$", s)
+    if m:
+      mon_name, year = m.groups()
+      month = _MONTH_NAMES.get(mon_name.lower())
+      if month:
+        return {"date": f"{year}-{month:02d}", "date_precision": "month"}
+
+    # YYYY-MM
+    m = re.match(r"^(\d{4})-(\d{2})$", s)
+    if m:
+      return {"date": s, "date_precision": "month"}
+
+    # Bare year e.g. "2024"
+    m = re.match(r"^(\d{4})$", s)
+    if m:
+      return {"date": s, "date_precision": "year"}
+
+    logger.warning(f"[Date Normalize] Unrecognized date format from LLM: '{raw_date}' — falling back.")
+
+  # No usable date string — fall back to tax_year (year precision only)
+  ty = str(tax_year).strip() if tax_year else ""
+  if re.match(r"^\d{4}$", ty):
+    return {"date": ty, "date_precision": "year"}
+
+  return {"date": None, "date_precision": "unknown"}
+
+
 def build_extracted_data(llm_result: dict, content_preview: str, file_kind: str, ocr_meta: dict | None = None) -> dict:
   """Merge LLM output and extraction metadata into the JSONB payload."""
   form_b_raw = llm_result.get("form_b") or {}
   form_ea_raw = llm_result.get("form_ea") or {}
+  date_info = normalize_date(llm_result.get("date"), llm_result.get("tax_year"))
 
   return {
     # Core classification
@@ -1522,7 +1602,9 @@ def build_extracted_data(llm_result: dict, content_preview: str, file_kind: str,
     "vendor_reg":         llm_result.get("vendor_reg"),
     "vendor_addr":        llm_result.get("vendor_addr"),
     "doc_no":             llm_result.get("doc_no"),
-    "date":               llm_result.get("date"),
+    "date":               date_info["date"],
+    "date_precision":     date_info["date_precision"],
+    "date_raw":           llm_result.get("date"),  # original LLM string, kept for debugging/audit
     "tax_year":           llm_result.get("tax_year"),
 
     # Financial figures
@@ -1659,6 +1741,8 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
     # Hard overrides — enforce correct status regardless of what the LLM returned
     if category == NON_TAX_CATEGORY:
       status = "not_applicable"
+    elif category in ("Q3 — Capital Assets & Equipment", "Q3 — Capital Renovation & Fit-Out"):
+      status = "capital"
     elif category in ALL_Q1 or category in ALL_Q2:
       status = "income"
     elif category in _Q4_RELIEF_CATS:
@@ -1684,7 +1768,9 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
       extracted_data.get("form_b") or {}
     ).get("ya_year") or (
       extracted_data.get("form_ea") or {}
-    ).get("ya_year")
+    ).get("ya_year") or (
+      extracted_data.get("date")[:4] if extracted_data.get("date") else None
+    )
     try:
       ya_int = int(ya_raw) if ya_raw is not None else None
       if ya_int and not (2000 <= ya_int <= 2100):
