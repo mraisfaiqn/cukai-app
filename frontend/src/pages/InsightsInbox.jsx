@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { getEntityById } from '../services/api';
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 
@@ -281,6 +282,18 @@ function InsightModal({ insight, onClose, onMarkRead, onArchive, onDelete }) {
 // ── Main Component ─────────────────────────────────────────────────────────────
 
 function InsightsInbox() {
+  const [activeEntity, setActiveEntity] = useState(null);
+
+  useEffect(() => {
+    const loadEntity = async () => {
+      const entityId = localStorage.getItem('activeEntityId');
+      if (!entityId) return;
+      try { setActiveEntity(await getEntityById(parseInt(entityId))); } catch (_) {}
+    };
+    loadEntity();
+    window.addEventListener('entitySwitch', loadEntity);
+    return () => window.removeEventListener('entitySwitch', loadEntity);
+  }, []);
   const [insights, setInsights] = useState(MOCK_INSIGHTS);
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
@@ -360,6 +373,7 @@ function InsightsInbox() {
           <div>
             <div className="flex items-center gap-2.5">
               <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">AI Insights Inbox</h1>
+              {activeEntity && <p className="text-xs text-[#64748B] mt-0.5">Insights for {activeEntity.name}</p>}
               {unreadCount > 0 && (
                 <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[#10B981] px-1.5 text-[10px] font-bold text-white">
                   {unreadCount}

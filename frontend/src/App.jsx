@@ -59,7 +59,7 @@ function App() {
           <Route path="/cukaibot" element={<CukaiBot />} />
           <Route path="/insightsinbox" element={<InsightsInbox />} />
           <Route path="/documentation" element={<Documentation />} />
-          <Route path="/manageaccount/*" element={<ManageAccount />} />
+          <Route path="/manageaccount" element={<ManageAccount />} />
           <Route path="/opportunities/:id" element={<OpportunityDetail />} />
           <Route path="/termsconditions" element={<TermsConditions />} />
         </Route>

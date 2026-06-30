@@ -1,4 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
+import { getEntityById } from '../services/api';
 import cukaiLogo from '../assets/cukai-logo.png';
 
 // ─── Design tokens (matches ManageAccount + UserNavigation) ───────────────────
@@ -1888,9 +1889,25 @@ function SRow({ label, value, bold, highlight }) {
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 function CukaiAccount() {
-  const [tab, setTab]   = useState('upload');
-  const [docs, setDocs] = useState(INITIAL_DOCS);
-  const [userScenario]  = useState('B');
+  const [tab, setTab]       = useState('upload');
+  const [docs, setDocs]     = useState(INITIAL_DOCS);
+  const [userScenario]      = useState('B');
+  const [activeEntity, setActiveEntity] = useState(null);
+
+  // Load the active entity name and listen for switches from ManageProfile
+  useEffect(() => {
+    const loadEntity = async () => {
+      const entityId = localStorage.getItem('activeEntityId');
+      if (!entityId) return;
+      try {
+        const entity = await getEntityById(parseInt(entityId));
+        setActiveEntity(entity);
+      } catch (_) {}
+    };
+    loadEntity();
+    window.addEventListener('entitySwitch', loadEntity);
+    return () => window.removeEventListener('entitySwitch', loadEntity);
+  }, []);
 
   // Generate Report tab state lifted to root so the Tax Summary chart in the
   // sidebar can reflect it on every tab, not just while Generate Report is active.
@@ -1945,7 +1962,7 @@ function CukaiAccount() {
         {/* Header */}
         <div className="shrink-0">
           <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Cukai Account</h1>
-          <p className="text-xs text-[#64748B] mt-1">Upload receipts, classify expenses, and generate your tax return draft.</p>
+          <p className="text-xs text-[#64748B] mt-1">Upload receipts, classify expenses, and generate your tax return draft{activeEntity ? ` — ${activeEntity.name}` : ''}.</p>
         </div>
 
         {/* Tab nav */}

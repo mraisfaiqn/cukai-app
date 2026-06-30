@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { getEntityById } from '../services/api';
 import cukaiBot from '../assets/cukaibot-icon.png';
 
 // ── Icons ────────────────────────────────────────────────────────────────────
@@ -226,8 +227,21 @@ function CukaiBot() {
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [activeCitations, setActiveCitations] = useState(initialMessages[1].citations);
+  const [activeEntity, setActiveEntity] = useState(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
+
+  // Load active entity for context and listen for entity switches
+  useEffect(() => {
+    const loadEntity = async () => {
+      const entityId = localStorage.getItem('activeEntityId');
+      if (!entityId) return;
+      try { setActiveEntity(await getEntityById(parseInt(entityId))); } catch (_) {}
+    };
+    loadEntity();
+    window.addEventListener('entitySwitch', loadEntity);
+    return () => window.removeEventListener('entitySwitch', loadEntity);
+  }, []);
 
   useEffect(() => {
     if (messages.length > 2) { 
@@ -284,6 +298,7 @@ function CukaiBot() {
         <div className="flex items-start justify-between shrink-0">
           <div>
             <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">CukaiBot</h1>
+        {activeEntity && <p className="text-xs text-[#64748B] mt-0.5">Context: {activeEntity.name}</p>}
             <p className="mt-1 text-sm text-[#64748B]">
               Ask anything about Malaysian tax regulations, deductions, or e-invoicing — powered by LHDN 2024 Guidelines.
             </p>
