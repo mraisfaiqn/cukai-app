@@ -84,6 +84,15 @@ const FileTextIcon = () => (
 );
 
 // ── Mock conversation data ───────────────────────────────────────────────────
+// Keyed by entity ID so switching entities swaps the conversation, the same
+// way a real chat-history endpoint will be scoped once the backend exists.
+// Entities with no seeded conversation simply fall through to the empty/
+// welcome state (see getInitialMessagesForEntity below) — this is the same
+// fallback a real fetch would hit for a brand-new entity with no history yet.
+//
+// TODO(backend): once a chat endpoint exists, replace getInitialMessagesForEntity
+// with something like `await API.getChatHistory(userId, entityId)`, called from
+// the same useEffect that already re-runs on activeEntity?.id below.
 
 const suggestedPrompts = [
   'Can I claim broadband as a business expense?',
@@ -92,30 +101,40 @@ const suggestedPrompts = [
   'How do I claim medical relief for my parents?',
 ];
 
-const initialMessages = [
-  {
-    id: 1,
-    role: 'user',
-    text: 'What are the rules and limits for claiming medical expenses for my parents this year?',
-  },
-  {
-    id: 2,
-    role: 'assistant',
-    text: "You can claim a tax relief for medical treatment, special needs, and carer expenses for your parents. Here is the breakdown for the current assessment year:",
-    structured: {
-      highlight: { label: 'MAXIMUM CLAIMABLE AMOUNT', value: 'RM8,000', note: 'This relief is granted under Section 46(1)(c) of the Income Tax Act (ITA) 1967.' },
-      checkItems: [
-        { bold: 'Eligible Expenses:', text: 'Medical care and treatment provided by a nursing home, and non-cosmetic dental treatment.' },
-        { bold: 'Condition:', text: 'The medical condition must be certified by a qualified medical practitioner.' },
-        { bold: 'Documentation:', text: 'Original receipts and a medical report must be retained for audit purposes.' },
+const MOCK_MESSAGES_BY_ENTITY = {
+  // Seed conversation for the demo "Meridian Print Studio" entity (id 1 in
+  // the mock entity set used elsewhere in the app). Any other entity ID
+  // falls through to an empty conversation / welcome state.
+  1: [
+    {
+      id: 1,
+      role: 'user',
+      text: 'What are the rules and limits for claiming medical expenses for my parents this year?',
+    },
+    {
+      id: 2,
+      role: 'assistant',
+      text: "You can claim a tax relief for medical treatment, special needs, and carer expenses for your parents. Here is the breakdown for the current assessment year:",
+      structured: {
+        highlight: { label: 'MAXIMUM CLAIMABLE AMOUNT', value: 'RM8,000', note: 'This relief is granted under Section 46(1)(c) of the Income Tax Act (ITA) 1967.' },
+        checkItems: [
+          { bold: 'Eligible Expenses:', text: 'Medical care and treatment provided by a nursing home, and non-cosmetic dental treatment.' },
+          { bold: 'Condition:', text: 'The medical condition must be certified by a qualified medical practitioner.' },
+          { bold: 'Documentation:', text: 'Original receipts and a medical report must be retained for audit purposes.' },
+        ],
+      },
+      citations: [
+        { tag: 'ITA 1967', title: 'Section 46(1)(c)', snippet: '"medical treatment, special needs or carer expenses expended in that basis year by that individual for his…"', verified: 'Verified against 2024 Gazette' },
+        { tag: 'PUBLIC RULING', title: 'PR No. 11/2021', snippet: 'Guidelines on the deduction for expenses in relation to medical treatment for parents.' },
       ],
     },
-    citations: [
-      { tag: 'ITA 1967', title: 'Section 46(1)(c)', snippet: '"medical treatment, special needs or carer expenses expended in that basis year by that individual for his…"', verified: 'Verified against 2024 Gazette' },
-      { tag: 'PUBLIC RULING', title: 'PR No. 11/2021', snippet: 'Guidelines on the deduction for expenses in relation to medical treatment for parents.' },
-    ],
-  },
-];
+  ],
+};
+
+/** Mirrors what a real per-entity chat history fetch would resolve to. */
+function getInitialMessagesForEntity(entityId) {
+  return MOCK_MESSAGES_BY_ENTITY[entityId] || [];
+}
 
 // ── Sub-components ───────────────────────────────────────────────────────────
 
@@ -223,10 +242,10 @@ function TypingIndicator() {
 // ── Main Component ───────────────────────────────────────────────────────────
 
 function CukaiBot() {
-  const [messages, setMessages] = useState(initialMessages);
+  const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
-  const [activeCitations, setActiveCitations] = useState(initialMessages[1].citations);
+  const [activeCitations, setActiveCitations] = useState([]);
   const [activeEntity, setActiveEntity] = useState(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -254,6 +273,18 @@ function CukaiBot() {
     window.addEventListener('entitySwitch', loadEntity);
     return () => window.removeEventListener('entitySwitch', loadEntity);
   }, []);
+
+  // Load the conversation for the active entity whenever it changes, so
+  // switching entities swaps the chat history instead of carrying over the
+  // previous entity's conversation. Mock-data today; swap for a real fetch
+  // (e.g. API.getChatHistory(userId, activeEntity.id)) once the chat backend
+  // exists — the effect shape stays the same.
+  useEffect(() => {
+    const entityMessages = getInitialMessagesForEntity(activeEntity?.id);
+    setMessages(entityMessages);
+    const lastWithCitations = [...entityMessages].reverse().find(m => m.citations);
+    setActiveCitations(lastWithCitations?.citations || []);
+  }, [activeEntity?.id]);
 
   useEffect(() => {
     if (messages.length > 2) { 

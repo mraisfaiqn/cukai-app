@@ -59,8 +59,21 @@ const InboxIcon = () => (
 );
 
 // ── Mock Data ─────────────────────────────────────────────────────────────────
+// Keyed by entity ID so switching entities swaps the insight list, the same
+// way a real insights endpoint will be scoped once the backend exists.
+// Entities with no seeded insights fall through to an empty inbox — the same
+// fallback a real fetch would hit for a brand-new entity with no insights yet.
+//
+// TODO(backend): once an insights endpoint exists, replace
+// getInitialInsightsForEntity with something like
+// `await API.getInsights(userId, entityId)`, called from the same useEffect
+// that already re-runs on activeEntity?.id below.
 
-const MOCK_INSIGHTS = [
+const MOCK_INSIGHTS_BY_ENTITY = {
+  // Seed insights for the demo "Meridian Print Studio" entity (id 1 in the
+  // mock entity set used elsewhere in the app). Any other entity ID falls
+  // through to an empty inbox.
+  1: [
   {
     id: 1,
     title: 'Deductible Expense Opportunity Detected',
@@ -191,7 +204,13 @@ const MOCK_INSIGHTS = [
     actionable: false,
     tag: 'YA 2025',
   },
-];
+  ],
+};
+
+/** Mirrors what a real per-entity insights fetch would resolve to. */
+function getInitialInsightsForEntity(entityId) {
+  return MOCK_INSIGHTS_BY_ENTITY[entityId] || [];
+}
 
 const CATEGORIES = ['All', 'Deduction', 'Compliance', 'Tax Saving', 'Advisory', 'Report'];
 const SORT_OPTIONS = ['Newest First', 'Oldest First', 'Priority', 'Unread First'];
@@ -306,7 +325,18 @@ function InsightsInbox() {
     window.addEventListener('entitySwitch', loadEntity);
     return () => window.removeEventListener('entitySwitch', loadEntity);
   }, []);
-  const [insights, setInsights] = useState(MOCK_INSIGHTS);
+
+  const [insights, setInsights] = useState([]);
+
+  // Load insights for the active entity whenever it changes, so switching
+  // entities swaps the inbox instead of carrying over the previous entity's
+  // insights. Mock-data today; swap for a real fetch (e.g.
+  // API.getInsights(userId, activeEntity.id)) once the insights backend
+  // exists — the effect shape stays the same.
+  useEffect(() => {
+    setInsights(getInitialInsightsForEntity(activeEntity?.id));
+  }, [activeEntity?.id]);
+
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
   const [sortBy, setSortBy] = useState('Newest First');
