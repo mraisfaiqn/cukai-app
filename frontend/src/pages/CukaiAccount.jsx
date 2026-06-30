@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import * as API from '../services/api';
 import cukaiLogo from '../assets/cukai-logo.png';
+import { CURRENT_YEAR_OF_ASSESSMENT } from '../constants';
 
 // ─── Design tokens (matches ManageAccount + UserNavigation) ───────────────────
 // Primary teal: #0F6E56  Active: #0D9488  Text: #0F172A  Muted: #64748B  Border: #E2E8F0
@@ -1362,8 +1363,11 @@ function PdfPreview({ formId, formData, sc, onClose }) {
 
   const handleClose = () => { setVisible(false); setTimeout(onClose, 300); };
 
-  const { deductibleTotal, nonDeductibleTotal, reviewTotal, totalIncome, chargeableIncome,
-    taxCharged, lessInstalment, taxPayable } = formData;
+  const { deductibleTotal, nonDeductibleTotal, reviewTotal, aggregateIncome, totalIncome, totalRelief,
+    chargeableIncome, taxCharged, totalRebate, lessInstalment, taxPayable, balancePayable,
+    reliefRows, formB, formBStatus } = formData;
+  const fb = formB || {};
+  const num = (v) => Number(v) || 0;
 
   return (
     <div className="fixed inset-0 z-50 flex" onClick={handleClose}>
@@ -1438,56 +1442,43 @@ function PdfPreview({ formId, formData, sc, onClose }) {
                     </PreviewSection>
 
                     <PreviewSection title="PART B — COMPUTATION OF INCOME TAX">
-                      <PreviewField label="B1   Statutory income from businesses in Malaysia" value={fmtRM(deductibleTotal)} highlight />
-                      <PreviewField label="B2   Statutory income from partnerships in Malaysia" value="RM 235,000" highlight />
-                      <PreviewField label="B4   Aggregate statutory income from businesses" value={fmtRM(deductibleTotal + 235000)} />
-                      <PreviewField label="B7   Statutory income from employment" value="—" />
-                      <PreviewField label="B8   Statutory income from rents" value="—" />
-                      <PreviewField label="B11  AGGREGATE INCOME" value={fmtRM(totalIncome)} bold />
-                      <PreviewField label="B17  Less: Approved donations / gifts" value="—" />
+                      <PreviewField label="B1   Statutory income from businesses in Malaysia" value={fmtRM(num(fb.statutoryIncome4a))} highlight />
+                      <PreviewField label="B7   Statutory income from employment" value={num(fb.statutoryIncome4b) > 0 ? fmtRM(fb.statutoryIncome4b) : '—'} />
+                      <PreviewField label="B8   Statutory income from rents / royalties" value={num(fb.statutoryIncome4d) > 0 ? fmtRM(fb.statutoryIncome4d) : '—'} />
+                      <PreviewField label="B11  AGGREGATE INCOME" value={fmtRM(aggregateIncome)} bold />
+                      <PreviewField label="B17  Less: Approved donations / gifts" value={num(fb.approvedDonationsApplied) > 0 ? fmtRM(fb.approvedDonationsApplied) : '—'} />
                       <PreviewField label="B20  TOTAL INCOME [SELF]" value={fmtRM(totalIncome)} bold />
-                      <PreviewField label="B23  Total Relief" value="RM 18,000" />
+                      <PreviewField label="B23  Total Relief" value={fmtRM(totalRelief)} />
                       <PreviewField label="B24  CHARGEABLE INCOME" value={fmtRM(chargeableIncome)} highlight bold />
                       <PreviewField label="B26  Total Income Tax" value={fmtRM(taxCharged)} />
-                      <PreviewField label="B27  Less: Rebates (self)" value="RM 400" />
-                      <PreviewField label="B28  TOTAL TAX CHARGED" value={fmtRM(Math.max(0, taxCharged - 400))} bold />
+                      <PreviewField label="B27  Less: Rebates (self + zakat)" value={fmtRM(totalRebate)} />
+                      <PreviewField label="B28  TOTAL TAX CHARGED" value={fmtRM(taxPayable)} bold />
                       <PreviewField label="B33  Less: CP500 instalments paid" value={fmtRM(lessInstalment)} />
-                      <PreviewField label="B34  BALANCE TAX PAYABLE" value={fmtRM(taxPayable)} highlight bold />
+                      <PreviewField label="B34  BALANCE TAX PAYABLE" value={fmtRM(balancePayable)} highlight bold />
                     </PreviewSection>
 
                     <PreviewSection title="PART H — RELIEF">
-                      <PreviewField label="H1   Individual and dependent relatives" value="RM 9,000" />
-                      <PreviewField label="H2   Expenses for parents" value="—" />
-                      <PreviewField label="H5   Education fees (Self)" value="—" />
-                      <PreviewField label="H6   Medical expenses (serious diseases)" value="—" />
-                      <PreviewField label="H9   Lifestyle (books, internet, devices)" value="—" />
-                      <PreviewField label="H13  SSPN net deposit" value="—" />
-                      <PreviewField label="H14  Husband / wife" value="—" />
-                      <PreviewField label="H16  Child relief" value="—" />
-                      <PreviewField label="H17  Life insurance and EPF" value="RM 7,000" />
-                      <PreviewField label="H18  Private retirement scheme" value="—" />
-                      <PreviewField label="H19  Education and medical insurance" value="RM 2,000" />
-                      <PreviewField label="H20  SOCSO contribution" value="—" />
-                      <PreviewField label="H22  TOTAL RELIEF" value="RM 18,000" bold highlight />
+                      {reliefRows.filter(r => r.applied > 0).map(r => (
+                        <PreviewField key={r.code} label={r.label} value={fmtRM(r.applied)} />
+                      ))}
+                      {num(fb.zakatRebate) > 0 && <PreviewField label="Zakat (rebate against tax payable)" value={fmtRM(fb.zakatRebate)} />}
+                      <PreviewField label="H22  TOTAL RELIEF" value={fmtRM(totalRelief)} bold highlight />
                     </PreviewSection>
 
                     <PreviewSection title="PART N — FINANCIAL PARTICULARS (MAIN BUSINESS)">
-                      <PreviewField label="N1   Name of business" value="Meridian Print Studio (Sole Prop)" />
-                      <PreviewField label="N2   Business code (MSIC)" value="1811" />
-                      <PreviewField label="N3   Sales or turnover" value={fmtRM(deductibleTotal + 12000)} />
-                      <PreviewField label="N7   Cost of sales" value="—" />
-                      <PreviewField label="N8   Gross Profit / Loss" value={fmtRM(deductibleTotal + 12000)} />
-                      <PreviewField label="N14  Total other income" value="—" />
-                      <PreviewField label="N15  Loan interest" value="—" />
-                      <PreviewField label="N16  Salaries and wages" value={fmtRM(14500)} />
-                      <PreviewField label="N17  Rental / lease" value={fmtRM(1240)} />
-                      <PreviewField label="N22  Repairs and maintenance" value="—" />
-                      <PreviewField label="N23  Promotion and advertisement" value={fmtRM(3200)} />
+                      <PreviewField label="N3   Sales or turnover" value={fmtRM(num(fb.totalBusinessIncome))} />
                       <PreviewField label="N25  TOTAL EXPENDITURE" value={fmtRM(deductibleTotal)} bold />
-                      <PreviewField label="N26  NET PROFIT / LOSS" value={fmtRM(deductibleTotal + 12000 - deductibleTotal)} bold highlight />
+                      <PreviewField label="N26  NET PROFIT / LOSS" value={fmtRM(num(fb.statutoryIncome4a))} bold highlight />
                       <PreviewField label="N27  Non-allowable expenses" value={fmtRM(nonDeductibleTotal)} />
                     </PreviewSection>
 
+                    {formBStatus !== 'ready' && (
+                      <div className="rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-4 py-3">
+                        <p className="text-[10px] font-semibold text-[#0F172A]">
+                          {formBStatus === 'loading' ? 'Loading figures…' : 'No classified documents yet for this year — figures shown as RM 0.'}
+                        </p>
+                      </div>
+                    )}
                     {reviewTotal > 0 && (
                       <div className="rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-4 py-3">
                         <p className="text-[10px] font-semibold text-[#B45309]">⚠ {fmtRM(reviewTotal)} in expenses are still under review</p>
@@ -1616,33 +1607,48 @@ function PreviewField({ label, value, highlight, bold }) {
 function GenerateTab({ docs, scenario, activeScenario, setActiveScenario, selectedForm, setSelectedForm, showPreview, setShowPreview }) {
   const sc = USER_SCENARIOS[activeScenario];
 
-  const deductibleTotal    = docs.filter(d => d.status === 'deductible').reduce((s, d) => s + parseAmt(d.amount), 0);
-  const nonDeductibleTotal = docs.filter(d => d.status === 'non_deductible').reduce((s, d) => s + parseAmt(d.amount), 0);
-  const reviewTotal        = docs.filter(d => d.status === 'mixed').reduce((s, d) => s + parseAmt(d.amount), 0);
-  const partnerShare       = sc.firm ? 235000 : 0;
-  const totalIncome        = deductibleTotal + partnerShare;
-  const chargeableIncome   = Math.max(0, totalIncome - 18000);
+  // ── Backend-computed Form B figures (replaces the old in-browser tax calc) ──
+  // FormBCalculation is recomputed server-side on every document
+  // upload/reclassify/archive/delete (see calculations.py), so re-fetching
+  // whenever the document list changes keeps this in sync.
+  const [formB, setFormB] = useState(null);
+  const [formBStatus, setFormBStatus] = useState('loading'); // 'loading' | 'ready' | 'empty' | 'error'
 
-  const calcTax = (ci) => {
-    const bands = [
-      [5000, 0], [15000, 0.01], [15000, 0.03], [15000, 0.06],
-      [20000, 0.11], [30000, 0.19], [150000, 0.25], [Infinity, 0.26],
-    ];
-    let tax = 0, rem = ci;
-    for (const [band, rate] of bands) {
-      if (rem <= 0) break;
-      const taxable = Math.min(rem, band);
-      tax += taxable * rate;
-      rem -= taxable;
-    }
-    return Math.round(tax);
-  };
-  const taxCharged     = calcTax(chargeableIncome);
-  const lessInstalment = Math.round(taxCharged * 0.7);
-  const taxPayable     = Math.max(0, taxCharged - 400 - lessInstalment);
+  useEffect(() => {
+    const userId = localStorage.getItem('userId');
+    if (!userId) { setFormBStatus('empty'); return; }
+    let cancelled = false;
+    setFormBStatus('loading');
+    API.getFormBReport(userId, CURRENT_YEAR_OF_ASSESSMENT)
+      .then(data => { if (!cancelled) { setFormB(data); setFormBStatus('ready'); } })
+      .catch(err => {
+        if (cancelled) return;
+        setFormB(null);
+        setFormBStatus(err?.response?.status === 404 ? 'empty' : 'error');
+      });
+    return () => { cancelled = true; };
+  }, [docs.length]);
 
-  const formData = { deductibleTotal, nonDeductibleTotal, reviewTotal, totalIncome,
-    chargeableIncome, taxCharged, lessInstalment, taxPayable };
+  const n = (v) => Number(v) || 0;
+  const fb = formB || {};
+
+  const deductibleTotal    = n(fb.totalBusinessDeductions);
+  const nonDeductibleTotal = n(fb.totalNonDeductible);
+  const reviewTotal        = n(fb.pendingReviewAmount);
+  const aggregateIncome    = n(fb.aggregateIncome);
+  const totalIncome        = n(fb.totalIncome);
+  const totalRelief        = n(fb.totalPersonalReliefs);
+  const chargeableIncome   = n(fb.chargeableIncome);
+  const taxCharged         = n(fb.taxBeforeRebate);
+  const totalRebate        = n(fb.totalRebate);
+  const lessInstalment     = n(fb.cp500TotalPaid);
+  const taxPayable         = n(fb.taxPayable);
+  const balancePayable     = n(fb.balancePayableRefundable);
+  const reliefRows         = fb.reliefBreakdown || [];
+
+  const formData = { deductibleTotal, nonDeductibleTotal, reviewTotal, aggregateIncome, totalIncome,
+    totalRelief, chargeableIncome, taxCharged, totalRebate, lessInstalment, taxPayable, balancePayable,
+    reliefRows, formB: fb, formBStatus };
 
   const forms = [
     sc.canFileFormB && { id: 'B', title: 'Form B', subtitle: 'Personal income tax — resident who carries on business', tag: 'YA 2025', canGenerate: true, readOnly: false },
@@ -1741,43 +1747,72 @@ function GenerateTab({ docs, scenario, activeScenario, setActiveScenario, select
 
               <div className="px-5 py-4 space-y-4">
                 {selectedForm === 'B' ? (
-                  <>
-                    <InlineSummary title="Part B — Income Computation">
-                      <SRow label="B1  Business income (sole prop / expense deductions)" value={fmtRM(deductibleTotal)} />
-                      <SRow label="B2  Partnership income (Meridian Print Studio)" value={sc.firm ? 'RM 235,000' : '—'} />
-                      <SRow label="B4  Aggregate business income" value={fmtRM(deductibleTotal + (sc.firm ? 235000 : 0))} />
-                      <SRow label="B11 Aggregate income" value={fmtRM(totalIncome)} bold />
-                      <SRow label="B17 Less: Donations / gifts" value="—" />
-                      <SRow label="B23 Total relief" value="RM 18,000" />
-                      <SRow label="B24 Chargeable income" value={fmtRM(chargeableIncome)} bold highlight />
-                      <SRow label="B26 Total income tax" value={fmtRM(taxCharged)} />
-                      <SRow label="B28 Tax charged (after rebate RM 400)" value={fmtRM(Math.max(0, taxCharged - 400))} bold />
-                      <SRow label="B33 Less: CP500 instalments" value={fmtRM(lessInstalment)} />
-                      <SRow label="B34 Balance tax payable" value={fmtRM(taxPayable)} bold highlight />
-                    </InlineSummary>
-                    <InlineSummary title="Part H — Relief Breakdown">
-                      <SRow label="H1  Individual & dependent relatives" value="RM 9,000" />
-                      <SRow label="H17 Life insurance & EPF" value="RM 7,000" />
-                      <SRow label="H19 Education & medical insurance" value="RM 2,000" />
-                      <SRow label="H22 TOTAL RELIEF" value="RM 18,000" bold highlight />
-                    </InlineSummary>
-                    <InlineSummary title="Part N — Business Financial Particulars">
-                      <SRow label="N3  Sales / turnover (estimated)" value={fmtRM(deductibleTotal + 12000)} />
-                      <SRow label="N16 Salaries and wages" value="RM 14,500" />
-                      <SRow label="N17 Rental / lease" value="RM 1,240" />
-                      <SRow label="N23 Marketing and promotion" value="RM 3,200" />
-                      <SRow label="N25 Total expenditure" value={fmtRM(deductibleTotal)} bold />
-                      <SRow label="N27 Non-allowable (personal) expenses" value={fmtRM(nonDeductibleTotal)} />
-                    </InlineSummary>
-                    {reviewTotal > 0 && (
-                      <div className="rounded-lg border border-[#FDE68A] bg-[#FFFBEB] p-3">
-                        <p className="text-[10px] font-semibold text-[#B45309]">⚠ {fmtRM(reviewTotal)} still under review</p>
-                        <p className="text-[9px] text-[#92400E] mt-0.5">Classify remaining items in the OCR Evidence tab before filing.</p>
-                      </div>
-                    )}
-                  </>
+                  formBStatus === 'loading' ? (
+                    <div className="flex items-center justify-center py-10">
+                      <div className="h-6 w-6 rounded-full border-2 border-[#0F6E56] border-t-transparent animate-spin" />
+                    </div>
+                  ) : formBStatus === 'empty' ? (
+                    <div className="rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] p-4 text-center">
+                      <p className="text-[11px] font-semibold text-[#0F172A]">No documents classified for YA {CURRENT_YEAR_OF_ASSESSMENT} yet</p>
+                      <p className="text-[10px] text-[#64748B] mt-1">Upload receipts, invoices, and statements in the Upload tab — Form B figures are calculated automatically once they're classified.</p>
+                    </div>
+                  ) : formBStatus === 'error' ? (
+                    <div className="rounded-lg border border-[#FECACA] bg-[#FEF2F2] p-4 text-center">
+                      <p className="text-[11px] font-semibold text-[#B91C1C]">Couldn't load Form B figures</p>
+                      <p className="text-[10px] text-[#7F1D1D] mt-1">Please try again in a moment.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <InlineSummary title="Part B — Income Computation">
+                        <SRow label="B1  Statutory income from business (s.4a)" value={fmtRM(fb.statutoryIncome4a)} />
+                        <SRow label="B7  Statutory income from employment (s.4b)" value={fmtRM(fb.statutoryIncome4b)} />
+                        <SRow label="B8  Statutory income from rents / royalties (s.4d)" value={fmtRM(fb.statutoryIncome4d)} />
+                        <SRow label="B9  Other statutory income (s.4c, s.4e, s.4f)" value={fmtRM(n(fb.statutoryIncome4c) + n(fb.statutoryIncome4e) + n(fb.statutoryIncome4f))} />
+                        <SRow label="B11 Aggregate income" value={fmtRM(aggregateIncome)} bold />
+                        {n(fb.businessLossApplied) > 0 && (
+                          <SRow label="B14 Less: Current/brought-forward business losses" value={fmtRM(fb.businessLossApplied)} />
+                        )}
+                        <SRow label="B17 Less: Donations / gifts" value={n(fb.approvedDonationsApplied) > 0 ? fmtRM(fb.approvedDonationsApplied) : '—'} />
+                        <SRow label="B20 Total income" value={fmtRM(totalIncome)} bold />
+                        <SRow label="B23 Total relief" value={fmtRM(totalRelief)} />
+                        <SRow label="B24 Chargeable income" value={fmtRM(chargeableIncome)} bold highlight />
+                        <SRow label="B26 Total income tax" value={fmtRM(taxCharged)} />
+                        <SRow label="B27 Less: Rebates (individual + zakat)" value={fmtRM(totalRebate)} />
+                        <SRow label="B28 Tax charged" value={fmtRM(taxPayable)} bold />
+                        <SRow label="B33 Less: CP500 instalments paid" value={fmtRM(lessInstalment)} />
+                        <SRow label="B34 Balance tax payable" value={fmtRM(balancePayable)} bold highlight />
+                      </InlineSummary>
+                      <InlineSummary title="Part H — Relief Breakdown">
+                        {reliefRows.filter(r => n(r.applied) > 0).map(r => (
+                          <SRow key={r.code} label={r.label} value={fmtRM(r.applied)} />
+                        ))}
+                        {fb.zakatRebate > 0 && <SRow label="Zakat (rebate against tax payable)" value={fmtRM(fb.zakatRebate)} />}
+                        <SRow label="H22 TOTAL RELIEF" value={fmtRM(totalRelief)} bold highlight />
+                      </InlineSummary>
+                      <InlineSummary title="Part N — Business Financial Particulars">
+                        <SRow label="N3  Sales / turnover" value={fmtRM(fb.totalBusinessIncome)} />
+                        <SRow label="N25 Total expenditure (allowable business deductions)" value={fmtRM(deductibleTotal)} bold />
+                        <SRow label="N26 Net profit / loss" value={fmtRM(fb.statutoryIncome4a)} bold highlight />
+                        <SRow label="N27 Non-allowable (personal) expenses" value={fmtRM(nonDeductibleTotal)} />
+                      </InlineSummary>
+                      {fb.documentCount != null && (
+                        <p className="text-[9px] text-[#94A3B8]">
+                          Calculated from {fb.documentCount} classified document{fb.documentCount === 1 ? '' : 's'}
+                          {fb.averageConfidence ? ` · ${fb.averageConfidence}% average extraction confidence` : ''}
+                          {fb.updatedAt ? ` · Last updated ${fb.updatedAt}` : ''}
+                        </p>
+                      )}
+                      {reviewTotal > 0 && (
+                        <div className="rounded-lg border border-[#FDE68A] bg-[#FFFBEB] p-3">
+                          <p className="text-[10px] font-semibold text-[#B45309]">⚠ {fmtRM(reviewTotal)} still under review</p>
+                          <p className="text-[9px] text-[#92400E] mt-0.5">Classify remaining items in the OCR Evidence tab before filing.</p>
+                        </div>
+                      )}
+                    </>
+                  )
                 ) : (
                   <>
+
                     <InlineSummary title="Part A — Business Income (Partnership)">
                       <SRow label="A1  Business code (MSIC)" value="1811" />
                       <SRow label="A2  Divisible income" value="RM 450,000" bold highlight />
