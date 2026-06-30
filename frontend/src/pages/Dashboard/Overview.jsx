@@ -9,7 +9,8 @@
 //  - Both carousels use dot-navigation to page through items.
 
 import React, { useState, useEffect } from 'react';
-import { getPersonalDetails, getAllEntities } from '../../services/api';
+import { getPersonalDetails, getAllEntities, getFormBReport } from '../../services/api';
+import { CURRENT_YEAR_OF_ASSESSMENT } from '../../constants';
 // Keep your imports exactly as they are—they act as excellent fallback mock data!
 import { stats as initialStats, account as initialAccount, piecharts as initialPieCharts, opportunities, deadlines, alert, piecharts } from '../../data/dashboardData';
 import DashboardHeader from '../../components/Dashboard/DashboardHeader';
@@ -234,6 +235,12 @@ export default function Overview() {
         getAllEntities(userId).catch(() => []),
       ]);
 
+      // Same backend figure the Generate Report tab's "Total expenditure"
+      // (Part N25) comes from — FormBCalculation.total_business_deductions,
+      // recomputed automatically from this person's classified documents.
+      // Falls back to null if nothing has been classified for this YA yet.
+      const formBReport = await getFormBReport(userId, CURRENT_YEAR_OF_ASSESSMENT).catch(() => null);
+
       // Resolve which entity should be active:
       // 1. Use the stored activeEntityId ONLY if it actually belongs to this user.
       // 2. Otherwise fall back to the user's first entity and persist that choice.
@@ -250,10 +257,41 @@ export default function Overview() {
       }
 
       if (activeEntity) {
-        const turnover  = parseFloat(activeEntity.salesTurnover)    || 0;
-        const expenses  = parseFloat(activeEntity.totalExpenditure)  || 0;
-        const netProfit = parseFloat(activeEntity.netProfitLoss)     || (turnover - expenses);
-        const estimatedTax = netProfit > 5000 ? netProfit * 0.03 : 0;
+        // Same backend figure the Generate Report tab's "Sales/turnover"
+        // (Part N3) comes from — FormBCalculation.total_business_income,
+        // recomputed automatically from this person's classified documents.
+        // Falls back to the entity's manually entered field only if no
+        // documents have been classified for this YA yet.
+        const turnover  = formBReport ? Number(formBReport.totalBusinessIncome) || 0
+                                       : (parseFloat(activeEntity.salesTurnover) || 0);
+        // Prefer the backend-computed figure (same source as Generate Report)
+        // so the two pages never disagree; fall back to the entity's manually
+        // entered field only if no documents have been classified yet.
+        const expenses  = formBReport ? Number(formBReport.totalBusinessDeductions) || 0
+                                       : (parseFloat(activeEntity.totalExpenditure) || 0);
+        // Same logic as turnover/expenses: once a Form B calculation exists,
+        // derive net profit from the SAME live figures shown above so the
+        // card never disagrees with its own turnover/expenses rows.
+        // Only fall back to the entity's manually entered net profit field
+        // when there's no live data yet — and use a proper null/undefined
+        // check (not `||`) so a genuine value of 0 isn't discarded.
+        const manualNetProfit = activeEntity.netProfitLoss !== null
+                              && activeEntity.netProfitLoss !== undefined
+                              && activeEntity.netProfitLoss !== ''
+                                 ? parseFloat(activeEntity.netProfitLoss)
+                                 : null;
+        const netProfit = formBReport
+          ? (turnover - expenses)
+          : (manualNetProfit !== null ? manualNetProfit : (turnover - expenses));
+        // Same backend figure Generate Report's B28 "Total Tax Charged" comes
+        // from — FormBCalculation.tax_payable, computed from the full
+        // progressive bracket schedule against chargeable income (after
+        // personal reliefs and individual/zakat rebates), not just net
+        // business profit. Falls back to the old flat-rate approximation
+        // only if no documents have been classified for this YA yet.
+        const estimatedTax = formBReport
+          ? (Number(formBReport.taxPayable) || 0)
+          : (netProfit > 5000 ? netProfit * 0.03 : 0);
 
         setLiveStats([
           { label: 'Sales Turnover',    value: `RM ${turnover.toLocaleString()}`,    change: 'Live Sync',  trend: 'up' },

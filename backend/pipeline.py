@@ -10,6 +10,7 @@ from typing import Literal
 import pandas as pd
 from sqlalchemy.orm import Session
 from models import Document, FormBProfile
+import calculations
 
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.base_models import InputFormat
@@ -1838,6 +1839,13 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
           db.rollback()  # don't fail the main document record over a profile upsert error
 
     logger.info(f"[Pipeline] Document ID {doc_id} committed successfully.")
+
+    # ── Trigger backend Form B calculation for this person/year ──────────
+    # Recomputes the full Q1–Q4 waterfall across ALL of this person's
+    # completed documents for the year and upserts FormBCalculation (one row
+    # per person per YA) — this is what the Generate Report tab reads from.
+    if ya_int:
+      calculations.recalculate_form_b(db, document.user_id, ya_int)
 
   except Exception as e:
     logger.error(f"[Pipeline Error] Document ID {doc_id}: {e}", exc_info=True)
