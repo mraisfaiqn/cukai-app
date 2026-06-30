@@ -901,27 +901,84 @@ def reclassify_document(
 
 # ── Tax profile endpoints ────────────────────────────────────────────────────
 
+# ── LHDN statutory relief caps (Schedule 9, ITA 1967) — fallback values used
+# only when a document's own `relief_cap_myr` wasn't extracted by the LLM.
+# Kept here (not in pipeline.py) since this is where caps get ENFORCED.
+RELIEF_CAPS_FALLBACK_MYR = {
+  "Q4 — Life Insurance & Takaful Relief": 3000,
+  "Q4 — EPF Personal Contribution":       4000,
+  "Q4 — Medical & Parental Care":         8000,
+  "Q4 — Lifestyle Relief":                2500,
+  "Q4 — Education Relief":                7000,
+  "Q4 — Child Relief":                    2000,
+  "Q4 — Medical Equipment Relief":        6000,
+  "Q4 — Private Retirement Scheme (PRS)": 3000,
+  "Q4 — SOCSO Personal Contribution":     250,
+  "Q4 — Domestic Tourism Relief":         1000,
+  "Q4 — EV Charging Equipment":           2500,
+  # "Q4 — Zakat" is deliberately absent — zakat is a tax REBATE, not a
+  # capped relief, and is handled separately below.
+}
+
+# Automatic self relief every resident individual receives (Sch. 9 para 1)
+# before any of the above are applied.
+INDIVIDUAL_SELF_RELIEF_MYR = 9000.0
+
+# Standard tax rebate (s.6D) for chargeable income <= this threshold.
+LOW_INCOME_REBATE_THRESHOLD_MYR = 35000.0
+LOW_INCOME_REBATE_MYR = 400.0
+
+
+# Progressive resident-individual bracket table (band size, rate). Shared by
+# _estimate_tax and _bracket_headroom so the two can never drift apart.
+TAX_BRACKETS_MYR = [
+  (5_000,        0.00),
+  (15_000,       0.01),
+  (15_000,       0.03),
+  (15_000,       0.08),
+  (20_000,       0.13),
+  (30_000,       0.21),
+  (300_000,      0.24),
+  (200_000,      0.245),
+  (float("inf"), 0.25),
+]
+
+
 def _estimate_tax(chargeable_income: float) -> float:
-  brackets = [
-    (5_000,        0.00),
-    (15_000,       0.01),
-    (15_000,       0.03),
-    (15_000,       0.08),
-    (20_000,       0.13),
-    (30_000,       0.21),
-    (300_000,      0.24),
-    (200_000,      0.245),
-    (float("inf"), 0.25),
-  ]
   tax = 0.0
   remaining = chargeable_income
-  for band_size, rate in brackets:
+  for band_size, rate in TAX_BRACKETS_MYR:
     if remaining <= 0:
       break
     taxable_in_band = min(remaining, band_size)
     tax += taxable_in_band * rate
     remaining -= taxable_in_band
   return round(tax, 2)
+
+
+def _bracket_headroom(chargeable_income: float) -> dict:
+  """
+  Locate which marginal band `chargeable_income` currently sits in and how
+  much more chargeable income it could absorb before crossing into the next
+  (higher-rate) band. Lets the UI show "RM X of headroom left in your
+  current Y% bracket" — useful for year-end purchase/relief timing decisions.
+  Returns None-filled values if already in the top band (no next bracket).
+  """
+  floor = 0.0
+  for band_size, rate in TAX_BRACKETS_MYR:
+    ceiling = floor + band_size
+    if chargeable_income < ceiling or band_size == float("inf"):
+      band_index = TAX_BRACKETS_MYR.index((band_size, rate))
+      next_rate = TAX_BRACKETS_MYR[band_index + 1][1] if band_index + 1 < len(TAX_BRACKETS_MYR) else None
+      headroom = round(ceiling - chargeable_income, 2) if ceiling != float("inf") else None
+      return {
+        "currentMarginalRatePct":   round(rate * 100, 2),
+        "nextMarginalRatePct":      round(next_rate * 100, 2) if next_rate is not None else None,
+        "headroomToNextBracketMyr": headroom,
+      }
+    floor = ceiling
+  # Unreachable given the inf top band, but keep a safe fallback.
+  return {"currentMarginalRatePct": None, "nextMarginalRatePct": None, "headroomToNextBracketMyr": None}
 
 
 @app.get("/api/profile/summary")
@@ -938,10 +995,49 @@ def get_tax_profile_summary(
     except (ValueError, TypeError):
       return 0.0
 
+  def _cap_reliefs(relief_entries: list) -> tuple[float, list, list]:
+    """
+    Group relief entries by category, sum within each, and cap each
+    category's total at its statutory limit (Sch. 9 ITA 1967).
+    Uses the per-document `relief_cap_myr` extracted by the LLM where
+    available (falls back to RELIEF_CAPS_FALLBACK_MYR otherwise) so the
+    cap logic stays driven by the same source the pipeline already trusts.
+    Returns (capped_total, capped_breakdown_by_category, raw_entries_annotated).
+    """
+    by_category: dict[str, dict] = {}
+    for e in relief_entries:
+      cat = e.get("category") or "Uncategorised Relief"
+      bucket = by_category.setdefault(cat, {"rawTotal": 0.0, "cap": None, "entries": []})
+      bucket["rawTotal"] += e["amountNumeric"]
+      bucket["entries"].append(e)
+      doc_cap = e.get("reliefCapMyr")
+      if doc_cap is not None and bucket["cap"] is None:
+        bucket["cap"] = _parse_amount(doc_cap)
+
+    capped_total = 0.0
+    breakdown = []
+    annotated_entries = []
+    for cat, bucket in by_category.items():
+      cap = bucket["cap"] if bucket["cap"] is not None else RELIEF_CAPS_FALLBACK_MYR.get(cat)
+      capped_amount = min(bucket["rawTotal"], cap) if cap is not None else bucket["rawTotal"]
+      was_capped = cap is not None and bucket["rawTotal"] > cap
+      capped_total += capped_amount
+      breakdown.append({
+        "category":     cat,
+        "rawTotal":     round(bucket["rawTotal"], 2),
+        "cap":          cap,
+        "cappedTotal":  round(capped_amount, 2),
+        "wasCapped":    was_capped,
+      })
+      for e in bucket["entries"]:
+        annotated_entries.append({**e, "categoryCapMyr": cap, "categoryWasCapped": was_capped})
+
+    return round(capped_total, 2), breakdown, annotated_entries
+
   def _build_year_summary(docs: list, form_b_record=None) -> dict:
     income_q1, income_q2, deductions_q3 = [], [], []
     capital_assets, reliefs_q4, non_deductible_q4 = [], [], []
-    mixed_pending, cp500_installments = [], []
+    zakat_entries, mixed_pending, cp500_installments = [], [], []
     total_confidence = 0
 
     for doc in docs:
@@ -985,12 +1081,23 @@ def get_tax_profile_summary(
       elif quadrant == "Q3":
         has_installment = ed.get("installment_amount") is not None
         if tax_status == "capital":
-          capital_assets.append({**entry, "assetClass": ed.get("asset_class"), "iaRatePct": ed.get("ia_rate_pct"), "aaRatePct": ed.get("aa_rate_pct")})
+          capital_assets.append({
+            **entry,
+            "assetClass": ed.get("asset_class"),
+            "iaRatePct":  ed.get("ia_rate_pct"),
+            "aaRatePct":  ed.get("aa_rate_pct"),
+          })
         elif not has_installment and tax_status != "not_applicable":
           deductions_q3.append(entry)
       elif quadrant == "Q4":
         if tax_status == "relief":
-          reliefs_q4.append({**entry, "reliefCapMyr": ed.get("relief_cap_myr"), "zakatAmount": ed.get("zakat_amount")})
+          relief_entry = {**entry, "reliefCapMyr": ed.get("relief_cap_myr"), "zakatAmount": ed.get("zakat_amount")}
+          # Zakat is a REBATE against tax payable (s.6A ITA), not a relief that
+          # reduces chargeable income — keep it out of the capped-relief pool.
+          if doc.category == "Q4 — Zakat":
+            zakat_entries.append(relief_entry)
+          else:
+            reliefs_q4.append(relief_entry)
         else:
           non_deductible_q4.append(entry)
 
@@ -1000,21 +1107,78 @@ def get_tax_profile_summary(
     doc_count = len(docs)
     avg_conf  = round(total_confidence / doc_count) if doc_count else 0
 
-    total_q1   = sum(_parse_amount(d["amount"]) for d in income_q1)
-    total_q2   = sum(_parse_amount(d["amount"]) for d in income_q2)
-    total_inc  = total_q1 + total_q2
-    total_q3   = sum(_parse_amount(d["amount"]) for d in deductions_q3)
-    total_q4   = sum(_parse_amount(d["amount"]) for d in reliefs_q4)
+    total_q1    = sum(d["amountNumeric"] for d in income_q1)
+    total_q2    = sum(d["amountNumeric"] for d in income_q2)
+    total_inc   = total_q1 + total_q2
+    total_q3    = sum(d["amountNumeric"] for d in deductions_q3)
     total_cp500 = sum(d["installmentAmountNumeric"] for d in cp500_installments)
 
+    # ── Capital allowance (Schedule 3 ITA 1967) ─────────────────────────
+    # Capital assets are NOT directly deductible — they're claimed via
+    # Initial Allowance (one-time, year of purchase) + Annual Allowance
+    # (recurring), both computed off the asset cost using the rates the
+    # LLM extracted per asset. This was previously extracted but never
+    # actually folded into the deduction total.
+    total_capital_allowance = 0.0
+    capital_assets_annotated = []
+    for ca in capital_assets:
+      ia_pct = ca.get("iaRatePct") or 0
+      aa_pct = ca.get("aaRatePct") or 0
+      cost   = ca["amountNumeric"]
+      ia_amount = round(cost * (ia_pct / 100), 2)
+      aa_amount = round(cost * (aa_pct / 100), 2)
+      allowance = ia_amount + aa_amount
+      total_capital_allowance += allowance
+      capital_assets_annotated.append({
+        **ca,
+        "initialAllowanceMyr": ia_amount,
+        "annualAllowanceMyr":  aa_amount,
+        "totalAllowanceMyr":   round(allowance, 2),
+      })
+    total_capital_allowance = round(total_capital_allowance, 2)
+
+    # ── Personal reliefs — grouped, capped per statutory limit ──────────
+    total_q4_capped, q4_relief_breakdown, reliefs_q4_annotated = _cap_reliefs(reliefs_q4)
+
+    # ── Zakat — tracked separately as a rebate, never as a deduction ────
+    total_zakat = round(sum(z["amountNumeric"] for z in zakat_entries), 2)
+
+    total_deductions = round(total_q3 + total_capital_allowance, 2)
+
     if form_b_record and form_b_record.chargeable_income:
-      est_chargeable = _parse_amount(form_b_record.chargeable_income)
-      est_tax        = _parse_amount(form_b_record.tax_payable)
-      source         = "filed_form_b"
+      # A previously filed Form B is ground truth — trust LHDN's own figures
+      # rather than re-deriving them from documents.
+      est_chargeable   = _parse_amount(form_b_record.chargeable_income)
+      tax_charged      = _parse_amount(form_b_record.tax_charged) or _parse_amount(form_b_record.tax_payable)
+      est_tax          = _parse_amount(form_b_record.tax_payable)
+      individual_relief_applied = None
+      low_income_rebate_applied = None
+      zakat_rebate_applied      = _parse_amount(form_b_record.zakat_rebate)
+      source = "filed_form_b"
     else:
-      est_chargeable = max(0.0, total_inc - total_q3 - total_q4)
-      est_tax        = _estimate_tax(est_chargeable)
-      source         = "document_derived"
+      # Document-derived estimate — apply the same relief mechanics LHDN does:
+      # 1. Net business profit + other income
+      # 2. Less business deductions + capital allowance
+      # 3. Less capped personal reliefs
+      # 4. Less automatic individual self relief (Sch. 9 para 1)
+      # 5. Tax charged via progressive brackets
+      # 6. Less low-income rebate (s.6D), if eligible
+      # 7. Less zakat rebate (s.6A), capped at remaining tax payable
+      individual_relief_applied = INDIVIDUAL_SELF_RELIEF_MYR
+      est_chargeable = max(
+        0.0,
+        total_inc - total_deductions - total_q4_capped - individual_relief_applied,
+      )
+      tax_charged = _estimate_tax(est_chargeable)
+
+      low_income_rebate_applied = (
+        LOW_INCOME_REBATE_MYR if est_chargeable <= LOW_INCOME_REBATE_THRESHOLD_MYR and tax_charged > 0 else 0.0
+      )
+      after_low_income_rebate = max(0.0, tax_charged - low_income_rebate_applied)
+
+      zakat_rebate_applied = round(min(total_zakat, after_low_income_rebate), 2)
+      est_tax = round(max(0.0, after_low_income_rebate - zakat_rebate_applied), 2)
+      source = "document_derived"
 
     return {
       "documentCount":      doc_count,
@@ -1026,19 +1190,29 @@ def get_tax_profile_summary(
         "q2PersonalIncome":          round(total_q2, 2),
         "totalIncome":               round(total_inc, 2),
         "q3Deductions":              round(total_q3, 2),
-        "q4Reliefs":                 round(total_q4, 2),
+        "q3CapitalAllowance":        total_capital_allowance,
+        "q3TotalDeductions":         total_deductions,
+        "q4Reliefs":                 total_q4_capped,
+        "q4ReliefsBreakdown":        q4_relief_breakdown,
+        "zakatRebate":               zakat_rebate_applied,
+        "individualSelfRelief":      individual_relief_applied,
+        "lowIncomeRebate":           low_income_rebate_applied,
         "cp500Paid":                 round(total_cp500, 2),
         "estimatedChargeableIncome": round(est_chargeable, 2),
+        "taxChargedMyr":             round(tax_charged, 2),
         "estimatedTaxPayable":       round(est_tax, 2),
-        "estimatedTaxSavings":       round(total_q3 * 0.24, 2),
+        "balancePayableMyr":         round(est_tax - total_cp500, 2),  # negative = refund due
+        "estimatedTaxSavings":       round(total_deductions * 0.24, 2),
         "sourceOfEstimate":          source,
+        **_bracket_headroom(est_chargeable),
       },
       "q1BusinessIncome":  income_q1,
       "q2PersonalIncome":  income_q2,
       "q3Deductions":      deductions_q3,
-      "q3CapitalAssets":   capital_assets,
-      "q4Reliefs":         reliefs_q4,
+      "q3CapitalAssets":   capital_assets_annotated,
+      "q4Reliefs":         reliefs_q4_annotated,
       "q4NonDeductible":   non_deductible_q4,
+      "q4Zakat":           zakat_entries,
       "mixedPendingReview": mixed_pending,
       "cp500Installments": cp500_installments,
       "formB": {
