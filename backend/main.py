@@ -143,6 +143,7 @@ def _serialize_doc(doc: Document) -> dict:
   return {
     "id":                doc.id,
     "userId":            doc.user_id,
+    "entityId":          doc.entity_id,
     "fileName":          doc.file_name,
     "status":            doc.status,
     "documentType":      doc.document_type,
@@ -441,7 +442,7 @@ async def get_entity_by_id(
 
 # ── Document upload helpers ──────────────────────────────────────────────────
 
-def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[str], db: Session) -> dict:
+def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[str], entity_id: Optional[int], db: Session) -> dict:
   is_valid, error_msg = validate_upload(
     filename=original_name,
     content_type="",
@@ -455,6 +456,7 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
   duplicate = db.query(Document).filter(
     Document.file_name == original_name,
     Document.user_id == user_id,
+    Document.entity_id == entity_id,
     Document.created_at >= recent_cutoff,
     Document.status.in_(["pending", "processing", "completed"]),
   ).first()
@@ -470,7 +472,7 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
   with open(safe_file_path, "wb") as buf:
     buf.write(file_content)
 
-  db_doc = Document(file_name=original_name, file_path=safe_file_path, user_id=user_id)
+  db_doc = Document(file_name=original_name, file_path=safe_file_path, user_id=user_id, entity_id=entity_id)
   db.add(db_doc)
   db.commit()
   db.refresh(db_doc)
@@ -489,6 +491,7 @@ async def upload_document(
   request: Request,
   file: UploadFile = File(...),
   user_id: Optional[str] = Query(default=None),
+  entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
   file_content = await file.read()
@@ -497,7 +500,7 @@ async def upload_document(
   )
   if not is_valid:
     raise HTTPException(status_code=422, detail=error_msg)
-  result = _save_and_queue(file_content, file.filename, user_id, db)
+  result = _save_and_queue(file_content, file.filename, user_id, entity_id, db)
   return {"message": "Document uploaded and queued for classification.", **result}
 
 
@@ -507,6 +510,7 @@ async def batch_upload_documents(
   request: Request,
   files: list[UploadFile] = File(...),
   user_id: Optional[str] = Query(default=None),
+  entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
   if not files:
@@ -530,7 +534,7 @@ async def batch_upload_documents(
   results, errors = [], []
   for original_name, content in file_contents:
     try:
-      results.append(_save_and_queue(content, original_name, user_id, db))
+      results.append(_save_and_queue(content, original_name, user_id, entity_id, db))
     except HTTPException as e:
       errors.append({"file_name": original_name, "error": e.detail})
     except Exception as e:
@@ -548,13 +552,16 @@ async def batch_upload_documents(
 
 @app.get("/api/documents")
 def get_all_documents(
-  user_id: Optional[str] = Query(default=None),
-  year:    Optional[int]  = Query(default=None),
+  user_id:   Optional[str] = Query(default=None),
+  entity_id: Optional[int] = Query(default=None),
+  year:      Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
   q = db.query(Document).order_by(Document.id.desc())
   if user_id:
     q = q.filter(Document.user_id == user_id)
+  if entity_id:
+    q = q.filter(Document.entity_id == entity_id)
   if year:
     q = q.filter(Document.year_of_assessment == year)
   return [_serialize_doc(doc) for doc in q.all()]
@@ -563,12 +570,15 @@ def get_all_documents(
 @app.get("/api/documents/{doc_id}/status")
 def get_document_status(
   doc_id: int,
-  user_id: Optional[str] = Query(default=None),
+  user_id:   Optional[str] = Query(default=None),
+  entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
   q = db.query(Document).filter(Document.id == doc_id)
   if user_id:
     q = q.filter(Document.user_id == user_id)
+  if entity_id:
+    q = q.filter(Document.entity_id == entity_id)
   doc = q.first()
   if not doc:
     raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
@@ -592,12 +602,15 @@ def get_document_status(
 @app.get("/api/documents/{doc_id}")
 def get_document(
   doc_id: int,
-  user_id: Optional[str] = Query(default=None),
+  user_id:   Optional[str] = Query(default=None),
+  entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
   q = db.query(Document).filter(Document.id == doc_id)
   if user_id:
     q = q.filter(Document.user_id == user_id)
+  if entity_id:
+    q = q.filter(Document.entity_id == entity_id)
   doc = q.first()
   if not doc:
     raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
@@ -607,12 +620,15 @@ def get_document(
 @app.delete("/api/documents/{doc_id}", status_code=200)
 def delete_document(
   doc_id: int,
-  user_id: Optional[str] = Query(default=None),
+  user_id:   Optional[str] = Query(default=None),
+  entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
   q = db.query(Document).filter(Document.id == doc_id)
   if user_id:
     q = q.filter(Document.user_id == user_id)
+  if entity_id:
+    q = q.filter(Document.entity_id == entity_id)
   doc = q.first()
   if not doc:
     raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
@@ -630,12 +646,15 @@ def delete_document(
 @app.patch("/api/documents/{doc_id}/archive", status_code=200)
 def archive_document(
   doc_id: int,
-  user_id: Optional[str] = Query(default=None),
+  user_id:   Optional[str] = Query(default=None),
+  entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
   q = db.query(Document).filter(Document.id == doc_id)
   if user_id:
     q = q.filter(Document.user_id == user_id)
+  if entity_id:
+    q = q.filter(Document.entity_id == entity_id)
   doc = q.first()
   if not doc:
     raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
@@ -648,12 +667,15 @@ def archive_document(
 def reclassify_document(
   doc_id: int,
   payload: dict,
-  user_id: Optional[str] = Query(default=None),
+  user_id:   Optional[str] = Query(default=None),
+  entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
   q = db.query(Document).filter(Document.id == doc_id)
   if user_id:
     q = q.filter(Document.user_id == user_id)
+  if entity_id:
+    q = q.filter(Document.entity_id == entity_id)
   doc = q.first()
   if not doc:
     raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")

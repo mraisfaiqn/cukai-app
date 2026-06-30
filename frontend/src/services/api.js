@@ -81,15 +81,21 @@ export const getEntityById = async (entityId, userId = null) => {
 };
 
 // ── Documents ─────────────────────────────────────────────────────────────────
+// Every function accepts an optional entityId so documents stay scoped to the
+// active business entity. Pass the same entityId used to resolve the active
+// entity (typically localStorage('activeEntityId')) for consistent scoping
+// across upload, list, status, get, delete, archive, and reclassify calls.
 
 /**
  * Upload a single file for classification.
  * Returns { document_id, file_name, status }.
  */
-export const uploadDocument = async (file, userId = null) => {
+export const uploadDocument = async (file, userId = null, entityId = null) => {
   const form = new FormData();
   form.append('file', file);
-  const params = userId ? { user_id: userId } : {};
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
   const { data } = await api.post('/api/documents/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
     params,
@@ -101,10 +107,12 @@ export const uploadDocument = async (file, userId = null) => {
  * Upload up to 10 files in a single request.
  * Returns { queued, errors, total_queued, total_failed }.
  */
-export const batchUploadDocuments = async (files, userId = null) => {
+export const batchUploadDocuments = async (files, userId = null, entityId = null) => {
   const form = new FormData();
   files.forEach((f) => form.append('files', f));
-  const params = userId ? { user_id: userId } : {};
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
   const { data } = await api.post('/api/documents/batch-upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
     params,
@@ -116,38 +124,47 @@ export const batchUploadDocuments = async (files, userId = null) => {
  * Poll the processing status of a single document.
  * Returns { id, status, document_type, category, … }.
  */
-export const getDocumentStatus = async (docId, userId = null) => {
-  const params = userId ? { user_id: userId } : {};
+export const getDocumentStatus = async (docId, userId = null, entityId = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
   const { data } = await api.get(`/api/documents/${docId}/status`, { params });
   return data;
 };
 
 /** Fetch the full record for a single document. */
-export const getDocument = async (docId, userId = null) => {
-  const params = userId ? { user_id: userId } : {};
+export const getDocument = async (docId, userId = null, entityId = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
   const { data } = await api.get(`/api/documents/${docId}`, { params });
   return data;
 };
 
-/** List all documents, optionally scoped to a user and/or year of assessment. */
-export const getDocuments = async (userId = null, year = null) => {
+/** List all documents, optionally scoped to a user, entity, and/or year of assessment. */
+export const getDocuments = async (userId = null, entityId = null, year = null) => {
   const params = {};
-  if (userId) params.user_id = userId;
-  if (year)   params.year    = year;
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
+  if (year)     params.year      = year;
   const { data } = await api.get('/api/documents', { params });
   return data;
 };
 
 /** Permanently delete a document record and its file on disk. */
-export const deleteDocument = async (docId, userId = null) => {
-  const params = userId ? { user_id: userId } : {};
+export const deleteDocument = async (docId, userId = null, entityId = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
   const { data } = await api.delete(`/api/documents/${docId}`, { params });
   return data;
 };
 
 /** Set a document's status to 'archived'. */
-export const archiveDocument = async (docId, userId = null) => {
-  const params = userId ? { user_id: userId } : {};
+export const archiveDocument = async (docId, userId = null, entityId = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
   const { data } = await api.patch(`/api/documents/${docId}/archive`, {}, { params });
   return data;
 };
@@ -156,8 +173,10 @@ export const archiveDocument = async (docId, userId = null) => {
  * Override the AI classification with a user-confirmed status and category.
  * Returns the updated Document record.
  */
-export const reclassifyDocument = async (docId, status, category, userId = null) => {
-  const params = userId ? { user_id: userId } : {};
+export const reclassifyDocument = async (docId, status, category, userId = null, entityId = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
   const { data } = await api.patch(
     `/api/documents/${docId}/reclassify`,
     { status, category },
