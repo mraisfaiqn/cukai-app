@@ -80,6 +80,15 @@ export const getEntityById = async (entityId, userId = null) => {
   return data;
 };
 
+/**
+ * Permanently delete an entity.
+ * Returns { deleted: true, id }.
+ */
+export const deleteEntity = async (entityId) => {
+  const { data } = await api.delete(`/entities/${entityId}`);
+  return data;
+};
+
 // ── Documents ─────────────────────────────────────────────────────────────────
 // Every function accepts an optional entityId so documents stay scoped to the
 // active business entity. Pass the same entityId used to resolve the active

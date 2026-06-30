@@ -1119,7 +1119,7 @@ const CreateEntityModal = ({ onClose, onCreate }) => {
    MAIN COMPONENT
    ========================================================================= */
 
-export default function ManageProfile({ initialProfile, initialEntities, activeEntityId, onSavePersonal, onCreateEntity, onSaveEntity, onSwitchEntity }) {
+export default function ManageProfile({ initialProfile, initialEntities, activeEntityId, onSavePersonal, onCreateEntity, onSaveEntity, onDeleteEntity, onSwitchEntity }) {
   // Use initialProfile if available, otherwise fall back to your static BLANK_PERSONAL_PROFILE structure
   const [personalProfile, setPersonalProfile] = useState(initialProfile || BLANK_PERSONAL_PROFILE);
   const [entities, setEntities] = useState(initialEntities || []);
@@ -1174,7 +1174,17 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
     setPreviewIndex(null);
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
+    const entityToDelete = entities[previewIndex];
+
+    if (onDeleteEntity && entityToDelete?.id) {
+      const ok = await onDeleteEntity(entityToDelete.id);
+      if (!ok) {
+        alert('Could not delete entity. Please try again.');
+        return;
+      }
+    }
+
     const next = entities.filter((_, i) => i !== previewIndex);
     setEntities(next);
     if (activeIndex === previewIndex) {
