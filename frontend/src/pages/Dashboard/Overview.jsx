@@ -50,6 +50,9 @@ function daysToFormBDeadline(today = new Date()) {
 // (online e-Filing). cukai.ai is an e-Filing assistant, so the cutoff is 15 Jul
 // — the prior YA stays the default through 1–15 July while users finish filing.
 function currentFilingYear(today = new Date()) {
+  // TEMP override to view YA 2024 documents — revert to the computed logic below when done.
+  // return 2024;
+  // eslint-disable-next-line no-unreachable
   const year = today.getFullYear();
   const eFilingCutoff = new Date(year, 5, 30); // 15 July (month index 6)
   const deadlineYear = today > eFilingCutoff ? year + 1 : year;
