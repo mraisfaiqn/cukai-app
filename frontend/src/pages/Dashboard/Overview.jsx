@@ -47,6 +47,9 @@ function daysToFormBDeadline(today = new Date()) {
 // querying the wrong year here means the dashboard silently misses anything
 // (stats, pending-review counts) filed under the real active YA.
 function currentFilingYear(today = new Date()) {
+  // TEMP override to view YA 2024 documents — revert to the computed logic below when done.
+  // return 2024;
+  // eslint-disable-next-line no-unreachable
   const year = today.getFullYear();
   const juneCutoff = new Date(year, 5, 30);
   const deadlineYear = today > juneCutoff ? year + 1 : year;
