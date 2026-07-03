@@ -32,6 +32,7 @@ _pipeline_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread
 load_dotenv()
 logger = logging.getLogger("uvicorn.error")
 
+# slowapi = a rate limiting library
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="Cukai.ai — LHDN Document Classification Engine", version="2.0.0")
 app.state.limiter = limiter
