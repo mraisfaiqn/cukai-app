@@ -337,11 +337,27 @@ function buildDemoInsights() {
   ];
 }
 
-// Demo-stage behaviour: every entity gets the same showcase feed (a fresh copy
-// per switch, so read/dismissed state resets like a real refetch would).
-// Once the backend exists this becomes the per-entity API call.
-function getInitialInsightsForEntity() {
-  return buildDemoInsights();
+// Per-entity mock feed — keyed by entity ID so switching entities swaps the
+// insight list, the same way a real per-entity endpoint will. Stored as
+// factories (not pre-built arrays) so the relative timestamps inside
+// buildDemoInsights() stay fresh on every switch rather than freezing at import.
+//
+// NOTE: the showcase feed is mapped to entity id 1 to match CukaiBot's
+// MOCK_MESSAGES_BY_ENTITY convention. Point this at your actual demo entity's
+// id if it isn't 1 (or add more keys to give each entity its own feed). Any
+// unmapped entity falls through to an empty inbox — the honest state a real
+// fetch returns for a brand-new entity with nothing detected yet.
+//
+// TODO(backend): replace getInitialInsightsForEntity() with
+// `await getInsights(userId, entityId)` in the useEffect that re-runs on
+// activeEntity?.id below — the card shape is already API-shaped.
+const MOCK_INSIGHTS_BY_ENTITY = {
+  1: () => buildDemoInsights(),
+};
+
+function getInitialInsightsForEntity(entityId) {
+  const build = MOCK_INSIGHTS_BY_ENTITY[entityId];
+  return build ? build() : [];
 }
 
 // Mirrors the future `insight_runs` row — surfaces WHEN the brain last looked
@@ -580,17 +596,35 @@ function InsightsInbox() {
     return () => window.removeEventListener('entitySwitch', loadEntity);
   }, []);
 
-  const [insights, setInsights] = useState(() => getInitialInsightsForEntity());
+  // Start empty and let the entity-resolution effect below populate the feed
+  // once activeEntity resolves — avoids a flash of the no-entity result.
+  const [insights, setInsights] = useState([]);
   const [tab, setTab] = useState('active');          // active | resolved | dismissed
   const [activeGroup, setActiveGroup] = useState('All');
   const [expandedId, setExpandedId] = useState(null);
   const [toast, setToast] = useState('');
 
-  // Reload the feed whenever the entity changes — mock today, per-entity
-  // API call later; the effect shape stays identical.
+  // Reload the feed whenever the entity changes, so switching entities swaps
+  // the insight list (and resets read/dismissed state) instead of carrying the
+  // previous entity's cards over. Mock today; swap for the real per-entity
+  // fetch once the backend exists — the effect shape stays the same.
   useEffect(() => {
     setInsights(getInitialInsightsForEntity(activeEntity?.id));
     setExpandedId(null);
+
+    // ── Backend version (uncomment once GET /api/insights exists) ──
+    // Add getInsights to the import at the top of this file. The `cancelled`
+    // guard drops out-of-order responses: when you switch entities quickly, a
+    // slow fetch for the OLD entity can resolve after the new one and overwrite
+    // the correct list — this prevents that.
+    //
+    // let cancelled = false;
+    // const userId = localStorage.getItem('userId');
+    // (async () => {
+    //   const rows = await getInsights(userId, activeEntity?.id).catch(() => []);
+    //   if (!cancelled) { setInsights(rows); setExpandedId(null); }
+    // })();
+    // return () => { cancelled = true; };
   }, [activeEntity?.id]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2600); };
