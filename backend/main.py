@@ -91,6 +91,59 @@ async def lifespan(app: FastAPI):
     _pipeline_executor.shutdown(wait=False, cancel_futures=True)
 
 
+STORAGE_DIR = "./stored_documents"
+MAX_BATCH_FILES = 10
+MAX_BATCH_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+def _requeue_interrupted_documents() -> None:
+  """Re-queue documents left mid-flight by a previous process (status
+  'processing' or 'pending'). Without this, a restart during OCR leaves a
+  document stuck forever, since the retry endpoint only accepts 'failed'.
+  Runs once at startup, before the app serves traffic."""
+  db = SessionLocal()
+  try:
+    stuck = db.query(Document).filter(Document.status.in_(["processing", "pending"])).all()
+    requeued = orphaned = 0
+    for doc in stuck:
+      if doc.file_path and os.path.isfile(doc.file_path):
+        doc.status = "pending"
+        db.commit()
+        _pipeline_executor.submit(run_document_pipeline, doc.id, doc.file_path, SessionLocal)
+        requeued += 1
+      else:
+        doc.status = "failed"
+        doc.extracted_data = {
+          "error_message": "Processing was interrupted and the stored file is no "
+                           "longer available. Please re-upload."
+        }
+        db.commit()
+        orphaned += 1
+    if requeued or orphaned:
+      logger.info(f"[Startup] Re-queued {requeued} interrupted document(s); "
+                  f"marked {orphaned} orphaned as failed.")
+  except Exception as e:
+    logger.error(f"[Startup] Failed to re-queue interrupted documents: {e}")
+    db.rollback()
+  finally:
+    db.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+  # ── Startup ──
+  init_db()
+  os.makedirs(STORAGE_DIR, exist_ok=True)
+  app.mount("/files", StaticFiles(directory=STORAGE_DIR), name="stored_documents")
+  _requeue_interrupted_documents()
+  try:
+    yield
+  finally:
+    # ── Shutdown ── stop accepting new pipeline work and wind the pool down.
+    _pipeline_executor.shutdown(wait=False, cancel_futures=True)
+
+
+# slowapi = a rate limiting library
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
   title="Cukai.ai — LHDN Document Classification Engine",
