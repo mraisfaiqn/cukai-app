@@ -1,22 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import * as API from '../services/api';
-import cukaiLogo from '../assets/cukai-logo.png';
-
 // ─── Design tokens (matches ManageAccount + UserNavigation) ───────────────────
 // Primary teal: #0F6E56  Active: #0D9488  Text: #0F172A  Muted: #64748B  Border: #E2E8F0
-
-// ─── Current filing year ──────────────────────────────────────────────────────
-// Form B (sole-prop) is filed for income earned in YEAR by 30 June of YEAR+1.
-// So at any given moment the YA actively being filed is: last calendar year,
-// up until this year's 30 June deadline passes, after which it rolls forward
-// to the year that just ended. Mirrors the deadline math used in the
-// dashboard header so both pages agree on "today's" filing year.
-function currentFilingYear(today = new Date()) {
-  const year = today.getFullYear();
-  const juneCutoff = new Date(year, 5, 30); // June is month index 5
-  const deadlineYear = today > juneCutoff ? year + 1 : year;
-  return deadlineYear - 1;
-}
 
 // ─── Backend category taxonomy (mirrors pipeline.py exactly) ─────────────────
 const Q1_CATEGORIES = [
@@ -84,14 +69,64 @@ const Q4_NON_DED_CATEGORIES = [
   'Q4 — Family & Childcare Expenses',
 ];
 
-// For the reclassify modal — grouped for the dropdown
-const RECLASSIFY_GROUPS = [
-  { label: 'Q1 — Business Income', cats: Q1_CATEGORIES },
-  { label: 'Q2 — Personal Income', cats: Q2_CATEGORIES },
-  { label: 'Q3 — Business Expense', cats: Q3_CATEGORIES },
-  { label: 'Q4 — Relief', cats: Q4_RELIEF_CATEGORIES },
-  { label: 'Q4 — Personal (Non-deductible)', cats: Q4_NON_DED_CATEGORIES },
+// Summary / reference documents that describe or reconcile the return rather
+// than contributing a line-item amount to any quadrant total (P&L, balance
+// sheet, prior Form B, CP500 installment tracking). Their values are unchanged
+// — this only regroups them for display so they don't read as "Business Income".
+const REFERENCE_CATEGORIES = [
+  'Q1 — Financial Statements (P&L)',
+  'Q1 — Financial Statements (BS)',
+  'Q1 — Filed Form B (Prior Year)',
+  'Q3 — CP500 / Tax Installment',
 ];
+const Q1_INCOME_CATEGORIES = Q1_CATEGORIES.filter(c => !REFERENCE_CATEGORIES.includes(c));
+const Q3_EXPENSE_CATEGORIES = Q3_CATEGORIES.filter(c => !REFERENCE_CATEGORIES.includes(c));
+
+// For the reclassify modal — grouped for the dropdown (friendly labels, no Q-prefix)
+const RECLASSIFY_GROUPS = [
+  { label: 'Business Income',                 cats: Q1_INCOME_CATEGORIES },
+  { label: 'Personal Income',                 cats: Q2_CATEGORIES },
+  { label: 'Business Expense',                cats: Q3_EXPENSE_CATEGORIES },
+  { label: 'Personal Relief',                 cats: Q4_RELIEF_CATEGORIES },
+  { label: 'Personal Expense (Non-deductible)', cats: Q4_NON_DED_CATEGORIES },
+  { label: 'Reference & Reconciliation',      cats: REFERENCE_CATEGORIES },
+];
+
+// Apportioned Q3 categories are only PARTIALLY deductible. Each carries a
+// deductible % that the backend uses to sum only that portion into the
+// deduction total. Mirrors APPORTIONED_CATEGORIES in pipeline.py.
+//   mode 'statutory' — fixed by law, shown locked (entertainment s.39(1)(l) = 50%)
+//   mode 'default'   — a sensible default the user may override
+//   mode 'required'  — no default; the user must enter it before confirming
+const APPORTIONED_META = {
+  'Q3 — Client Entertainment (50% cap)': {
+    mode: 'statutory', default: 50,
+    hint: 'Client entertainment is 50% deductible under s.39(1)(l).',
+  },
+  'Q3 — Client & Corporate Gifts': {
+    mode: 'default', default: 50,
+    hint: 'Business gifts are usually 50% deductible — enter 100% if they carry your business logo.',
+  },
+  'Q3 — Mixed-Use Vehicle Expenses': {
+    mode: 'required', default: null,
+    hint: 'Enter the business-use % of this vehicle expense (personal use is not deductible).',
+  },
+  'Q3 — Hire Purchase & Leased Assets': {
+    mode: 'required', default: null,
+    hint: 'Enter the deductible % — the interest portion of the total is deductible, the principal is not.',
+  },
+};
+
+// Display label for a stored category value: strip the "Qn — " prefix (users
+// don't think in quadrants) and rename the review category to "Pending Review".
+// The stored value is never changed — only what the user sees.
+function categoryLabel(cat) {
+  if (!cat || cat === 'Unclassified') return 'Unclassified';
+  if (cat === 'Mixed / Pending Review') return 'Pending Review';
+  if (cat === 'Non-Tax Document') return 'Non-Tax Document';
+  if (cat === 'Bank Statement — Transaction Ledger') return 'Bank Statement';
+  return cat.replace(/^Q[1-4]\s*[—-]\s*/, '');
+}
 
 // ─── Status meta ──────────────────────────────────────────────────────────────
 const STATUS_META = {
@@ -100,8 +135,9 @@ const STATUS_META = {
   mixed:          { label: 'Needs Review',    color: '#B45309', bg: '#FFFBEB', dot: '#F59E0B' },
   relief:         { label: 'Relief',          color: '#7C3AED', bg: '#F5F3FF', dot: '#7C3AED' },
   non_deductible: { label: 'Personal',        color: '#DC2626', bg: '#FEF2F2', dot: '#DC2626' },
-  capital:        { label: 'Capital Asset',   color: '#B45309', bg: '#FFFBEB', dot: '#D97706' },
+  capital:        { label: 'Capital Asset',   color: '#9A3412', bg: '#FFEDD5', dot: '#F97316' },
   not_applicable: { label: 'Not Applicable',  color: '#64748B', bg: '#F1F5F9', dot: '#94A3B8' },
+  reference:      { label: 'Reference',       color: '#0E7490', bg: '#ECFEFF', dot: '#06B6D4' },
   pending:        { label: 'Uploading…',      color: '#64748B', bg: '#F8FAFC', dot: '#CBD5E1' },
   processing:     { label: 'Classifying…',   color: '#0369A1', bg: '#EFF6FF', dot: '#0369A1' },
   failed:         { label: 'Failed',          color: '#DC2626', bg: '#FEF2F2', dot: '#DC2626' },
@@ -111,27 +147,6 @@ const STATUS_META = {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const parseAmt = (s) => parseFloat((s || '').replace(/[^\d.]/g, '')) || 0;
 const fmtRM = (v) => 'RM ' + Number(v).toLocaleString('en-MY', { maximumFractionDigits: 0 });
-// ─── Tab navigation ───────────────────────────────────────────────────────────
-function CukaiTabNav({ active, onChange }) {
-  const tabs = [
-    { id: 'upload', label: 'Upload Documents' },
-    { id: 'generate', label: 'Generate Report' },
-  ];
-  return (
-    <nav className="flex items-center gap-2 border-b border-slate-100 pb-px shrink-0">
-      {tabs.map(t => (
-        <button key={t.id} onClick={() => onChange(t.id)}
-          className={`relative px-4 py-2.5 text-sm font-medium transition-all duration-150 select-none ${
-            active === t.id ? 'text-[#0D9488] font-semibold' : 'text-[#64748B] hover:text-[#0F172A]'
-          }`}>
-          {t.label}
-          {active === t.id && <div className="absolute bottom-0 left-3 right-3 h-0.5 bg-[#0F6E56]" />}
-        </button>
-      ))}
-    </nav>
-  );
-}
-
 // ─── Status badge ─────────────────────────────────────────────────────────────
 // ─── Date formatting ────────────────────────────────────────────────────────────
 // Documents can have a full day-precision date, or no usable date at all (when
@@ -164,6 +179,36 @@ function mapApiDoc(apiDoc) {
   // are still stored for record-keeping but aren't shown as if they were a
   // full date.
   const datePrecision = ed.date_precision === 'day' ? 'day' : 'unknown';
+
+  // Amount is stored inconsistently across paths: OCR may yield "RM 1,240.00"
+  // (string) while a user edit is persisted as a bare float (1240). Normalise
+  // to a single numeric value + one formatted display string here so the "RM"
+  // prefix is never lost on reload and sorting has a real number to work with.
+  let amountNumber = null;
+  if (typeof ed.amount === 'number') amountNumber = ed.amount;
+  else if (typeof ed.amount === 'string' && /\d/.test(ed.amount)) amountNumber = parseAmt(ed.amount);
+
+  // A null category means "not classified yet" (pending/processing/failed) — it
+  // is NOT the LLM's genuine "Mixed / Pending Review" escape hatch. Don't
+  // conflate them, or every in-flight/failed doc looks like a review item.
+  const aggregationState = apiDoc.aggregationState || ed.aggregation_state || null;
+  const documentRole     = apiDoc.documentRole     || ed.document_role     || null;
+
+  // Which fields did the LLM actually capture? Editing is later restricted to
+  // the ones it COULDN'T. Read from the original snapshot when the doc has been
+  // edited, otherwise from the current extraction (which is the LLM's output).
+  const orig = ed._original || ed;
+  const origAmount = (typeof orig.amount === 'number')
+    ? orig.amount
+    : (typeof orig.amount === 'string' && /\d/.test(orig.amount) ? parseAmt(orig.amount) : null);
+  const llmAmountCaptured = origAmount != null;
+  const llmDateCaptured = orig.date_precision === 'day' && !!orig.date;
+  const llmCategoryDecided = !!orig.category
+    && orig.category !== 'Mixed / Pending Review'
+    && orig.aggregation_state !== 'needs_user_confirmation'
+    && orig.aggregation_state !== 'needs_apportionment';
+  const edited = !!ed.user_reclassified;
+
   return {
     id:           apiDoc.id,
     name:         apiDoc.fileName,
@@ -172,12 +217,29 @@ function mapApiDoc(apiDoc) {
     datePrecision,
     dateDisplay:  formatDocDate(ed.date, datePrecision),
     dateSortKey:  datePrecision === 'day' ? ed.date : null,
-    amount:       ed.amount || '—',
+    amount:       amountNumber != null ? fmtRM(amountNumber) : '—',
+    amountNumber,                                  // numeric companion for sorting / re-edit prefill
     status:       apiDoc.status,           // 'pending'|'processing'|'completed'|'failed'|'archived'
     taxStatus:    apiDoc.taxStatus,       // 'income'|'deductible'|'mixed'|'relief'|'non_deductible'|'not_applicable'|'capital'
-    category:     apiDoc.category || 'Mixed / Pending Review',
+    category:     apiDoc.category || 'Unclassified',
+    documentRole,
+    aggregationState,
+    deductiblePct: ed.deductible_pct ?? null,   // apportioned Q3 categories only
+    llmAmountCaptured,
+    llmDateCaptured,
+    llmCategoryDecided,
+    edited,
+    // A document needs the user's input when the backend's aggregation gate says
+    // so (needs apportionment / confirmation) — the single source of truth,
+    // shared with the overview's pending-review count. A 'mixed' status alone no
+    // longer forces review: an apportioned category the user has confirmed is
+    // 'resolved' and must leave the queue. Only fall back to the mixed-status
+    // signal for legacy docs that predate aggregation_state.
+    needsReview:  aggregationState
+      ? (aggregationState === 'needs_apportionment' || aggregationState === 'needs_user_confirmation')
+      : (apiDoc.taxStatus === 'mixed'),
     manual:       !!ed.manual_entry,
-    accent:       STATUS_META[apiDoc.taxStatus]?.color || '#64748B',
+    accent:       STATUS_META[badgeStatusFor(apiDoc.category, apiDoc.taxStatus, apiDoc.status)]?.color || '#64748B',
     quadrant:     ed.quadrant,
     ita_section:  ed.ita_section,
     vendor:       ed.vendor,
@@ -194,6 +256,7 @@ function mapApiDoc(apiDoc) {
     ia_rate_pct:  ed.ia_rate_pct,
     aa_rate_pct:  ed.aa_rate_pct,
     relief_cap:   ed.relief_cap_myr,
+    fileBasename: apiDoc.fileBasename || null,      // server-served preview URL basename
     // Kept for preview renderer
     fileType:     /\.(jpg|jpeg|png|webp|tiff?)$/i.test(apiDoc.fileName) ? 'image'
                 : /\.(xlsx?|csv)$/i.test(apiDoc.fileName) ? 'excel'
@@ -217,7 +280,11 @@ function mapApiDoc(apiDoc) {
 //   'done'       → pipeline completed (row will disappear shortly)
 //   'failed'     → pipeline failed
 function UploadProgressEntry({ entry }) {
-  const [progress, setProgress] = useState(5);
+  // Initialise from the current phase so a doc that's already processing (e.g.
+  // after a tab switch / reload) starts the bar near where it actually is,
+  // rather than snapping back to the beginning each time the page remounts.
+  const phaseFloor = (ph) => (ph === 'done' || ph === 'failed') ? 100 : ph === 'processing' ? 65 : 8;
+  const [progress, setProgress] = useState(() => phaseFloor(entry.phase));
 
   // Smooth progress animation capped at phase-appropriate ceiling
   useEffect(() => {
@@ -296,6 +363,14 @@ function UploadProgressEntry({ entry }) {
 }
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
+// Reference / reconciliation documents (P&L, balance sheet, prior Form B,
+// CP500) don't contribute to any total, so they shouldn't wear an Income /
+// Not-Applicable badge — they get their own neutral "Reference" tag instead.
+function badgeStatusFor(category, taxStatus, pipelineStatus) {
+  if (category && REFERENCE_CATEGORIES.includes(category)) return 'reference';
+  return taxStatus || pipelineStatus;
+}
+
 function StatusBadge({ status }) {
   // For completed docs show the tax_status; for in-flight show pipeline status
   const key = status || 'mixed';
@@ -413,23 +488,25 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
 
   useEffect(() => { requestAnimationFrame(() => setVisible(true)); }, []);
 
-  // Build a URL to the file served by the backend's /files/ static mount
+  // Build a URL to the file served by the backend's /files/ static mount.
+  // Prefer the server-provided basename (available for every persisted doc) so
+  // the preview works after a retry or a full page reload — not only while the
+  // original session blob is still around.
   useEffect(() => {
     if (!doc) return;
-    if (doc._apiRaw?.file_path) {
-      const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-      // file_path is stored as e.g. "./stored_documents/abc123_receipt.pdf"
-      // The /files/ static mount serves from the stored_documents directory,
-      // so we just need the basename.
-      const basename = doc._apiRaw.file_path.split(/[\\/]/).pop();
+    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+    const basename = doc.fileBasename
+      || doc._apiRaw?.fileBasename
+      || (doc._apiRaw?.file_path ? doc._apiRaw.file_path.split(/[\\/]/).pop() : null);
+    if (basename) {
       setFileUrl(`${API_URL}/files/${encodeURIComponent(basename)}`);
     } else if (doc._localObjectUrl) {
-      // Blob URL created at upload time — still valid if same session
+      // Fallback: blob URL created at upload time — still valid this session.
       setFileUrl(doc._localObjectUrl);
     }
     // No cleanup needed: backend URLs don't need revocation; blob URLs are
     // revoked when the parent upload entry is cleared.
-  }, [doc?._apiRaw?.file_path, doc?._localObjectUrl]);
+  }, [doc?.fileBasename, doc?._apiRaw?.file_path, doc?._localObjectUrl]);
 
   const handleClose = () => { setVisible(false); setTimeout(onClose, 300); };
 
@@ -486,7 +563,7 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
             <span className="text-[10px] text-[#64748B]">Classification</span>
             <div className="flex items-center gap-2">
               <ConfidenceBadge value={doc.confidence} />
-              <StatusBadge status={doc.taxStatus || doc.status} />
+              <StatusBadge status={badgeStatusFor(doc.category, doc.taxStatus, doc.status)} />
             </div>
           </div>
 
@@ -494,7 +571,7 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
           {doc.category && (
             <div className="flex items-center justify-between">
               <span className="text-[10px] text-[#64748B]">Category</span>
-              <span className="text-[10px] font-medium text-[#0F172A] text-right max-w-[260px] truncate">{doc.category}</span>
+              <span className="text-[10px] font-medium text-[#0F172A] text-right max-w-[260px] truncate">{categoryLabel(doc.category)}</span>
             </div>
           )}
 
@@ -562,31 +639,98 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
 // ─── Reclassify Modal ─────────────────────────────────────────────────────────
 // Shows AI reasoning (note, reason, question, source) with a category picker.
 // Handles both "mixed" (undecided) and "re-classify" (override confirmed) modes.
-function ReclassifyModal({ doc, onConfirm, onCancel }) {
+function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
   const isMixed = doc.taxStatus === 'mixed' || doc.status === 'mixed';
   const amountMissing = !doc.amount || doc.amount === '—';
   const dateMissing = !doc.dateDisplay || doc.dateDisplay === '—';
 
-  const [category, setCategory] = useState(doc.category || 'Mixed / Pending Review');
-  const [amountInput, setAmountInput] = useState('');
+  // Amount/date are only meaningful for transaction-like documents. A balance
+  // sheet / P&L / prior Form B (summary_statement) or a bank statement
+  // (ledger_source) is an aggregate, not one dated line item — the backend
+  // rejects amount/date edits on those, so we hide the inputs here too. When
+  // the role is unknown (older or manual docs) we default to editable.
+  // Amount and date editability differ by document role.
+  //   transaction / schedule_source → both amount and date are editable.
+  //   summary_statement (P&L, balance sheet, prior Form B — the REFERENCE_ONLY
+  //     categories) → carries no single transaction amount, but DOES have a
+  //     meaningful document date (e.g. the year a prior Form B relates to), so
+  //     the date is editable while the amount stays locked.
+  //   ledger_source (bank statement) → neither; it's many lines, not one.
+  //   unknown role (older/manual docs) → editable for both, as before.
+  const amountRoleEditable = !doc.documentRole
+    || doc.documentRole === 'transaction'
+    || doc.documentRole === 'schedule_source';
+  const dateRoleEditable = amountRoleEditable
+    || doc.documentRole === 'summary_statement';
+
+  // Only the data points the LLM COULDN'T capture are editable — a field the AI
+  // read correctly stays locked so the user can't accidentally corrupt it. The
+  // "Edit anyway" override unlocks everything for the rare correction case.
+  const [override, setOverride] = useState(false);
+  const canEditAmount   = override ? amountRoleEditable : (amountRoleEditable && !doc.llmAmountCaptured);
+  const canEditDate     = override ? dateRoleEditable   : (dateRoleEditable   && !doc.llmDateCaptured);
+  const canEditCategory = override ? true : !doc.llmCategoryDecided;
+  const nothingEditable = !canEditAmount && !canEditDate && !canEditCategory;
+
+  const [category, setCategory] = useState(
+    doc.category && doc.category !== 'Unclassified' ? doc.category : 'Mixed / Pending Review'
+  );
+  // Prefill with current values so a mistaken first entry can be re-edited,
+  // instead of the fields disappearing once any value exists.
+  const [amountInput, setAmountInput] = useState(doc.amountNumber != null ? String(doc.amountNumber) : '');
   const [amountError, setAmountError] = useState('');
-  const [dateInput, setDateInput] = useState('');
+  const [dateInput, setDateInput] = useState(doc.datePrecision === 'day' && doc.date ? doc.date : '');
   const [dateError, setDateError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
-  // Derive status from selected category
+  const handleReset = async () => {
+    setResetting(true);
+    try {
+      await onReset(doc.id);
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  // Derive status from selected category. Apportioned Q3 categories (client
+  // entertainment, gifts, mixed-use vehicle, hire purchase) resolve to
+  // 'deductible' — they ARE business deductions, just partial ones; the
+  // deductible portion is captured separately via the % field below, so they
+  // no longer sit permanently in 'mixed'/Needs-Review.
   const deriveStatus = (cat) => {
     if (Q1_CATEGORIES.includes(cat) || Q2_CATEGORIES.includes(cat)) return 'income';
-    if (Q3_CATEGORIES.filter(c => !['Q3 — Client Entertainment (50% cap)', 'Q3 — Client & Corporate Gifts', 'Q3 — Mixed-Use Vehicle Expenses', 'Q3 — Capital Assets & Equipment', 'Q3 — Capital Renovation & Fit-Out', 'Q3 — Hire Purchase & Leased Assets', 'Q3 — CP500 / Tax Installment'].includes(c)).includes(cat)) return 'deductible';
     if (['Q3 — Capital Assets & Equipment', 'Q3 — Capital Renovation & Fit-Out'].includes(cat)) return 'capital';
     if (cat === 'Q3 — CP500 / Tax Installment') return 'not_applicable';
-    if (['Q3 — Client Entertainment (50% cap)', 'Q3 — Client & Corporate Gifts', 'Q3 — Mixed-Use Vehicle Expenses', 'Q3 — Hire Purchase & Leased Assets'].includes(cat)) return 'mixed';
     if (Q4_RELIEF_CATEGORIES.includes(cat)) return 'relief';
     if (Q4_NON_DED_CATEGORIES.includes(cat)) return 'non_deductible';
+    if (Q3_CATEGORIES.includes(cat)) return 'deductible'; // incl. apportioned — % handled via deductible_pct
     return 'mixed';
   };
 
   const derivedStatus = deriveStatus(category);
+
+  // Apportionment: when the selected category is only partially deductible,
+  // collect the deductible %. Prefill from the doc's stored value, else the
+  // category's default. Reset whenever the selected category changes so a
+  // leftover % from a previous selection can't leak across categories.
+  const apportionMeta = APPORTIONED_META[category] || null;
+  const [pctInput, setPctInput] = useState(
+    doc.deductiblePct != null ? String(doc.deductiblePct)
+      : (APPORTIONED_META[category]?.default != null ? String(APPORTIONED_META[category].default) : '')
+  );
+  const [pctError, setPctError] = useState('');
+  useEffect(() => {
+    const meta = APPORTIONED_META[category] || null;
+    if (!meta) { setPctInput(''); setPctError(''); return; }
+    if (meta.mode === 'statutory') { setPctInput(String(meta.default)); setPctError(''); return; }
+    // For default/required: keep the doc's saved value if it's for THIS category,
+    // otherwise fall back to the category default (blank for 'required').
+    setPctInput(doc.deductiblePct != null && doc.category === category
+      ? String(doc.deductiblePct)
+      : (meta.default != null ? String(meta.default) : ''));
+    setPctError('');
+  }, [category, doc.deductiblePct, doc.category]);
 
   const confidence = isMixed ? (doc.confidence ?? 50) : (doc.confidence ?? 75);
   const confTone = confidence >= 90 ? { color: '#0F6E56', bg: '#ECFDF5' }
@@ -594,29 +738,60 @@ function ReclassifyModal({ doc, onConfirm, onCancel }) {
     : { color: '#DC2626', bg: '#FEF2F2' };
 
   const handleConfirm = async () => {
-    if (amountMissing) {
-      const parsed = parseFloat(amountInput);
-      if (!amountInput.trim() || isNaN(parsed) || parsed < 0) {
+    let amountToSend = null;
+    let dateToSend = null;
+    if (canEditAmount) {
+      if (amountInput.trim() !== '') {
+        const parsed = parseFloat(amountInput);
+        if (isNaN(parsed) || parsed < 0) {
+          setAmountError('Enter a valid amount.');
+          return;
+        }
+        amountToSend = parsed;
+      } else if (amountMissing) {
         setAmountError('Enter a valid amount to continue.');
         return;
       }
     }
-    if (dateMissing) {
-      if (!dateInput) {
+    if (canEditDate) {
+      if (dateInput) {
+        dateToSend = dateInput;
+      } else if (dateMissing && amountRoleEditable) {
+        // A real transaction needs a date; a reference/summary document's date
+        // is optional metadata, so don't block confirming it without one.
         setDateError('Enter the document date to continue.');
         return;
       }
     }
+
+    // Apportioned categories carry a deductible %. Statutory ones are fixed;
+    // 'default' ones fall back to their default when left blank; 'required'
+    // ones (vehicle/HP) must be entered before we can resolve the document.
+    let pctToSend = null;
+    if (apportionMeta) {
+      if (apportionMeta.mode === 'statutory') {
+        pctToSend = apportionMeta.default;
+      } else if (pctInput.trim() !== '') {
+        const p = parseInt(pctInput, 10);
+        if (isNaN(p) || p < 0 || p > 100) {
+          setPctError('Enter a whole number between 0 and 100.');
+          return;
+        }
+        pctToSend = p;
+      } else if (apportionMeta.mode === 'required') {
+        setPctError('Enter the deductible % to continue.');
+        return;
+      } else {
+        pctToSend = apportionMeta.default;
+      }
+    }
+
     setAmountError('');
     setDateError('');
+    setPctError('');
     setSaving(true);
     try {
-      await onConfirm(
-        derivedStatus,
-        category,
-        amountMissing ? parseFloat(amountInput) : null,
-        dateMissing ? dateInput : null,
-      );
+      await onConfirm(derivedStatus, category, amountToSend, dateToSend, pctToSend);
     } finally {
       setSaving(false);
     }
@@ -685,7 +860,7 @@ function ReclassifyModal({ doc, onConfirm, onCancel }) {
                 {doc.note || fallbackReason}
               </p>
               <p className="text-[9px] text-[#94A3B8] mt-1.5">
-                Currently: <span className="font-semibold text-[#0F172A]">{STATUS_META[doc.taxStatus]?.label || doc.taxStatus}</span> · <span className="font-semibold text-[#0F172A]">{doc.category}</span>
+                Currently: <span className="font-semibold text-[#0F172A]">{STATUS_META[doc.taxStatus]?.label || doc.taxStatus}</span> · <span className="font-semibold text-[#0F172A]">{categoryLabel(doc.category)}</span>
               </p>
             </div>
             <div className="rounded-lg border border-[#BAE6FD] bg-[#F0F9FF] px-3 py-2.5 mb-4">
@@ -705,65 +880,167 @@ function ReclassifyModal({ doc, onConfirm, onCancel }) {
           </div>
         )}
 
-        {/* Manual date entry — shown when OCR couldn't extract a date */}
-        {dateMissing && (
-          <div className="mb-3">
-            <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">
-              Date <span className="font-normal text-[#94A3B8]">(OCR couldn't read this — please enter it)</span>
-            </label>
-            <input
-              type="date"
-              value={dateInput}
-              onChange={e => { setDateInput(e.target.value); if (dateError) setDateError(''); }}
-              className={`w-full rounded-lg border bg-white px-3 py-2 text-xs text-[#0F172A] focus:outline-none ${dateError ? 'border-[#FCA5A5] focus:border-[#DC2626]' : 'border-[#E2E8F0] focus:border-[#0D9488]'}`}
-            />
-            {dateError && <p className="mt-1 text-[10px] text-[#DC2626]">{dateError}</p>}
-          </div>
-        )}
+        {/* Amount & date — each field is editable ONLY if the LLM couldn't
+            capture it; a captured field is shown locked so it can't be
+            corrupted. "Edit anyway" (below) unlocks everything if needed. */}
+        {(dateRoleEditable || amountRoleEditable) ? (
+          <>
+            {dateRoleEditable && (
+              <div className="mb-3">
+                <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">
+                  Date{' '}
+                  <span className="font-normal text-[#94A3B8]">
+                    {canEditDate ? "(OCR couldn't read this — please enter it)" : '(read from document)'}
+                  </span>
+                </label>
+                {canEditDate ? (
+                  <input
+                    type="date"
+                    value={dateInput}
+                    onChange={e => { setDateInput(e.target.value); if (dateError) setDateError(''); }}
+                    className={`w-full rounded-lg border bg-white px-3 py-2 text-xs text-[#0F172A] focus:outline-none ${dateError ? 'border-[#FCA5A5] focus:border-[#DC2626]' : 'border-[#E2E8F0] focus:border-[#0D9488]'}`}
+                  />
+                ) : (
+                  <div className="w-full rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2 text-xs text-[#64748B]">
+                    {doc.dateDisplay && doc.dateDisplay !== '—' ? doc.dateDisplay : '—'}
+                  </div>
+                )}
+                {dateError && <p className="mt-1 text-[10px] text-[#DC2626]">{dateError}</p>}
+              </div>
+            )}
 
-        {/* Manual amount entry — shown when OCR couldn't extract an amount */}
-        {amountMissing && (
-          <div className="mb-3">
-            <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">
-              Amount <span className="font-normal text-[#94A3B8]">(OCR couldn't read this — please enter it)</span>
-            </label>
-            <div className="relative">
-              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-[#64748B]">RM</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                inputMode="decimal"
-                value={amountInput}
-                onChange={e => { setAmountInput(e.target.value); if (amountError) setAmountError(''); }}
-                placeholder="0.00"
-                className={`w-full rounded-lg border bg-white pl-9 pr-3 py-2 text-xs text-[#0F172A] focus:outline-none ${amountError ? 'border-[#FCA5A5] focus:border-[#DC2626]' : 'border-[#E2E8F0] focus:border-[#0D9488]'}`}
-              />
-            </div>
-            {amountError && <p className="mt-1 text-[10px] text-[#DC2626]">{amountError}</p>}
+            {amountRoleEditable ? (
+              <div className="mb-3">
+                <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">
+                  Amount{' '}
+                  <span className="font-normal text-[#94A3B8]">
+                    {canEditAmount ? "(OCR couldn't read this — please enter it)" : '(read from document)'}
+                  </span>
+                </label>
+                {canEditAmount ? (
+                  <div className="relative">
+                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-[#64748B]">RM</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      inputMode="decimal"
+                      value={amountInput}
+                      onChange={e => { setAmountInput(e.target.value); if (amountError) setAmountError(''); }}
+                      placeholder="0.00"
+                      className={`w-full rounded-lg border bg-white pl-9 pr-3 py-2 text-xs text-[#0F172A] focus:outline-none ${amountError ? 'border-[#FCA5A5] focus:border-[#DC2626]' : 'border-[#E2E8F0] focus:border-[#0D9488]'}`}
+                    />
+                  </div>
+                ) : (
+                  <div className="w-full rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2 text-xs text-[#64748B]">
+                    {doc.amount && doc.amount !== '—' ? doc.amount : '—'}
+                  </div>
+                )}
+                {amountError && <p className="mt-1 text-[10px] text-[#DC2626]">{amountError}</p>}
+              </div>
+            ) : (
+              <div className="mb-3 rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2.5">
+                <p className="text-[10px] text-[#64748B] leading-relaxed">
+                  This is a summary / statement document — it has no single amount to edit.
+                  You can still correct its date above and its category below.
+                </p>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="mb-3 rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2.5">
+            <p className="text-[10px] text-[#64748B] leading-relaxed">
+              This document doesn't carry a single amount or date to edit. You can still correct its category below.
+            </p>
           </div>
         )}
 
         {/* Category picker */}
-        <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">Select the correct category</label>
-        <select
-          value={category}
-          onChange={e => setCategory(e.target.value)}
-          className="w-full rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs text-[#0F172A] mb-2 focus:outline-none focus:border-[#0D9488] cursor-pointer"
-        >
-          {RECLASSIFY_GROUPS.map(group => (
-            <optgroup key={group.label} label={group.label}>
-              {group.cats.map(c => <option key={c} value={c}>{c}</option>)}
-            </optgroup>
-          ))}
-          <option value="Mixed / Pending Review">Mixed / Pending Review</option>
-          <option value="Non-Tax Document">Non-Tax Document</option>
-        </select>
+        <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">
+          {canEditCategory ? 'Select the correct category' : 'Category (classified by AI)'}
+        </label>
+        {canEditCategory ? (
+          <select
+            value={category}
+            onChange={e => setCategory(e.target.value)}
+            className="w-full rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs text-[#0F172A] mb-2 focus:outline-none focus:border-[#0D9488] cursor-pointer"
+          >
+            {RECLASSIFY_GROUPS.map(group => (
+              <optgroup key={group.label} label={group.label}>
+                {group.cats.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
+              </optgroup>
+            ))}
+            <option value="Mixed / Pending Review">Pending Review</option>
+            <option value="Non-Tax Document">Non-Tax Document</option>
+          </select>
+        ) : (
+          <div className="w-full rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2 text-xs text-[#64748B] mb-2">
+            {categoryLabel(category)}
+          </div>
+        )}
+
+        {/* Deductible % — only for apportioned Q3 categories (entertainment,
+            gifts, mixed-use vehicle, hire purchase). Statutory rates are shown
+            locked; the rest are entered/edited by the user. */}
+        {apportionMeta && (
+          <div className="mb-2">
+            <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">
+              Deductible portion{' '}
+              <span className="font-normal text-[#94A3B8]">
+                {apportionMeta.mode === 'statutory' ? '(fixed by law)' : '(% of the amount that is deductible)'}
+              </span>
+            </label>
+            <div className="relative w-32">
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                inputMode="numeric"
+                value={pctInput}
+                disabled={apportionMeta.mode === 'statutory'}
+                onChange={e => { setPctInput(e.target.value); if (pctError) setPctError(''); }}
+                placeholder={apportionMeta.mode === 'required' ? '— %' : ''}
+                className={`w-full rounded-lg border bg-white pr-7 pl-3 py-2 text-xs text-[#0F172A] focus:outline-none disabled:bg-[#F8FAFC] disabled:text-[#64748B] ${pctError ? 'border-[#FCA5A5] focus:border-[#DC2626]' : 'border-[#E2E8F0] focus:border-[#0D9488]'}`}
+              />
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#64748B]">%</span>
+            </div>
+            <p className="mt-1 text-[10px] text-[#64748B] leading-relaxed">{apportionMeta.hint}</p>
+            {pctError && <p className="mt-1 text-[10px] text-[#DC2626]">{pctError}</p>}
+          </div>
+        )}
+
+        {/* Edit-anyway override + reset */}
+        <div className="mb-4 flex items-center justify-between">
+          {nothingEditable && !override ? (
+            <p className="text-[10px] text-[#94A3B8]">
+              The AI captured every field.{' '}
+              <button onClick={() => setOverride(true)} className="font-semibold text-[#0D9488] hover:text-[#0F6E56] underline">
+                Edit anyway
+              </button>
+            </p>
+          ) : !override ? (
+            <button onClick={() => setOverride(true)} className="text-[10px] text-[#94A3B8] hover:text-[#0D9488] underline">
+              Edit a locked field
+            </button>
+          ) : <span />}
+          {doc.edited && (
+            <button
+              onClick={handleReset}
+              disabled={resetting}
+              className="text-[10px] font-semibold text-[#64748B] hover:text-[#DC2626] underline disabled:opacity-60">
+              {resetting ? 'Resetting…' : 'Reset to AI original'}
+            </button>
+          )}
+        </div>
 
         {/* Derived status preview */}
         <div className="flex items-center gap-2 mb-5 px-1">
           <span className="text-[10px] text-[#64748B]">Will be classified as:</span>
-          <StatusBadge status={derivedStatus} />
+          <StatusBadge status={REFERENCE_CATEGORIES.includes(category) ? 'reference' : derivedStatus} />
+          {apportionMeta && pctInput !== '' && (
+            <span className="text-[10px] font-semibold text-[#0F6E56]">· {pctInput}% deductible</span>
+          )}
         </div>
 
         {/* Confirm */}
@@ -978,7 +1255,7 @@ function ManualUploadModal({ onConfirm, onCancel }) {
               className="w-full rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs text-[#0F172A] focus:outline-none focus:border-[#0D9488] cursor-pointer">
               {RECLASSIFY_GROUPS.map(group => (
                 <optgroup key={group.label} label={group.label}>
-                  {group.cats.map(c => <option key={c} value={c}>{c}</option>)}
+                  {group.cats.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
                 </optgroup>
               ))}
             </select>
@@ -1003,54 +1280,92 @@ function ManualUploadModal({ onConfirm, onCancel }) {
   );
 }
 
-function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, onUpdateStatus, onManualAdd }) {
+function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, onUpdateStatus, onReset, onManualAdd, initialStateFilter }) {
   const inputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
-  const [statusFilter, setStatusFilter] = useState('all');     // 'all'|taxStatus|'archived'
+  // Two orthogonal filter axes that compose:
+  //   stateFilter    — cross-cutting document STATE (all | needs_review | failed | archived)
+  //   categoryFilter — quadrant CATEGORY (all | Q1 | Q2 | Q3 | Q4R | Q4P)
+  // Previously "classifications" (tax status) and "categories" (quadrant) were
+  // two dropdowns covering the same taxonomy; they're now one category axis plus
+  // state chips for the things a quadrant can't express.
+  const [stateFilter, setStateFilter] = useState(
+    ['needs_review', 'failed', 'archived'].includes(initialStateFilter) ? initialStateFilter : 'all'
+  );
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [yearFilter, setYearFilter] = useState('all');
   const [sortBy, setSortBy] = useState('date_desc');
   const [searchQuery, setSearchQuery] = useState('');
-  const [showArchived, setShowArchived] = useState(false);
   const [reclassDoc, setReclassDoc] = useState(null);
   const [previewDoc, setPreviewDoc] = useState(null);
   const [manualUploadOpen, setManualUploadOpen] = useState(false);
   const [limitToast, setLimitToast] = useState('');
 
+  const viewingArchived = stateFilter === 'archived';
+
   // Separate completed/failed docs from in-flight uploads
   const completedDocs = docs.filter(d => d.status !== 'pending' && d.status !== 'processing');
   const failedDocs = completedDocs.filter(d => d.status === 'failed');
-  const mixed = completedDocs.filter(d => d.taxStatus === 'mixed');
+  // "Needs review" now uses the same signal as the overview banner — the
+  // backend's aggregation gate (surfaced via mapApiDoc's `needsReview`) — so the
+  // two counts describe the same thing rather than diverging.
+  const mixed = completedDocs.filter(d => d.needsReview && d.status !== 'archived');
 
-  // Static high-level category filter options — quadrant level only, not deep taxonomy.
-  // This avoids a reactive list that changes as docs load, and is cleaner for filtering.
+  // Documents still processing/pending that AREN'T represented by a live upload
+  // entry — e.g. after a tab switch, reload, or the backend's crash re-queue.
+  // Rendered as progress rows so an in-flight doc is never invisible.
+  const uploadDocIds = new Set(uploads.map(u => u.docId).filter(Boolean));
+  const resumingDocs = docs.filter(
+    d => (d.status === 'pending' || d.status === 'processing') && !uploadDocIds.has(d.id)
+  );
+
+  // Cross-cutting state chips (shown with live counts). Selected colours follow
+  // each state's tag colour; archived is a neutral pastel grey.
+  const STATE_CHIPS = [
+    { value: 'all',          label: 'All' },
+    { value: 'needs_review', label: `Needs review${mixed.length ? ` (${mixed.length})` : ''}` },
+    { value: 'failed',       label: `Failed${failedDocs.length ? ` (${failedDocs.length})` : ''}` },
+    { value: 'archived',     label: 'Archived' },
+  ];
+  const CHIP_SELECTED_STYLE = {
+    all:          { background: '#0F6E56', color: '#FFFFFF', borderColor: '#0F6E56' }, // primary teal
+    needs_review: { background: '#FEF3C7', color: '#92400E', borderColor: '#FCD34D' }, // amber (Needs Review tag)
+    failed:       { background: '#FEE2E2', color: '#B91C1C', borderColor: '#FCA5A5' }, // red (Failed tag)
+    archived:     { background: '#E2E8F0', color: '#475569', borderColor: '#CBD5E1' }, // pastel grey
+  };
+
+  // Category axis — quadrant, but labelled the way users think (no "Qn —"
+  // prefix). Reference & Reconciliation is its own option so summary docs
+  // (P&L, balance sheet, prior Form B, CP500) don't sit under Business Income.
   const CATEGORY_FILTER_OPTIONS = [
     { value: 'all',  label: 'All categories' },
-    { value: 'Q1',   label: 'Q1 — Business Income' },
-    { value: 'Q2',   label: 'Q2 — Personal Income' },
-    { value: 'Q3',   label: 'Q3 — Business Expense' },
-    { value: 'Q4R',  label: 'Q4 — Tax Relief' },
-    { value: 'Q4P',  label: 'Q4 — Personal (Non-deductible)' },
-    { value: 'MIX',  label: 'Mixed / Pending Review' },
+    { value: 'Q1',   label: 'Business Income' },
+    { value: 'Q2',   label: 'Personal Income' },
+    { value: 'Q3',   label: 'Business Expense' },
+    { value: 'Q4R',  label: 'Personal Relief' },
+    { value: 'Q4P',  label: 'Personal Expense (Non-deductible)' },
+    { value: 'REF',  label: 'Reference & Reconciliation' },
   ];
 
   const availableYears = [...new Set(completedDocs.map(d => d.date ? d.date.slice(0, 4) : null).filter(Boolean))].sort((a, b) => b - a);
 
   let filtered = completedDocs.filter(d => {
-    if (showArchived) return d.status === 'archived';
-    if (d.status === 'archived') return false;
-    // 'failed' filter matches pipeline-failed docs by status, not taxStatus
-    if (statusFilter === 'failed') return d.status === 'failed';
-    if (statusFilter !== 'all' && d.taxStatus !== statusFilter) return false;
-    // Quadrant-level category filter
+    // ── State axis (cross-cutting) ──
+    if (stateFilter === 'archived') return d.status === 'archived';
+    if (d.status === 'archived') return false;               // hide archived unless viewing them
+    if (stateFilter === 'failed' && d.status !== 'failed') return false;
+    if (stateFilter === 'needs_review' && !d.needsReview) return false;
+
+    // ── Category axis (quadrant) — composes with the state axis ──
     if (categoryFilter !== 'all') {
       const cat = d.category || '';
-      if (categoryFilter === 'Q1'  && !cat.startsWith('Q1'))  return false;
+      const isReference = REFERENCE_CATEGORIES.includes(cat);
+      if (categoryFilter === 'Q1'  && (!cat.startsWith('Q1') || isReference)) return false;
       if (categoryFilter === 'Q2'  && !cat.startsWith('Q2'))  return false;
-      if (categoryFilter === 'Q3'  && !cat.startsWith('Q3'))  return false;
+      if (categoryFilter === 'Q3'  && (!cat.startsWith('Q3') || isReference)) return false;
       if (categoryFilter === 'Q4R' && !(cat.startsWith('Q4') && Q4_RELIEF_CATEGORIES.includes(cat))) return false;
       if (categoryFilter === 'Q4P' && !(cat.startsWith('Q4') && Q4_NON_DED_CATEGORIES.includes(cat))) return false;
-      if (categoryFilter === 'MIX' && cat !== 'Mixed / Pending Review') return false;
+      if (categoryFilter === 'REF' && !isReference) return false;
     }
     if (yearFilter !== 'all') {
       if (!d.date || d.date.slice(0, 4) !== yearFilter) return false;
@@ -1081,8 +1396,14 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
     return 0;
   });
 
-  const handleReclassifyConfirm = async (status, category, amount, date) => {
-    await onUpdateStatus(reclassDoc.id, status, category, amount, date);
+  const handleReclassifyConfirm = async (status, category, amount, date, deductiblePct) => {
+    await onUpdateStatus(reclassDoc.id, status, category, amount, date, deductiblePct);
+    setReclassDoc(null);
+    setPreviewDoc(null);
+  };
+
+  const handleResetConfirm = async (id) => {
+    await onReset(id);
     setReclassDoc(null);
     setPreviewDoc(null);
   };
@@ -1121,7 +1442,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
         </div>
       )}
       {reclassDoc && (
-        <ReclassifyModal doc={reclassDoc} onConfirm={handleReclassifyConfirm} onCancel={() => setReclassDoc(null)} />
+        <ReclassifyModal doc={reclassDoc} onConfirm={handleReclassifyConfirm} onReset={handleResetConfirm} onCancel={() => setReclassDoc(null)} />
       )}
       {previewDoc && (
         <DocumentPreview
@@ -1165,24 +1486,6 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
           </p>
         </div>
 
-        {/* Needs-review banner */}
-        {mixed.length > 0 && !showArchived && (
-          <div className="shrink-0 flex items-center justify-between gap-3 rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-4 py-2.5">
-            <div className="flex items-center gap-2">
-              <svg className="shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#B45309" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-              </svg>
-              <p className="text-[11px] font-semibold text-[#B45309]">
-                {mixed.length} document{mixed.length > 1 ? 's' : ''} need your input to classify
-              </p>
-            </div>
-            <button onClick={() => setStatusFilter('mixed')}
-              className="shrink-0 rounded-lg bg-[#B45309] px-3 py-1 text-[10px] font-semibold text-white hover:bg-[#92400E] transition-colors">
-              Review now
-            </button>
-          </div>
-        )}
-
         {/* Filter, search, sort bar */}
         <div className="shrink-0 flex items-center gap-2 flex-wrap">
           <div className="flex items-center gap-2">
@@ -1200,59 +1503,52 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
               />
             </div>
 
-            {/* Archive toggle — styled to match the dropdowns alongside it */}
-            <button
-              onClick={() => { setShowArchived(v => !v); setStatusFilter('all'); }}
-              className={`rounded-lg border px-2.5 py-1.5 text-[10px] font-medium transition-colors flex items-center gap-1.5 ${showArchived ? 'border-[#64748B] bg-[#64748B] text-white' : 'border-[#E2E8F0] bg-white text-[#334155] hover:border-[#0D9488]'}`}>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>
-              </svg>
-              {showArchived ? 'Showing archived' : 'Archived'}
-            </button>
+            {/* State chips — cross-cutting document state (compose with the category axis) */}
+            <div className="flex items-center gap-1.5">
+              {STATE_CHIPS.map(chip => {
+                const selected = stateFilter === chip.value;
+                return (
+                  <button
+                    key={chip.value}
+                    onClick={() => setStateFilter(chip.value)}
+                    style={selected ? CHIP_SELECTED_STYLE[chip.value] : undefined}
+                    className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition-colors ${
+                      selected ? '' : 'border-[#E2E8F0] bg-white text-[#334155] font-medium hover:border-[#0D9488]'
+                    }`}>
+                    {chip.label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <div className="ml-auto flex items-center gap-2">
-            {!showArchived && (
-              <>
-                <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-                  className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
-                  <option value="all">All classifications</option>
-                  <option value="income">Income</option>
-                  <option value="deductible">Deductible</option>
-                  <option value="relief">Relief</option>
-                  <option value="non_deductible">Personal</option>
-                  <option value="capital">Capital Asset</option>
-                  <option value="not_applicable">Not Applicable</option>
-                  <option value="mixed">{`Review${mixed.length ? ` (${mixed.length})` : ''}`}</option>
-                  <option value="failed">{`Failed${failedDocs.length ? ` (${failedDocs.length})` : ''}`}</option>
-                </select>
-                <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
-                  className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
-                  {CATEGORY_FILTER_OPTIONS.map(o => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-                <select value={yearFilter} onChange={e => setYearFilter(e.target.value)}
-                  className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
-                  <option value="all">All years</option>
-                  {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
-                </select>
-                <select value={sortBy} onChange={e => setSortBy(e.target.value)}
-                  className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
-                  <option value="date_desc">Newest first</option>
+            {/* Category (quadrant) axis + year + sort — apply within any state view */}
+            <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
+              className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
+              {CATEGORY_FILTER_OPTIONS.map(o => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <select value={yearFilter} onChange={e => setYearFilter(e.target.value)}
+              className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
+              <option value="all">All years</option>
+              {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+              className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
+              <option value="date_desc">Newest first</option>
                   <option value="date_asc">Oldest first</option>
                   <option value="amount_desc">Amount: high → low</option>
                   <option value="amount_asc">Amount: low → high</option>
                   <option value="name_asc">Name A–Z</option>
                 </select>
-              </>
-            )}
           </div>
         </div>
 
         {/* Document table */}
         <div className="flex-1 min-h-0 overflow-y-auto rounded-xl border border-[#E2E8F0] bg-white">
-          {uploads.length === 0 && filtered.length === 0 ? (
+          {uploads.length === 0 && resumingDocs.length === 0 && filtered.length === 0 ? (
             <div className="flex h-full items-center justify-center p-8 text-center">
               <div>
                 <svg className="mx-auto mb-3 h-10 w-10 text-[#CBD5E1]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1274,10 +1570,19 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
               </thead>
               <tbody>
                 {/* In-flight uploads first */}
-                {!showArchived && uploads.map(entry => (
+                {!viewingArchived && uploads.map(entry => (
                   <UploadProgressEntry
                     key={entry.localId}
                     entry={entry}
+                  />
+                ))}
+                {/* Docs still processing after a tab switch / reload / re-queue,
+                    not tracked by a live upload entry — shown so they're never invisible. */}
+                {!viewingArchived && resumingDocs.map(d => (
+                  <UploadProgressEntry
+                    key={`resume-${d.id}`}
+                    entry={{ localId: `resume-${d.id}`, fileName: d.name, docId: d.id,
+                             phase: d.status === 'processing' ? 'processing' : 'uploading' }}
                   />
                 ))}
                 {/* Resolved docs */}
@@ -1291,10 +1596,10 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
                     </td>
                     <td className="px-3 py-2.5 text-xs font-semibold text-[#0F172A] whitespace-nowrap">{doc.amount}</td>
                     <td className="px-3 py-2.5 text-[10px] text-[#334155] max-w-[140px]">
-                      <span className="block truncate">{doc.category}</span>
+                      <span className="block truncate">{categoryLabel(doc.category)}</span>
                     </td>
                     <td className="px-3 py-2.5">
-                      <StatusBadge status={doc.taxStatus || doc.status} />
+                      <StatusBadge status={badgeStatusFor(doc.category, doc.taxStatus, doc.status)} />
                     </td>
                     <td className="px-3 py-2.5 text-[10px] text-[#64748B] whitespace-nowrap">{doc.dateDisplay}</td>
                     <td className="py-2.5 pr-4">
@@ -1338,7 +1643,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
 
         {/* Footer count */}
         <p className="shrink-0 text-[10px] text-[#94A3B8]">
-          {showArchived
+          {viewingArchived
             ? `${filtered.length} archived document${filtered.length !== 1 ? 's' : ''}`
             : `${filtered.length} of ${completedDocs.filter(d => d.status !== 'archived').length} documents shown`}
           {uploads.length > 0 && ` · ${uploads.length} uploading`}
@@ -1349,309 +1654,22 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
   );
 }
 
-// ─── PDF Preview slide-over ───────────────────────────────────────────────────
-function PdfPreview({ formId, formData, filingYear, onClose }) {
-  const [zoom, setZoom] = useState(100);
-  const [visible, setVisible] = useState(false);
-  useEffect(() => { requestAnimationFrame(() => setVisible(true)); }, []);
-
-  const handleClose = () => { setVisible(false); setTimeout(onClose, 300); };
-
-  const { deductibleTotal, nonDeductibleTotal, reviewTotal, totalIncome, chargeableIncome,
-    taxCharged, lessInstalment, taxPayable } = formData;
-  const dueDate = `30 Jun ${filingYear + 1}`;
-
-  return (
-    <div className="fixed inset-0 z-50 flex" onClick={handleClose}>
-      <div className={`flex-1 bg-black/40 transition-opacity duration-300 ${visible ? 'opacity-100' : 'opacity-0'}`} />
-      <div
-        className={`relative flex h-full w-[680px] max-w-full flex-col bg-white shadow-2xl transition-transform duration-300 ease-out ${visible ? 'translate-x-0' : 'translate-x-full'}`}
-        onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between border-b border-[#E2E8F0] px-5 py-3 bg-[#F8FAFC] shrink-0">
-          <div>
-            <p className="text-sm font-bold text-[#0F172A]">
-              Form B Preview — YA {filingYear} Personal Return
-            </p>
-            <p className="text-[10px] text-[#64748B] mt-0.5">This is a pre-filled draft for your reference. Verify all values before submitting to LHDN.</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 rounded-lg border border-[#E2E8F0] bg-white px-2 py-1">
-              <button onClick={() => setZoom(z => Math.max(60, z - 10))}
-                className="text-[#64748B] hover:text-[#0F172A] px-1 text-sm font-bold">−</button>
-              <span className="text-[10px] text-[#64748B] w-8 text-center">{zoom}%</span>
-              <button onClick={() => setZoom(z => Math.min(150, z + 10))}
-                className="text-[#64748B] hover:text-[#0F172A] px-1 text-sm font-bold">+</button>
-            </div>
-            <button
-              className="flex items-center gap-1.5 rounded-lg bg-[#0F6E56] px-3 py-2 text-xs font-semibold text-white hover:bg-[#0A5140] transition-colors">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-              </svg>
-              Export PDF
-            </button>
-            <button onClick={handleClose} className="text-[#94A3B8] hover:text-[#0F172A] transition-colors ml-1">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto bg-[#E8EBEF] p-6">
-          <div style={{ transform: `scale(${zoom / 100})`, transformOrigin: 'top center', transition: 'transform 0.2s' }}>
-            <div className="bg-white mx-auto shadow-xl rounded-lg overflow-hidden" style={{ width: 580 }}>
-              <div className="px-6 py-5 flex items-start gap-4 border-b border-[#E2E8F0]">
-                <img src={cukaiLogo} alt="cukai.ai logo" className="h-10 w-10 shrink-0" />
-                <div className="min-w-0">
-                  <span className="select-none text-xl font-bold tracking-tight text-[#0F172A]">
-                    cukai<span className="text-[#10B981]">.</span><span className="font-light text-[#64748B]">ai</span>
-                  </span>
-                  <p className="text-[10px] text-[#64748B] mt-0.5">
-                    Pre-filled draft of your personal income tax return
-                  </p>
-                </div>
-                <div className="ml-auto shrink-0 text-right">
-                  <p className="text-[9px] text-[#94A3B8] uppercase tracking-wider">Form</p>
-                  <p className="text-2xl font-black leading-none text-[#0F6E56]">B</p>
-                  <p className="text-[9px] text-[#94A3B8] mt-0.5">YA {filingYear}</p>
-                </div>
-              </div>
-
-              <div className="px-6 py-5 space-y-5 text-[11px]">
-                <PreviewSection title="BASIC PARTICULARS">
-                  <PreviewField label="1  Name" value="Aisyah binti Ahmad" />
-                  <PreviewField label="2  Tax Identification No. (TIN)" value="SG 12345678901" />
-                  <PreviewField label="3  Identification No." value="900101-14-5678" />
-                  <PreviewField label="4  Correspondence address" value="No. 12, Jalan Damai 3, 50450 Kuala Lumpur" />
-                </PreviewSection>
-
-                <PreviewSection title="PART A — PARTICULARS OF INDIVIDUAL">
-                  <PreviewField label="A1  Citizen" value="MYS" /><PreviewField label="A2  Gender" value="Female" />
-                  <PreviewField label="A3  Date of birth" value="01/01/1990" /><PreviewField label="A4  Status" value="Married" />
-                  <PreviewField label="A6  Record-keeping" value="Yes" /><PreviewField label="A7  Type of assessment" value="3 – Separate" />
-                </PreviewSection>
-
-                <PreviewSection title="PART B — COMPUTATION OF INCOME TAX">
-                  <PreviewField label="B1   Statutory income from businesses in Malaysia" value={fmtRM(deductibleTotal)} highlight />
-                  <PreviewField label="B7   Statutory income from employment" value="—" />
-                  <PreviewField label="B8   Statutory income from rents" value="—" />
-                  <PreviewField label="B11  AGGREGATE INCOME" value={fmtRM(totalIncome)} bold />
-                  <PreviewField label="B17  Less: Approved donations / gifts" value="—" />
-                  <PreviewField label="B20  TOTAL INCOME [SELF]" value={fmtRM(totalIncome)} bold />
-                  <PreviewField label="B23  Total Relief" value="RM 18,000" />
-                  <PreviewField label="B24  CHARGEABLE INCOME" value={fmtRM(chargeableIncome)} highlight bold />
-                  <PreviewField label="B26  Total Income Tax" value={fmtRM(taxCharged)} />
-                  <PreviewField label="B27  Less: Rebates (self)" value="RM 400" />
-                  <PreviewField label="B28  TOTAL TAX CHARGED" value={fmtRM(Math.max(0, taxCharged - 400))} bold />
-                  <PreviewField label="B33  Less: CP500 instalments paid" value={fmtRM(lessInstalment)} />
-                  <PreviewField label="B34  BALANCE TAX PAYABLE" value={fmtRM(taxPayable)} highlight bold />
-                </PreviewSection>
-
-                <PreviewSection title="PART H — RELIEF">
-                  <PreviewField label="H1   Individual and dependent relatives" value="RM 9,000" />
-                  <PreviewField label="H2   Expenses for parents" value="—" />
-                  <PreviewField label="H5   Education fees (Self)" value="—" />
-                  <PreviewField label="H6   Medical expenses (serious diseases)" value="—" />
-                  <PreviewField label="H9   Lifestyle (books, internet, devices)" value="—" />
-                  <PreviewField label="H13  SSPN net deposit" value="—" />
-                  <PreviewField label="H14  Husband / wife" value="—" />
-                  <PreviewField label="H16  Child relief" value="—" />
-                  <PreviewField label="H17  Life insurance and EPF" value="RM 7,000" />
-                  <PreviewField label="H18  Private retirement scheme" value="—" />
-                  <PreviewField label="H19  Education and medical insurance" value="RM 2,000" />
-                  <PreviewField label="H20  SOCSO contribution" value="—" />
-                  <PreviewField label="H22  TOTAL RELIEF" value="RM 18,000" bold highlight />
-                </PreviewSection>
-
-                <PreviewSection title="PART N — FINANCIAL PARTICULARS (MAIN BUSINESS)">
-                  <PreviewField label="N2   Business code (MSIC)" value="1811" />
-                  <PreviewField label="N3   Sales or turnover" value={fmtRM(deductibleTotal + 12000)} />
-                  <PreviewField label="N7   Cost of sales" value="—" />
-                  <PreviewField label="N8   Gross Profit / Loss" value={fmtRM(deductibleTotal + 12000)} />
-                  <PreviewField label="N14  Total other income" value="—" />
-                  <PreviewField label="N15  Loan interest" value="—" />
-                  <PreviewField label="N16  Salaries and wages" value={fmtRM(14500)} />
-                  <PreviewField label="N17  Rental / lease" value={fmtRM(1240)} />
-                  <PreviewField label="N22  Repairs and maintenance" value="—" />
-                  <PreviewField label="N23  Promotion and advertisement" value={fmtRM(3200)} />
-                  <PreviewField label="N25  TOTAL EXPENDITURE" value={fmtRM(deductibleTotal)} bold />
-                  <PreviewField label="N26  NET PROFIT / LOSS" value={fmtRM(deductibleTotal + 12000 - deductibleTotal)} bold highlight />
-                  <PreviewField label="N27  Non-allowable expenses" value={fmtRM(nonDeductibleTotal)} />
-                </PreviewSection>
-
-                {reviewTotal > 0 && (
-                  <div className="rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-4 py-3">
-                    <p className="text-[10px] font-semibold text-[#B45309]">⚠ {fmtRM(reviewTotal)} in expenses are still under review</p>
-                    <p className="text-[9px] text-[#92400E] mt-0.5">Classify all mixed items in the OCR Evidence tab before final submission to LHDN.</p>
-                  </div>
-                )}
-
-                <div className="border-t border-[#E2E8F0] pt-4 text-[9px] text-[#94A3B8] text-center">
-                  <p>This is a cukai.ai pre-filled draft — for reference only. File via mytax.hasil.gov.my · Due: {dueDate}</p>
-                  <p className="mt-0.5">Contact Hasil Care Line: 03-8911 1000 (Local) / 603-8911 1000 (Overseas)</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PreviewSection({ title, children }) {
-  return (
-    <div>
-      <div className="flex items-center gap-2 mb-2">
-        <div className="h-px flex-1 bg-[#E2E8F0]" />
-        <p className="text-[9px] font-bold uppercase tracking-widest text-[#64748B] shrink-0">{title}</p>
-        <div className="h-px flex-1 bg-[#E2E8F0]" />
-      </div>
-      <div className="rounded-lg overflow-hidden border border-[#F1F5F9] divide-y divide-[#F1F5F9]">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function PreviewField({ label, value, highlight, bold }) {
-  return (
-    <div className={`flex items-center justify-between px-3 py-1.5 ${highlight ? 'bg-[#F0FDF4]' : ''}`}>
-      <span className={`text-[10px] ${bold ? 'font-semibold text-[#0F172A]' : 'text-[#64748B]'}`}>{label}</span>
-      <span className={`text-[10px] ml-4 text-right ${bold ? 'font-bold' : 'font-medium'} ${highlight ? 'text-[#0F6E56]' : 'text-[#0F172A]'}`}>{value}</span>
-    </div>
-  );
-}
-
-// ─── Generate Report Tab ──────────────────────────────────────────────────────
-// This app is tailored to sole proprietors, so there's only ever one form to
-// generate — Form B, Personal Return — for whichever YA is currently being
-// filed. No scenario switching, no form picker.
-function GenerateTab({ docs, filingYear, showPreview, setShowPreview }) {
-  const deductibleTotal    = docs.filter(d => d.status === 'deductible').reduce((s, d) => s + parseAmt(d.amount), 0);
-  const nonDeductibleTotal = docs.filter(d => d.status === 'non_deductible').reduce((s, d) => s + parseAmt(d.amount), 0);
-  const reviewTotal        = docs.filter(d => d.status === 'mixed').reduce((s, d) => s + parseAmt(d.amount), 0);
-  const totalIncome        = deductibleTotal;
-  const chargeableIncome   = Math.max(0, totalIncome - 18000);
-
-  const calcTax = (ci) => {
-    const bands = [
-      [5000, 0], [15000, 0.01], [15000, 0.03], [15000, 0.06],
-      [20000, 0.11], [30000, 0.19], [150000, 0.25], [Infinity, 0.26],
-    ];
-    let tax = 0, rem = ci;
-    for (const [band, rate] of bands) {
-      if (rem <= 0) break;
-      const taxable = Math.min(rem, band);
-      tax += taxable * rate;
-      rem -= taxable;
-    }
-    return Math.round(tax);
-  };
-  const taxCharged     = calcTax(chargeableIncome);
-  const lessInstalment = Math.round(taxCharged * 0.7);
-  const taxPayable     = Math.max(0, taxCharged - 400 - lessInstalment);
-
-  const formData = { deductibleTotal, nonDeductibleTotal, reviewTotal, totalIncome,
-    chargeableIncome, taxCharged, lessInstalment, taxPayable };
-
-  return (
-    <>
-      {showPreview && (
-        <PdfPreview formId="B" formData={formData} filingYear={filingYear} onClose={() => setShowPreview(false)} />
-      )}
-      <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto pr-1">
-        {/* Form summary + actions */}
-        <div className="shrink-0 rounded-xl border border-[#E2E8F0] bg-white overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3 bg-[#F8FAFC] border-b border-[#E2E8F0]">
-            <div>
-              <p className="text-xs font-semibold text-[#0F172A]">Form B — Personal Return YA {filingYear}</p>
-              <p className="text-[10px] text-[#64748B] mt-0.5">Auto-populated from uploaded documents · Verify before submitting to LHDN</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button onClick={() => setShowPreview(true)}
-                className="flex items-center gap-1.5 rounded-lg border border-[#0F6E56] bg-white px-3 py-2 text-xs font-semibold text-[#0F6E56] hover:bg-[#ECFDF5] transition-colors">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-                </svg>
-                Preview
-              </button>
-              <button onClick={() => setShowPreview(true)}
-                className="flex items-center gap-1.5 rounded-lg bg-[#0F6E56] px-3 py-2 text-xs font-semibold text-white hover:bg-[#0A5140] transition-colors">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-                </svg>
-                Export PDF
-              </button>
-            </div>
-          </div>
-
-          <div className="px-5 py-4 space-y-4">
-            <InlineSummary title="Part B — Income Computation">
-              <SRow label="B1  Business income (sole prop / expense deductions)" value={fmtRM(deductibleTotal)} />
-              <SRow label="B11 Aggregate income" value={fmtRM(totalIncome)} bold />
-              <SRow label="B17 Less: Donations / gifts" value="—" />
-              <SRow label="B23 Total relief" value="RM 18,000" />
-              <SRow label="B24 Chargeable income" value={fmtRM(chargeableIncome)} bold highlight />
-              <SRow label="B26 Total income tax" value={fmtRM(taxCharged)} />
-              <SRow label="B28 Tax charged (after rebate RM 400)" value={fmtRM(Math.max(0, taxCharged - 400))} bold />
-              <SRow label="B33 Less: CP500 instalments" value={fmtRM(lessInstalment)} />
-              <SRow label="B34 Balance tax payable" value={fmtRM(taxPayable)} bold highlight />
-            </InlineSummary>
-            <InlineSummary title="Part H — Relief Breakdown">
-              <SRow label="H1  Individual & dependent relatives" value="RM 9,000" />
-              <SRow label="H17 Life insurance & EPF" value="RM 7,000" />
-              <SRow label="H19 Education & medical insurance" value="RM 2,000" />
-              <SRow label="H22 TOTAL RELIEF" value="RM 18,000" bold highlight />
-            </InlineSummary>
-            <InlineSummary title="Part N — Business Financial Particulars">
-              <SRow label="N3  Sales / turnover (estimated)" value={fmtRM(deductibleTotal + 12000)} />
-              <SRow label="N16 Salaries and wages" value="RM 14,500" />
-              <SRow label="N17 Rental / lease" value="RM 1,240" />
-              <SRow label="N23 Marketing and promotion" value="RM 3,200" />
-              <SRow label="N25 Total expenditure" value={fmtRM(deductibleTotal)} bold />
-              <SRow label="N27 Non-allowable (personal) expenses" value={fmtRM(nonDeductibleTotal)} />
-            </InlineSummary>
-            {reviewTotal > 0 && (
-              <div className="rounded-lg border border-[#FDE68A] bg-[#FFFBEB] p-3">
-                <p className="text-[10px] font-semibold text-[#B45309]">⚠ {fmtRM(reviewTotal)} still under review</p>
-                <p className="text-[9px] text-[#92400E] mt-0.5">Classify remaining items in the OCR Evidence tab before filing.</p>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
-function InlineSummary({ title, children }) {
-  return (
-    <div>
-      <p className="mb-1.5 text-[9px] font-bold uppercase tracking-widest text-[#94A3B8]">{title}</p>
-      <div className="rounded-lg border border-[#F1F5F9] divide-y divide-[#F1F5F9] overflow-hidden">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function SRow({ label, value, bold, highlight }) {
-  return (
-    <div className={`flex items-center justify-between px-3 py-1.5 ${highlight ? 'bg-[#F0FDF4]' : ''}`}>
-      <span className={`text-[10px] ${bold ? 'font-semibold text-[#0F172A]' : 'text-[#64748B]'}`}>{label}</span>
-      <span className={`text-[10px] ml-6 text-right ${bold ? 'font-bold' : 'font-medium'} ${highlight ? 'text-[#0F6E56]' : 'text-[#0F172A]'}`}>{value}</span>
-    </div>
-  );
-}
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 function CukaiAccount() {
-  const [tab, setTab]       = useState('upload');
+  // When navigated here with ?filter=needs_review (e.g. the overview's "Review"
+  // banner button), preselect that state chip on the upload tab.
+  const initialStateFilter = (() => {
+    const p = new URLSearchParams(window.location.search).get('filter');
+    return ['needs_review', 'failed', 'archived'].includes(p) ? p : null;
+  })();
   const [docs, setDocs]     = useState([]);       // resolved backend docs (mapped)
   const [uploads, setUploads] = useState([]);     // in-flight upload entries
   const [docsLoading, setDocsLoading] = useState(true);
   const [activeEntity, setActiveEntity] = useState(null);
+  // Doc IDs currently being polled, so the resume-poller never double-polls a
+  // doc that a fresh upload / retry is already tracking.
+  const pollingRef = useRef(new Set());
 
   // Load the active entity name and listen for switches from ManageProfile
   useEffect(() => {
@@ -1697,6 +1715,47 @@ function CukaiAccount() {
     })();
     return () => { cancelled = true; };
   }, [activeEntity?.id]);
+
+  // ── Resume polling for interrupted documents ─────────────────────────────
+  // A document keeps processing server-side even when this component unmounts
+  // (tab/page switch) or the user reloads — and the backend re-queues anything
+  // left mid-flight after a restart. On (re)mount, the doc list re-loads from
+  // the backend including any 'pending'/'processing' rows; this attaches a
+  // poller to each so the user always sees it resolve, without depending on the
+  // transient in-session upload entries. Guarded by pollingRef so a doc that a
+  // live upload/retry is already tracking isn't polled twice.
+  const ensurePolling = useCallback((docId) => {
+    if (pollingRef.current.has(docId)) return;
+    pollingRef.current.add(docId);
+    const userId = localStorage.getItem('userId');
+    const entityId = activeEntity?.id || null;
+    const INTERVALS = [2000, 3000, 3000, 5000, 5000, 8000, 10000];
+    let attempt = 0;
+    const poll = async () => {
+      try {
+        const statusData = await API.getDocumentStatus(docId, userId, entityId);
+        if (statusData.status === 'completed' || statusData.status === 'failed') {
+          try {
+            const full = await API.getDocument(docId, userId, entityId);
+            setDocs(prev => prev.map(d => d.id === docId
+              ? { ...mapApiDoc(full), _localObjectUrl: d._localObjectUrl } : d));
+          } catch (_) {
+            setDocs(prev => prev.map(d => d.id === docId ? { ...d, status: statusData.status } : d));
+          }
+          pollingRef.current.delete(docId);
+          return;
+        }
+      } catch (_) {}
+      setTimeout(poll, INTERVALS[Math.min(attempt++, INTERVALS.length - 1)]);
+    };
+    setTimeout(poll, INTERVALS[attempt++]);
+  }, [activeEntity?.id]);
+
+  useEffect(() => {
+    docs.forEach(d => {
+      if (d.status === 'pending' || d.status === 'processing') ensurePolling(d.id);
+    });
+  }, [docs, ensurePolling]);
 
   // ── Duplicate / retry toast ──────────────────────────────────────────────────
   const [dupToast, setDupToast] = useState(null); // { fileName, existingId, retryHint }
@@ -1758,6 +1817,7 @@ function CukaiAccount() {
     const INTERVALS = [2000, 3000, 3000, 5000, 5000, 8000, 10000];
     let attempt = 0;
     let cancelled = false;
+    pollingRef.current.add(docId);
 
     setUploads(prev => prev.map(e => e.localId === localId ? { ...e, phase: 'processing' } : e));
 
@@ -1766,6 +1826,7 @@ function CukaiAccount() {
       try {
         const statusData = await API.getDocumentStatus(docId, userId, entityId);
         if (statusData.status === 'completed' || statusData.status === 'failed') {
+          pollingRef.current.delete(docId);
           setUploads(prev => prev.map(e =>
             e.localId === localId ? { ...e, phase: statusData.status === 'completed' ? 'done' : 'failed' } : e
           ));
@@ -1815,25 +1876,42 @@ function CukaiAccount() {
   }, [activeEntity?.id]);
 
   // ── Re-classify ─────────────────────────────────────────────────────────────
-  const updateDocStatus = useCallback(async (id, status, category, amount = null, date = null) => {
+  const updateDocStatus = useCallback(async (id, status, category, amount = null, date = null, deductiblePct = null) => {
     const userId = localStorage.getItem('userId');
     const entityId = activeEntity?.id || null;
     setDocs(prev => prev.map(d => d.id === id
       ? {
           ...d, taxStatus: status, category, status: 'completed',
-          ...(amount !== null ? { amount: fmtRM(amount) } : {}),
+          ...(amount !== null ? { amount: fmtRM(amount), amountNumber: amount } : {}),
           ...(date !== null ? { date, datePrecision: 'day', dateDisplay: formatDocDate(date, 'day'), dateSortKey: date } : {}),
+          ...(deductiblePct !== null ? { deductiblePct } : {}),
         }
       : d
     ));
     try {
-      await API.reclassifyDocument(id, status, category, userId, entityId, amount, date);
+      await API.reclassifyDocument(id, status, category, userId, entityId, amount, date, deductiblePct);
+      // Re-fetch so the row reflects recomputed role/aggregation AND the new
+      // edited/original flags (which drive the Reset button and field locks).
+      const full = await API.getDocument(id, userId, entityId);
+      setDocs(prev => prev.map(d => d.id === id ? { ...mapApiDoc(full), _localObjectUrl: d._localObjectUrl } : d));
     } catch (e) {
       console.error('[Reclassify]', e);
       try {
         const full = await API.getDocument(id, userId, entityId);
-        setDocs(prev => prev.map(d => d.id === id ? mapApiDoc(full) : d));
+        setDocs(prev => prev.map(d => d.id === id ? { ...mapApiDoc(full), _localObjectUrl: d._localObjectUrl } : d));
       } catch (_) {}
+    }
+  }, [activeEntity?.id]);
+
+  // ── Reset a document to the LLM's original classification ────────────────────
+  const resetDoc = useCallback(async (id) => {
+    const userId = localStorage.getItem('userId');
+    const entityId = activeEntity?.id || null;
+    try {
+      const full = await API.resetDocument(id, userId, entityId);
+      setDocs(prev => prev.map(d => d.id === id ? { ...mapApiDoc(full), _localObjectUrl: d._localObjectUrl } : d));
+    } catch (e) {
+      console.error('[Reset]', e);
     }
   }, [activeEntity?.id]);
 
@@ -1857,6 +1935,7 @@ function CukaiAccount() {
     const userId = localStorage.getItem('userId');
     const entityId = activeEntity?.id || null;
     const localId = `retry-${doc.id}`;
+    pollingRef.current.add(doc.id);
 
     setDocs(prev => prev.map(d => d.id === doc.id ? { ...d, status: 'processing', taxStatus: null } : d));
     setUploads(prev => [...prev, {
@@ -1872,6 +1951,7 @@ function CukaiAccount() {
       await API.retryDocument(doc.id, userId, entityId);
     } catch (e) {
       console.error('[Retry]', e);
+      pollingRef.current.delete(doc.id);
       setUploads(prev => prev.filter(u => u.localId !== localId));
       try {
         const full = await API.getDocument(doc.id, userId, entityId);
@@ -1892,9 +1972,11 @@ function CukaiAccount() {
       try {
         const statusData = await API.getDocumentStatus(doc.id, userId, entityId);
         if (statusData.status === 'completed' || statusData.status === 'failed') {
+          pollingRef.current.delete(doc.id);
           try {
             const full = await API.getDocument(doc.id, userId, entityId);
-            setDocs(prev => prev.map(d => d.id === doc.id ? mapApiDoc(full) : d));
+            setDocs(prev => prev.map(d => d.id === doc.id
+              ? { ...mapApiDoc(full), _localObjectUrl: d._localObjectUrl } : d));
           } catch (_) {
             setDocs(prev => prev.map(d => d.id === doc.id ? { ...d, status: statusData.status } : d));
           }
@@ -1907,10 +1989,6 @@ function CukaiAccount() {
     };
     setTimeout(poll, INTERVALS[attempt++]);
   }, [activeEntity?.id]);
-
-  // Generate Report tab state lifted to root so the Generate tab retains its
-  // preview state when switching away to Upload and back.
-  const [showPreview, setShowPreview] = useState(false);
 
   return (
     <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body flex flex-col">
@@ -1936,41 +2014,31 @@ function CukaiAccount() {
         {/* Header */}
         <div className="shrink-0">
           <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Cukai Account</h1>
-          <p className="text-xs text-[#64748B] mt-1">Upload receipts, classify expenses, and generate your tax return draft{activeEntity ? ` — ${activeEntity.name}` : ''}.</p>
+          <p className="text-xs text-[#64748B] mt-1">Upload receipts and classify your expenses{activeEntity ? ` — ${activeEntity.name}` : ''}.</p>
         </div>
 
-        {/* Tab nav */}
-        <CukaiTabNav active={tab} onChange={setTab} />
-
-        {/* Tab content */}
+        {/* Documents */}
         <div className="flex flex-1 min-h-0 gap-5">
           <div className="flex-1 min-w-0 min-h-0">
-            {tab === 'upload' && (
-              docsLoading ? (
-                <div className="flex h-full items-center justify-center">
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="h-8 w-8 rounded-full border-4 border-[#0F6E56] border-t-transparent animate-spin" />
-                    <p className="text-sm text-[#64748B]">Loading your documents…</p>
-                  </div>
+            {docsLoading ? (
+              <div className="flex h-full items-center justify-center">
+                <div className="flex flex-col items-center gap-3">
+                  <div className="h-8 w-8 rounded-full border-4 border-[#0F6E56] border-t-transparent animate-spin" />
+                  <p className="text-sm text-[#64748B]">Loading your documents…</p>
                 </div>
-              ) : (
-                <UploadTab
-                  docs={docs}
-                  uploads={uploads}
-                  onFileDrop={handleFileDrop}
-                  onRemove={removeDoc}
-                  onArchive={archiveDoc}
-                  onRetry={retryDoc}
-                  onUpdateStatus={updateDocStatus}
-                  onManualAdd={manualAddDoc}
-                />
-              )
-            )}
-            {tab === 'generate' && (
-              <GenerateTab
+              </div>
+            ) : (
+              <UploadTab
                 docs={docs}
-                filingYear={currentFilingYear()}
-                showPreview={showPreview} setShowPreview={setShowPreview}
+                uploads={uploads}
+                onFileDrop={handleFileDrop}
+                onRemove={removeDoc}
+                onArchive={archiveDoc}
+                onRetry={retryDoc}
+                onUpdateStatus={updateDocStatus}
+                onReset={resetDoc}
+                onManualAdd={manualAddDoc}
+                initialStateFilter={initialStateFilter}
               />
             )}
           </div>

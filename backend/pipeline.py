@@ -1,15 +1,21 @@
 import csv
+import difflib
 import io
 import json
 import logging
 import os
 import re
+import threading
+from datetime import date as _date_cls
+from decimal import Decimal
 from dotenv import load_dotenv
 from typing import Literal
 
 import pandas as pd
 from sqlalchemy.orm import Session
-from models import Document, FormBProfile
+from models import Document, FormBProfile, CapitalAsset, Entity
+from utils import parse_amount
+from capital_allowance import resolve_capital_allowance_rates
 
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.base_models import InputFormat
@@ -58,10 +64,20 @@ Q1_BUSINESS_INCOME_CATEGORIES = [
   "Q1 — Business Bank Interest",           # interest credited to a dedicated business account
   "Q1 — Capital Gains (s.4aa)",            # disposal of unlisted shares / foreign capital assets
   "Q1 — SST-02 Sales Tax Return",          # SST collected from customers; remittance to Kastam
+  "Q1 — e-Invoice / LHDN Validated",       # MyInvois / Peppol-validated e-invoices received
+]
+
+# Reference / summary documents that sit structurally in the income quadrant but
+# are NOT income themselves — they describe or reconcile the return (a P&L, a
+# balance sheet, a prior Form B). Kept in a separate list so they don't read as
+# business-income line items, but still folded into ALL_Q1 below so they remain
+# valid categories with a Q1 quadrant. Their `document_role` is summary_statement
+# (see SUMMARY_STATEMENT_CATEGORIES), which is what actually keeps their amounts
+# OUT of the totals — this split is about organisation, not double-counting.
+Q1_REFERENCE_CATEGORIES = [
   "Q1 — Financial Statements (P&L)",       # profit & loss / income statement
   "Q1 — Financial Statements (BS)",        # balance sheet / statement of financial position
-  "Q1 — e-Invoice / LHDN Validated",       # MyInvois / Peppol-validated e-invoices received
-  "Q1 — Filed Form B (Prior Year)",        # previously submitted Form B — used for YA baseline & carry-forward
+  "Q1 — Filed Form B (Prior Year)",        # previously submitted Form B — YA baseline & carry-forward
 ]
 
 # ── Q2: Personal Income ───────────────────────────────────────────────────────
@@ -143,16 +159,24 @@ Q4_PERSONAL_RELIEF_CATEGORIES = [
 # ── Special categories ────────────────────────────────────────────────────────
 REVIEW_CATEGORY  = "Mixed / Pending Review"   # genuinely straddles two quadrants; needs user input
 NON_TAX_CATEGORY = "Non-Tax Document"         # no monetary transactions whatsoever
+# A bank statement gets its own dedicated category rather than folding into
+# Q1-Q4 or "Mixed / Pending Review" — see the BANK STATEMENT LINE MATCHING
+# section below for why it needs fundamentally different handling: it's many
+# transactions, not one, and most lines will duplicate documents already
+# uploaded separately.
+BANK_STATEMENT_CATEGORY = "Bank Statement — Transaction Ledger"
 
 # ── Master category lists ─────────────────────────────────────────────────────
-ALL_Q1 = Q1_BUSINESS_INCOME_CATEGORIES
+# ALL_Q1 = true business income + Q1 reference/summary docs, so both remain valid
+# categories mapped to the Q1 quadrant; the two are only split for clarity above.
+ALL_Q1 = Q1_BUSINESS_INCOME_CATEGORIES + Q1_REFERENCE_CATEGORIES
 ALL_Q2 = Q2_PERSONAL_INCOME_CATEGORIES
 ALL_Q3 = Q3_BUSINESS_EXPENSE_CATEGORIES
 ALL_Q4 = Q4_PERSONAL_RELIEF_CATEGORIES
 
 ALL_CATEGORIES = (
   ALL_Q1 + ALL_Q2 + ALL_Q3 + ALL_Q4
-  + [REVIEW_CATEGORY, NON_TAX_CATEGORY]
+  + [REVIEW_CATEGORY, NON_TAX_CATEGORY, BANK_STATEMENT_CATEGORY]
 )
 
 # Status vocabulary
@@ -210,8 +234,271 @@ for cat in _Q4_RELIEF_CATS:
   CATEGORY_STATUS_MAP[cat] = "relief"
 for cat in _Q4_NON_DED_CATS:
   CATEGORY_STATUS_MAP[cat] = "non_deductible"
-CATEGORY_STATUS_MAP[REVIEW_CATEGORY]  = "mixed"
-CATEGORY_STATUS_MAP[NON_TAX_CATEGORY] = "not_applicable"
+CATEGORY_STATUS_MAP[REVIEW_CATEGORY]        = "mixed"
+CATEGORY_STATUS_MAP[NON_TAX_CATEGORY]       = "not_applicable"
+CATEGORY_STATUS_MAP[BANK_STATEMENT_CATEGORY] = "mixed"  # individual lines matched, never bulk-summed
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DOCUMENT ROLE + AGGREGATION STATE
+# Two further classification dimensions layered on top of `category`. Both are
+# derived deterministically from (category, status) in code — never left to the
+# LLM — so a prompt change can never silently alter which amounts get summed
+# into the user's tax totals. This is what prevents documents like a balance
+# sheet or a hire-purchase statement from having their full amount counted as
+# if it were a resolved, standalone transaction.
+#
+#   document_role — what KIND of artifact is this, structurally?
+#     transaction          — atomic evidence of a single dated amount (invoice, receipt)
+#     summary_statement     — a derived aggregate (P&L, balance sheet, prior Form B);
+#                             used for reconciliation / carry-forward only, NEVER summed
+#     schedule_source       — feeds a multi-year computation (capital asset, hire purchase)
+#                             rather than a single one-off deduction
+#     ledger_source         — a bank statement: many transactions, matched line-by-line
+#                             against existing documents; the statement never adds a lump sum
+#     supporting_evidence   — contextual proof with no amount that should independently
+#                             enter totals (CP500 notice, generic non-tax document)
+#
+#   aggregation_state — is this specific amount safe to sum RIGHT NOW?
+#     resolved                 — sum directly into totals
+#     needs_apportionment      — genuinely mixed (HP interest/principal, mixed-use vehicle,
+#                                 home/business utility split); excluded until a split is
+#                                 computed or confirmed
+#     needs_user_confirmation  — ambiguous; fully excluded from totals until the user
+#                                 answers the flagged question
+#     reference_only           — summary_statement or carry-forward document; never enters
+#                                 current-year totals, used for reconciliation instead
+#     excluded_by_rule         — deterministically non-deductible/non-taxable (HP principal,
+#                                 PTPTN, personal mortgage, CP500); shown as RM0 with reason
+# ══════════════════════════════════════════════════════════════════════════════
+
+REFERENCE_ONLY_CATEGORIES = {
+  "Q1 — Financial Statements (P&L)",
+  "Q1 — Financial Statements (BS)",
+  "Q1 — Filed Form B (Prior Year)",
+}
+
+SCHEDULE_SOURCE_CATEGORIES = {
+  "Q3 — Capital Assets & Equipment",
+  "Q3 — Capital Renovation & Fit-Out",
+  "Q3 — Hire Purchase & Leased Assets",
+}
+
+SUPPORTING_EVIDENCE_CATEGORIES = {
+  "Q3 — CP500 / Tax Installment",
+  NON_TAX_CATEGORY,
+}
+
+VALID_DOCUMENT_ROLES = {"transaction", "summary_statement", "schedule_source", "supporting_evidence", "ledger_source"}
+VALID_AGGREGATION_STATES = {
+  "resolved", "needs_apportionment", "needs_user_confirmation",
+  "reference_only", "excluded_by_rule",
+}
+
+
+def derive_document_role(category: str) -> str:
+  """Structural role of the document — gates HOW its amount should be used downstream."""
+  if category == BANK_STATEMENT_CATEGORY:
+    return "ledger_source"
+  if category in REFERENCE_ONLY_CATEGORIES:
+    return "summary_statement"
+  if category in SCHEDULE_SOURCE_CATEGORIES:
+    return "schedule_source"
+  if category in SUPPORTING_EVIDENCE_CATEGORIES:
+    return "supporting_evidence"
+  return "transaction"
+
+
+def derive_aggregation_state(category: str, status: str) -> str:
+  """
+  Whether this document's amount is safe to sum into the user's totals right now.
+  Deterministic — derived only from (category, status), never trusted from the LLM,
+  so it can't drift silently when the extraction prompt changes.
+  """
+  if category == BANK_STATEMENT_CATEGORY:
+    # A bank statement is many transactions, not one. Its lines are matched
+    # against existing documents for reconciliation (see
+    # _match_bank_statement_lines below) — the statement itself never
+    # contributes a lump amount to any total.
+    return "needs_user_confirmation"
+  if category in REFERENCE_ONLY_CATEGORIES:
+    return "reference_only"
+  if category == REVIEW_CATEGORY:
+    return "needs_user_confirmation"
+  if status == "mixed":
+    return "needs_apportionment"
+  if status in ("not_applicable", "non_deductible"):
+    return "excluded_by_rule"
+  return "resolved"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# APPORTIONED Q3 CATEGORIES
+# A handful of Q3 business expenses are only PARTIALLY deductible, so their full
+# amount must never be summed into the deduction total. Historically these were
+# simply parked in `needs_apportionment` (excluded entirely) with no way to
+# resolve them. Instead, each carries a deductible percentage; on user
+# confirmation the document is resolved and only `pct`% of its amount enters the
+# Q3 deduction total (see the Q3 branch in the summary endpoint).
+#
+#   mode 'statutory' — fixed by law, NOT user-editable
+#                      (client entertainment, s.39(1)(l) = 50%)
+#   mode 'default'   — a sensible default the user MAY override
+#                      (gifts: 50%, but 100% if they carry the business logo)
+#   mode 'required'  — no safe default; the user MUST supply it
+#                      (mixed-use vehicle business-use %, hire-purchase interest %)
+# ══════════════════════════════════════════════════════════════════════════════
+
+APPORTIONED_CATEGORIES: dict[str, dict] = {
+  "Q3 — Client Entertainment (50% cap)": {"mode": "statutory", "pct": 50},
+  "Q3 — Client & Corporate Gifts":       {"mode": "default",   "pct": 50},
+  "Q3 — Mixed-Use Vehicle Expenses":     {"mode": "required",  "pct": None},
+  "Q3 — Hire Purchase & Leased Assets":  {"mode": "required",  "pct": None},
+}
+
+
+def resolve_deductible_pct(category: str, requested_pct):
+  """
+  Decide the deductible percentage to persist for an apportioned Q3 category.
+
+  Returns (pct, ok, error):
+    - Non-apportioned category            → (None, True, None): full amount is deductible.
+    - 'statutory' category                → its fixed pct, ignoring any requested value.
+    - 'default' category, no request      → its default pct.
+    - 'default'/'required' with a request → the request, clamped to 0..100.
+    - 'required' category, no request      → (None, False, msg): the user must supply it.
+  """
+  spec = APPORTIONED_CATEGORIES.get(category)
+  if not spec:
+    return None, True, None
+  if spec["mode"] == "statutory":
+    return spec["pct"], True, None
+  if requested_pct is None or requested_pct == "":
+    if spec["mode"] == "default":
+      return spec["pct"], True, None
+    return None, False, (
+      "This category is only partially deductible — enter the deductible "
+      "percentage (e.g. business-use %) before confirming."
+    )
+  try:
+    p = int(round(float(requested_pct)))
+  except (TypeError, ValueError):
+    return None, False, "Deductible percentage must be a number between 0 and 100."
+  return max(0, min(100, p)), True, None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EA FORM SELF-EMPLOYMENT CROSS-CHECK
+# A sole proprietor's business profit is already their taxable income under
+# s.4(a). If they've also uploaded an EA form issued by their OWN business
+# (informal self-payroll), treating it as separate s.4(b) employment income
+# would double-count the same money. This can't be caught from the EA form
+# alone — it requires comparing the form's employer name against the user's
+# own registered entity, so it's done here in code rather than left to the
+# extraction prompt.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_BUSINESS_SUFFIX_RE = re.compile(
+  r"\b(sdn\.?\s*bhd\.?|enterprise|trading|resources|group|holdings|services|sole\s*prop(rietor)?)\b"
+)
+
+
+def _normalize_business_name(name: str | None) -> str:
+  if not name:
+    return ""
+  n = _BUSINESS_SUFFIX_RE.sub("", name.lower())
+  n = re.sub(r"[^a-z0-9 ]", "", n)
+  return re.sub(r"\s+", " ", n).strip()
+
+
+def employer_matches_own_entity(employer_name: str | None, entity_name: str | None) -> bool:
+  """True if an EA form's employer name looks like the user's own business."""
+  a, b = _normalize_business_name(employer_name), _normalize_business_name(entity_name)
+  if not a or not b:
+    return False
+  if a == b:
+    return True
+  return difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BANK STATEMENT LINE MATCHING
+# A bank statement is fundamentally different from every other document type:
+# it's not one transaction, it's many, and a large fraction of those lines
+# will duplicate invoices/receipts already uploaded separately. Rather than
+# force it through the single-document, single-category, single-amount
+# pipeline (which is how a balance-sheet-style double-count bug happens
+# again), each line is matched against the user's existing transaction
+# documents by amount + date proximity. Matched lines are already accounted
+# for elsewhere and are left out of any total. Unmatched lines are the
+# actually useful signal — a credit with no matching invoice is possible
+# undocumented income; a debit with no matching receipt is a possible missing
+# expense document — surfaced for the user to review, never auto-summed.
+# ══════════════════════════════════════════════════════════════════════════════
+
+_MATCH_AMOUNT_TOLERANCE_MYR = Decimal("2.0")
+_MATCH_DATE_TOLERANCE_DAYS  = 3
+
+
+def match_bank_statement_lines(db: Session, document, line_items: list[dict]) -> list[dict]:
+  candidates = (
+    db.query(Document)
+    .filter(
+      Document.user_id == document.user_id,
+      Document.id != document.id,
+      Document.status == "completed",
+    )
+    .all()
+  )
+  candidate_facts = []
+  for c in candidates:
+    ced = c.extracted_data or {}
+    if ced.get("document_role") != "transaction":
+      continue
+    c_amt = parse_amount(ced.get("amount"))
+    c_date_raw = ced.get("date")
+    if c_amt <= 0 or not c_date_raw:
+      continue
+    try:
+      c_date_obj = _date_cls.fromisoformat(c_date_raw)
+    except (ValueError, TypeError):
+      continue
+    candidate_facts.append((c.id, c_amt, c_date_obj))
+
+  annotated = []
+  for li in (line_items or []):
+    # parse_amount now yields Decimal; keep li_amt Decimal too so the
+    # amount-tolerance comparison below is Decimal-vs-Decimal (mixing Decimal
+    # and float in arithmetic raises TypeError).
+    li_amt = parse_amount(li.get("amt"))
+    li_date_obj = None
+    if li.get("date"):
+      try:
+        li_date_obj = _date_cls.fromisoformat(li["date"])
+      except (ValueError, TypeError):
+        li_date_obj = None
+
+    matched_id = None
+    if li_amt > 0 and li_date_obj:
+      for c_id, c_amt, c_date_obj in candidate_facts:
+        if abs(c_amt - li_amt) <= _MATCH_AMOUNT_TOLERANCE_MYR and \
+           abs((c_date_obj - li_date_obj).days) <= _MATCH_DATE_TOLERANCE_DAYS:
+          matched_id = c_id
+          break
+
+    direction = (li.get("direction") or "").lower()
+    if matched_id:
+      match_status = "matched"
+    elif direction == "credit":
+      match_status = "unmatched_credit"
+    elif direction == "debit":
+      match_status = "unmatched_debit"
+    else:
+      match_status = "unmatched"
+
+    annotated.append({**li, "matchStatus": match_status, "matchedDocumentId": matched_id})
+
+  return annotated
+
 
 # ── Build the category list string for injection into the system prompt ────────
 def _fmt_cat_block(label: str, cats: list[str]) -> str:
@@ -539,7 +826,23 @@ Identify the document type precisely from content headers, vendor names, and fil
       transaction history, Maybank, CIMB, RHB, Public Bank, Hong Leong, AmBank, BSN,
       Affin, UOB, OCBC, HSBC, Alliance Bank, Bank Rakyat, Bank Islam, Bank Muamalat,
       Boost Bank, GXBank, KAF Digital, e-statement
-    → Mixed / Pending Review  [unless ALL transactions are clearly business or clearly personal]
+    NOTE — a bank statement is MANY transactions, not one. Do NOT assign it a single
+      Q1-Q4 category or a single top-level "amount" — that would either miss most of
+      the transactions or double-count them against invoices/receipts the user has
+      already uploaded separately. Instead:
+        1. Classify it as → Bank Statement — Transaction Ledger; status: mixed.
+        2. Leave the top-level "amount" field null.
+        3. Extract EVERY line as its own entry in line_items, each with:
+             desc   — payee/payer description exactly as printed
+             amt    — absolute transaction amount (always positive)
+             date   — that specific line's date, "YYYY-MM-DD"
+             direction — "credit" (money in) or "debit" (money out)
+           Do not summarize or omit rows to save space — completeness here matters
+           more than brevity, since each row is matched against the user's other
+           documents downstream. If the statement is long, prioritise larger
+           transactions and anything that looks business-related, but extract as
+           many rows as the page allows.
+    → Bank Statement — Transaction Ledger
 
   Loan Statement / Hire Purchase Statement
     → keywords: penyata pinjaman, loan statement, hire purchase, sewa beli, HP statement,
@@ -823,6 +1126,13 @@ Q1 BUSINESS INCOME RULES
     flag in the note that e-invoice compliance may be mandatory.
   • P&L / Balance Sheet: financial summaries — extract revenue, gross profit, net profit,
     total assets, total liabilities, equity into line_items. No standalone deductibility.
+    These are DERIVED AGGREGATES, not a transaction — the system treats them as
+    reference-only regardless of what is extracted, and will NEVER sum this document's
+    amount into the user's income or deduction totals. Set the top-level "amount" field
+    to null for these documents; put every figure (revenue, net profit, total assets,
+    etc.) into line_items instead, each with a clear "desc" so it's obvious which figure
+    is which. The same applies to a Filed Form B (Prior Year) document — it is a
+    carry-forward reference, not current-year income; leave "amount" null there too.
 
 ──────────────────────────────────────────────────
 Q2 PERSONAL INCOME RULES
@@ -1148,7 +1458,9 @@ OUTPUT FORMAT — return ONLY valid JSON, no markdown fences, no preamble
   "note": "<one sentence: what this document is, which quadrant and s.4x / s.33 / relief category it feeds, and any compliance flag>",
   "confidence": <integer 0–100>,
   "line_items": [
-    {{"desc": "<item or service>", "qty": <number or null>, "unit_price": <float or null>, "amt": <float>}}
+    {{"desc": "<item or service>", "qty": <number or null>, "unit_price": <float or null>, "amt": <float>,
+      "date": "<ONLY for Bank Statement — Transaction Ledger: this line's own date, YYYY-MM-DD, else null>",
+      "direction": "<ONLY for Bank Statement — Transaction Ledger: 'credit' or 'debit', else null>"}}
   ],
   "asset_class": "<ONLY for Q3 capital assets: e.g. Computer, Furniture, Plant & Machinery, Motor Vehicle, Signage, Renovation>",
   "ia_rate_pct": <ONLY for Q3 capital assets: IA rate as integer e.g. 20, else null>,
@@ -1241,6 +1553,32 @@ def get_file_kind(file_path: str) -> Literal["document", "image", "spreadsheet"]
 
 
 # ─── Extraction pathways ───────────────────────────────────────────────────────
+# Building a DocumentConverter loads the EasyOCR (torch) models, which is slow
+# and memory-heavy. The pipeline runs on a fixed pool of worker threads, so we
+# cache one converter PER THREAD (thread-local) and reuse it across every
+# document that thread handles. Thread-local (rather than a single shared
+# converter) avoids concurrent convert() calls racing on the same torch models.
+_converter_local = threading.local()
+
+
+def _get_document_converter() -> DocumentConverter:
+  converter = getattr(_converter_local, "converter", None)
+  if converter is None:
+    pipeline_options = PdfPipelineOptions()
+    pipeline_options.do_ocr = True
+    # "en" = English; "ms" = Malay (Bahasa Malaysia) — Malaysian documents use both.
+    # EasyOCR shares the Latin character set between both languages so there is no
+    # meaningful accuracy penalty for loading both models together.
+    pipeline_options.ocr_options = EasyOcrOptions(lang=["en", "ms"], use_gpu=False)
+    converter = DocumentConverter(
+      format_options={
+        InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+      }
+    )
+    _converter_local.converter = converter
+  return converter
+
+
 def extract_text_with_docling(file_path: str) -> tuple[str, dict]:
   """
   OCR extraction for PDFs and images via Docling.
@@ -1252,18 +1590,7 @@ def extract_text_with_docling(file_path: str) -> tuple[str, dict]:
     quality         : str   — "good" | "low" | "unreadable"
     quality_note    : str   — human-readable explanation of quality assessment
   """
-  pipeline_options = PdfPipelineOptions()
-  pipeline_options.do_ocr = True
-  # "en" = English; "ms" = Malay (Bahasa Malaysia) — Malaysian documents use both.
-  # EasyOCR shares the Latin character set between both languages so there is no
-  # meaningful accuracy penalty for loading both models together.
-  pipeline_options.ocr_options = EasyOcrOptions(lang=["en", "ms"], use_gpu=False)
-
-  converter = DocumentConverter(
-    format_options={
-      InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-    }
-  )
+  converter = _get_document_converter()
   result   = converter.convert(file_path)
   text     = result.document.export_to_markdown()
   stripped = text.strip()
@@ -1582,7 +1909,14 @@ def normalize_date(raw_date: str | None, tax_year: str | int | None = None) -> d
   return {"date": None, "date_precision": "unknown"}
 
 
-def build_extracted_data(llm_result: dict, content_preview: str, file_kind: str, ocr_meta: dict | None = None) -> dict:
+def build_extracted_data(
+  llm_result: dict,
+  content_preview: str,
+  file_kind: str,
+  ocr_meta: dict | None = None,
+  document_role: str | None = None,
+  aggregation_state: str | None = None,
+) -> dict:
   """Merge LLM output and extraction metadata into the JSONB payload."""
   form_b_raw = llm_result.get("form_b") or {}
   form_ea_raw = llm_result.get("form_ea") or {}
@@ -1596,6 +1930,12 @@ def build_extracted_data(llm_result: dict, content_preview: str, file_kind: str,
     "ocr_char_count":     ocr_meta.get("char_count") if ocr_meta else None,
     "quadrant":           llm_result.get("quadrant"),
     "ita_section":        llm_result.get("ita_section"),
+
+    # Second & third classification dimensions — computed deterministically in
+    # code (see derive_document_role / derive_aggregation_state), never from the
+    # LLM. Gates whether `amount` is safe to sum into the user's totals.
+    "document_role":      document_role,
+    "aggregation_state":  aggregation_state,
 
     # Document identity
     "vendor":             llm_result.get("vendor", "Unknown"),
@@ -1741,6 +2081,8 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
     # Hard overrides — enforce correct status regardless of what the LLM returned
     if category == NON_TAX_CATEGORY:
       status = "not_applicable"
+    elif category == BANK_STATEMENT_CATEGORY:
+      status = "mixed"
     elif category in ("Q3 — Capital Assets & Equipment", "Q3 — Capital Renovation & Fit-Out"):
       status = "capital"
     elif category in ALL_Q1 or category in ALL_Q2:
@@ -1750,18 +2092,80 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
     elif category in _Q4_NON_DED_CATS:
       status = "non_deductible"
 
+    # Second & third dimensions — always derived in code, from the FINAL
+    # (post-override) category/status, so they can never disagree with them.
+    document_role     = derive_document_role(category)
+    aggregation_state = derive_aggregation_state(category, status)
+
     logger.info(
       f"[Pipeline] Document ID {doc_id} classified: "
       f"quadrant='{llm_result.get('quadrant')}' | "
       f"ita='{llm_result.get('ita_section')}' | "
       f"type='{llm_result.get('document_type')}' | "
       f"category='{category}' | status='{status}' | "
+      f"role='{document_role}' | aggregation_state='{aggregation_state}' | "
       f"confidence={llm_result.get('confidence')}% | "
       f"tax_relevant={llm_result.get('is_tax_relevant', True)}"
     )
 
     # ── Persist ───────────────────────────────────────────────────────────
-    extracted_data = build_extracted_data(llm_result, extracted_content, file_kind, ocr_meta)
+    extracted_data = build_extracted_data(
+      llm_result, extracted_content, file_kind, ocr_meta,
+      document_role=document_role, aggregation_state=aggregation_state,
+    )
+
+    # ── EA form self-employment cross-check ─────────────────────────────
+    # A sole proprietor's business profit already IS their taxable income
+    # under s.4(a) — an EA form issued by their own business would double
+    # count it as separate s.4(b) employment income. Can only be caught by
+    # comparing against the user's own registered entity name, so it's done
+    # here in code rather than left to the extraction prompt.
+    if category == "Q2 — Employment Income (s.4b)" and extracted_data.get("form_ea"):
+      employer_name = extracted_data["form_ea"].get("employer_name")
+      entity = db.query(Entity).filter(Entity.id == document.entity_id).first() if document.entity_id else None
+      if entity and employer_matches_own_entity(employer_name, entity.name):
+        status             = "mixed"
+        aggregation_state  = "needs_user_confirmation"
+        extracted_data["document_role"]     = document_role
+        extracted_data["aggregation_state"] = aggregation_state
+        extracted_data["reason"] = (
+          f"This EA form's employer ('{employer_name}') appears to match your own "
+          f"registered business ('{entity.name}'). Your business profit already IS "
+          "your taxable income under s.4(a) — a self-issued EA form would double-count "
+          "the same money as separate s.4(b) employment income."
+        )
+        extracted_data["question"] = (
+          "Is this EA form from an employer OTHER than your own sole proprietorship? "
+          "If it was self-issued payroll, it should not be added as separate income."
+        )
+        logger.info(
+          f"[Pipeline] Document ID {doc_id}: EA employer '{employer_name}' matches "
+          f"own entity '{entity.name}' — flagged for user confirmation."
+        )
+
+    # ── Hire purchase — explicit interest/capital split guidance ─────────
+    # HP is deliberately NOT auto-added to the capital-asset registry. Under
+    # Schedule 3 the qualifying expenditure for an HP asset accrues with the
+    # CAPITAL REPAYMENTS made each basis period (not the full price up front),
+    # and the finance/interest portion is a separate s.33 deduction. Neither
+    # split can be derived reliably from a single statement, so auto-creating
+    # an asset from the gross amount would overstate allowances. Instead we
+    # keep it in needs_apportionment and tell the user exactly what to do.
+    if category == "Q3 — Hire Purchase & Leased Assets":
+      aggregation_state = "needs_apportionment"
+      extracted_data["aggregation_state"] = aggregation_state
+      extracted_data["reason"] = (
+        "Hire purchase has two tax treatments that can't be split automatically "
+        "from this statement: the interest/finance charge is a deductible business "
+        "expense (Q3, s.33), while the asset's capital cost is claimed via Schedule 3 "
+        "capital allowance based on the capital repaid each year — not the full price."
+      )
+      extracted_data["question"] = (
+        "Enter (1) the finance/interest charged this year and (2) the asset's cash "
+        "price and Schedule 3 asset class, so the interest can be deducted and the "
+        "asset added to your capital allowance schedule."
+      )
+      logger.info(f"[Pipeline] Document ID {doc_id}: hire purchase flagged for interest/capital split.")
 
     # Promote year_of_assessment to a top-level indexed column for YA-scoped queries
     ya_raw = extracted_data.get("tax_year") or (
@@ -1787,55 +2191,169 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
     db.commit()
 
     # ── If this is a filed Form B, upsert a FormBProfile record ──────────
-    if category == "Q1 — Filed Form B (Prior Year)" and extracted_data.get("form_b"):
-      fb = extracted_data["form_b"]
-      ya_fb = fb.get("ya_year")
-      if ya_fb:
+    if category == "Q1 — Filed Form B (Prior Year)":
+      fb = extracted_data.get("form_b") or {}
+      # Prefer the Form B's own ya_year; fall back to the document's derived YA
+      # so a missing ya_year doesn't drop the whole profile.
+      ya_fb = fb.get("ya_year") or ya_int
+      if not fb:
+        logger.warning(f"[Pipeline] Document ID {doc_id} classified as Filed Form B but no form_b fields were extracted — no profile saved.")
+      if fb and ya_fb:
         try:
-          # Upsert: one FormBProfile per user_id + ya_year
+          # Upsert: one FormBProfile per (user_id, entity_id, ya_year), so two
+          # entities can each file a Form B for the same year without clobbering
+          # each other. document.entity_id may be None (no active entity) — that
+          # matches the existing NULL-entity row via IS NULL.
           existing = db.query(FormBProfile).filter(
             FormBProfile.user_id == document.user_id,
+            FormBProfile.entity_id == document.entity_id,
             FormBProfile.year_of_assessment == int(ya_fb),
           ).first()
 
+          # FormBProfile columns are Numeric; the LLM returns currency-formatted
+          # strings ("RM 45,000.00"). Inserting those raw makes Postgres reject
+          # the row and the whole upsert silently rolls back — which is why filed
+          # Form B years showed no data. Coerce every money field to a float.
+          def _num(v):
+            if v is None or v == "":
+              return None
+            try:
+              return float(str(v).replace("RM", "").replace(",", "").strip())
+            except (ValueError, TypeError):
+              return None
+
           profile_kwargs = dict(
             user_id                      = document.user_id,
+            entity_id                    = document.entity_id,
             year_of_assessment           = int(ya_fb),
             source_document_id           = document.id,
-            statutory_income_4a          = fb.get("statutory_income_4a"),
-            statutory_income_4b          = fb.get("statutory_income_4b"),
-            statutory_income_4c          = fb.get("statutory_income_4c"),
-            statutory_income_4d          = fb.get("statutory_income_4d"),
-            statutory_income_4e          = fb.get("statutory_income_4e"),
-            statutory_income_4f          = fb.get("statutory_income_4f"),
-            aggregate_income             = fb.get("aggregate_income"),
-            total_business_deductions    = fb.get("total_business_deductions"),
-            approved_donations           = fb.get("approved_donations"),
-            total_personal_reliefs       = fb.get("total_personal_reliefs"),
-            chargeable_income            = fb.get("chargeable_income"),
-            tax_charged                  = fb.get("tax_charged"),
-            zakat_rebate                 = fb.get("zakat_rebate"),
-            tax_payable                  = fb.get("tax_payable"),
-            cp500_total_paid             = fb.get("cp500_total_paid"),
-            balance_payable_refundable   = fb.get("balance_payable_refundable"),
-            unabsorbed_business_losses   = fb.get("unabsorbed_business_losses"),
-            unabsorbed_capital_allowance = fb.get("unabsorbed_capital_allowance"),
+            statutory_income_4a          = _num(fb.get("statutory_income_4a")),
+            statutory_income_4b          = _num(fb.get("statutory_income_4b")),
+            statutory_income_4c          = _num(fb.get("statutory_income_4c")),
+            statutory_income_4d          = _num(fb.get("statutory_income_4d")),
+            statutory_income_4e          = _num(fb.get("statutory_income_4e")),
+            statutory_income_4f          = _num(fb.get("statutory_income_4f")),
+            aggregate_income             = _num(fb.get("aggregate_income")),
+            total_business_deductions    = _num(fb.get("total_business_deductions")),
+            approved_donations           = _num(fb.get("approved_donations")),
+            total_personal_reliefs       = _num(fb.get("total_personal_reliefs")),
+            chargeable_income            = _num(fb.get("chargeable_income")),
+            tax_charged                  = _num(fb.get("tax_charged")),
+            zakat_rebate                 = _num(fb.get("zakat_rebate")),
+            tax_payable                  = _num(fb.get("tax_payable")),
+            cp500_total_paid             = _num(fb.get("cp500_total_paid")),
+            balance_payable_refundable   = _num(fb.get("balance_payable_refundable")),
+            unabsorbed_business_losses   = _num(fb.get("unabsorbed_business_losses")),
+            unabsorbed_capital_allowance = _num(fb.get("unabsorbed_capital_allowance")),
             raw_extracted                = fb,
-            confidence                   = llm_result.get("confidence"),
+            confidence                   = int(_num(llm_result.get("confidence")) or 0),
           )
 
           if existing:
             for k, v in profile_kwargs.items():
               setattr(existing, k, v)
-            logger.info(f"[Pipeline] Updated FormBProfile for user={document.user_id} YA={ya_fb}")
+            logger.info(f"[Pipeline] Updated FormBProfile for user={document.user_id} entity={document.entity_id} YA={ya_fb}")
           else:
             db.add(FormBProfile(**profile_kwargs))
-            logger.info(f"[Pipeline] Created FormBProfile for user={document.user_id} YA={ya_fb}")
+            logger.info(f"[Pipeline] Created FormBProfile for user={document.user_id} entity={document.entity_id} YA={ya_fb}")
 
           db.commit()
         except Exception as fb_e:
           logger.error(f"[Pipeline] FormBProfile upsert failed for Document ID {doc_id}: {fb_e}")
           db.rollback()  # don't fail the main document record over a profile upsert error
+
+    # ── If this is a capital asset, upsert a CapitalAsset registry record ──
+    # This is what lets Annual Allowance keep being claimed in every year
+    # after acquisition without the user re-uploading the invoice — see
+    # capital_allowance.py for how the year-by-year schedule is derived.
+    if status == "capital" and ya_int:
+      try:
+        cost = parse_amount(extracted_data.get("amount"))
+        if cost > 0:
+          acquisition_date = None
+          if extracted_data.get("date"):
+            try:
+              from datetime import date as _date
+              acquisition_date = _date.fromisoformat(extracted_data["date"])
+            except (ValueError, TypeError):
+              acquisition_date = None
+
+          existing_asset = db.query(CapitalAsset).filter(
+            CapitalAsset.source_document_id == document.id,
+          ).first()
+
+          # Validate the LLM's IA/AA rates against the statutory Schedule 3
+          # table rather than trusting them — a hallucinated rate would
+          # otherwise flow straight into the user's allowance figures.
+          asset_class_raw = extracted_data.get("asset_class") or "Unclassified Asset"
+          ia_pct, aa_pct, rate_needs_review, rate_note = resolve_capital_allowance_rates(
+            asset_class_raw,
+            extracted_data.get("ia_rate_pct"),
+            extracted_data.get("aa_rate_pct"),
+          )
+          if rate_note:
+            logger.info(f"[Pipeline] Document ID {doc_id} CA rate adjustment: {rate_note}")
+            # Surface the adjustment on the document so the UI can show it.
+            extracted_data["ca_rate_note"] = rate_note
+            extracted_data["ca_rate_needs_review"] = rate_needs_review
+            document.extracted_data = extracted_data
+
+          asset_kwargs = dict(
+            user_id            = document.user_id,
+            entity_id          = document.entity_id,
+            source_document_id = document.id,
+            asset_class         = asset_class_raw,
+            description         = llm_result.get("document_type"),
+            cost                = cost,
+            acquisition_date    = acquisition_date,
+            acquisition_year    = ya_int,
+            ia_rate_pct         = ia_pct,
+            aa_rate_pct         = aa_pct,
+          )
+
+          if existing_asset:
+            for k, v in asset_kwargs.items():
+              setattr(existing_asset, k, v)
+            logger.info(f"[Pipeline] Updated CapitalAsset for Document ID {doc_id}")
+          else:
+            db.add(CapitalAsset(**asset_kwargs))
+            logger.info(f"[Pipeline] Created CapitalAsset for Document ID {doc_id}")
+
+          db.commit()
+        else:
+          logger.warning(
+            f"[Pipeline] Document ID {doc_id} classified as capital but no positive "
+            "amount was extracted — skipping CapitalAsset registry entry. This "
+            "document will need manual review to enter the asset register."
+          )
+      except Exception as ca_e:
+        logger.error(f"[Pipeline] CapitalAsset upsert failed for Document ID {doc_id}: {ca_e}")
+        db.rollback()  # don't fail the main document record over a registry upsert error
+
+    # ── Bank statement line matching ────────────────────────────────────
+    # Match each extracted line against the user's existing transaction
+    # documents so duplicates are identified and unmatched lines (possible
+    # undocumented income/expense) are surfaced. Never touches any total —
+    # aggregation_state for this category is always needs_user_confirmation.
+    if category == BANK_STATEMENT_CATEGORY:
+      try:
+        matched_lines = match_bank_statement_lines(db, document, extracted_data.get("line_items", []))
+        extracted_data["line_items"] = matched_lines
+        extracted_data["bank_statement_summary"] = {
+          "totalLines":              len(matched_lines),
+          "matchedLines":            sum(1 for li in matched_lines if li["matchStatus"] == "matched"),
+          "unmatchedCreditTotalMyr": round(sum(li.get("amt") or 0 for li in matched_lines if li["matchStatus"] == "unmatched_credit"), 2),
+          "unmatchedDebitTotalMyr":  round(sum(li.get("amt") or 0 for li in matched_lines if li["matchStatus"] == "unmatched_debit"), 2),
+        }
+        document.extracted_data = extracted_data
+        db.commit()
+        logger.info(
+          f"[Pipeline] Document ID {doc_id} bank statement matched: "
+          f"{extracted_data['bank_statement_summary']}"
+        )
+      except Exception as bs_e:
+        logger.error(f"[Pipeline] Bank statement matching failed for Document ID {doc_id}: {bs_e}")
+        db.rollback()  # don't fail the main document record over a matching error
 
     logger.info(f"[Pipeline] Document ID {doc_id} committed successfully.")
 

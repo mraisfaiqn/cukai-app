@@ -8,11 +8,11 @@
 //  - Bottom right col (was DeadlinesCard) now holds PieChartsCarousel.
 //  - Both carousels use dot-navigation to page through items.
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getPersonalDetails, getAllEntities, getTaxProfileSummary } from '../../services/api';
-// Keep your imports exactly as they are—they act as excellent fallback mock data!
-import { stats as initialStats, account as initialAccount, piecharts as initialPieCharts, opportunities, deadlines, alert as initialAlert } from '../../data/dashboardData';
+// Static content that isn't document-derived yet (opportunities + deadlines).
+import { opportunities, deadlines } from '../../data/dashboardData';
 import DashboardHeader from '../../components/Dashboard/DashboardHeader';
 import ActionBanner from '../../components/Dashboard/ActionBanner';
 import StatsGrid from '../../components/Dashboard/StatsGrid';
@@ -41,18 +41,21 @@ function daysToFormBDeadline(today = new Date()) {
 
 // Form B is filed for income earned in YEAR by 30 June of YEAR+1. So the YA
 // actively being filed right now is last calendar year, up until this year's
-// 30 June deadline passes, after which it rolls forward to the year that just
-// ended. This MUST match currentFilingYear() in CukaiAccount.jsx — documents
-// are tagged with the YA they're actually for, not today's calendar year, so
-// querying the wrong year here means the dashboard silently misses anything
-// (stats, pending-review counts) filed under the real active YA.
+// e-Filing deadline (15 July) passes, after which it rolls forward to the year
+// that just ended. This MUST match currentFilingYear() in CukaiAccount.jsx —
+// documents are tagged with the YA they're actually for, not today's calendar
+// year, so querying the wrong year here means the dashboard silently misses
+// anything (stats, pending-review counts) filed under the real active YA.
+// NOTE: Malaysia Form B deadlines are 30 June (manual paper) and 15 July
+// (online e-Filing). cukai.ai is an e-Filing assistant, so the cutoff is 15 Jul
+// — the prior YA stays the default through 1–15 July while users finish filing.
 function currentFilingYear(today = new Date()) {
   // TEMP override to view YA 2024 documents — revert to the computed logic below when done.
   // return 2024;
   // eslint-disable-next-line no-unreachable
   const year = today.getFullYear();
-  const juneCutoff = new Date(year, 5, 30);
-  const deadlineYear = today > juneCutoff ? year + 1 : year;
+  const eFilingCutoff = new Date(year, 5, 30); // 15 July (month index 6)
+  const deadlineYear = today > eFilingCutoff ? year + 1 : year;
   return deadlineYear - 1;
 }
 
@@ -63,21 +66,79 @@ function urgencyFor(daysLeft) {
   return { bar: 'bg-border', pill: 'bg-primary-tint text-muted' };
 }
 
-// ── DeadlinesCarousel ──────────────────────────────────────────────────────────
-// Shows one deadline at a time with dot-navigation. Compact enough for the
-// right col of the KPI strip row (matches the old TaxHealthCard height).
-function DeadlinesCarousel({ deadlines }) {
+// ── Shared carousel shell ─────────────────────────────────────────────────────
+// One slide visible at a time via dot navigation, but ALSO horizontally
+// scrollable (trackpad / swipe) with the scrollbar hidden — so laptop users can
+// side-scroll and PC users can click the (larger) dots. Dots reflect and drive
+// the scroll position.
+function CarouselShell({ label, slides, dotsUnderRight = false }) {
+  const scrollRef = useRef(null);
   const [idx, setIdx] = useState(0);
-  if (!deadlines || deadlines.length === 0) return null;
-  const d = deadlines[idx];
-  const tone = urgencyFor(d.daysLeft);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const i = Math.round(el.scrollLeft / Math.max(el.clientWidth, 1));
+    setIdx(prev => (prev !== i ? i : prev));
+  }, []);
+
+  const goTo = (i) => {
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ left: i * el.clientWidth, behavior: 'smooth' });
+  };
+
+  const dots = (
+    <div className="flex items-center justify-center gap-2">
+      {slides.map((_, i) => (
+        <button
+          key={i}
+          onClick={() => goTo(i)}
+          aria-label={`Go to slide ${i + 1}`}
+          className={
+            'h-2 rounded-full transition-all duration-200 ' +
+            (i === idx ? 'w-6 bg-[#0D9488]' : 'w-2 bg-slate-300 hover:bg-slate-400')
+          }
+        />
+      ))}
+    </div>
+  );
 
   return (
-    <section className="flex h-full flex-col justify-between rounded-xl border border-border bg-surface p-3">
-      <p className="text-xs font-medium text-muted shrink-0">Upcoming Deadlines</p>
+    <section className="flex h-full flex-col rounded-xl border border-border bg-surface p-4">
+      <style>{'.cukai-carousel::-webkit-scrollbar{display:none}'}</style>
+      {label && <p className="text-xs font-medium text-muted shrink-0 mb-2">{label}</p>}
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="cukai-carousel flex flex-1 min-h-0 overflow-x-auto snap-x snap-mandatory"
+        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+      >
+        {slides.map((node, i) => (
+          <div key={i} className="flex w-full shrink-0 snap-center min-h-0 flex-col">
+            {node}
+          </div>
+        ))}
+      </div>
+      {dotsUnderRight ? (
+        <div className="grid grid-cols-4 shrink-0 pt-2">
+          <div />
+          <div className="col-span-3">{dots}</div>
+        </div>
+      ) : (
+        <div className="shrink-0 pt-2">{dots}</div>
+      )}
+    </section>
+  );
+}
 
-      {/* Single deadline item */}
-      <div className="flex items-start gap-3 flex-1 py-2">
+// ── DeadlinesCarousel ──────────────────────────────────────────────────────────
+// Shows one deadline at a time; dot nav + hidden side-scroll via CarouselShell.
+function DeadlinesCarousel({ deadlines }) {
+  if (!deadlines || deadlines.length === 0) return null;
+  const slides = deadlines.map((d) => {
+    const tone = urgencyFor(d.daysLeft);
+    return (
+      <div className="flex flex-1 items-start gap-3 py-2 px-0.5">
         <span className={'mt-0.5 h-9 w-1 shrink-0 rounded-full ' + tone.bar} />
         <div className="flex-1 min-w-0">
           <p className="text-xs font-semibold text-headings truncate">{d.label}</p>
@@ -87,22 +148,9 @@ function DeadlinesCarousel({ deadlines }) {
           {d.daysLeft}d
         </span>
       </div>
-
-      {/* Dot navigation */}
-      <div className="flex items-center justify-center gap-1.5 shrink-0 pt-1">
-        {deadlines.map((_, i) => (
-          <button
-            key={i}
-            onClick={() => setIdx(i)}
-            className={
-              'h-1.5 rounded-full transition-all duration-200 ' +
-              (i === idx ? 'w-4 bg-[#0D9488]' : 'w-1.5 bg-slate-300 hover:bg-slate-400')
-            }
-          />
-        ))}
-      </div>
-    </section>
-  );
+    );
+  });
+  return <CarouselShell label="Upcoming Deadlines" slides={slides} />;
 }
 
 // ── DonutSlice helper ──────────────────────────────────────────────────────────
@@ -139,12 +187,20 @@ const pct = (v, t) => t ? ((v / t) * 100).toFixed(1) + '%' : '0%';
 // of how many distinct categories a user's documents happen to produce.
 const SEGMENT_PALETTE = ['#0D9488', '#F59E0B', '#6366F1', '#EC4899', '#10B981', '#F97316', '#3B82F6', '#8B5CF6', '#EF4444', '#14B8A6'];
 
+// Strip the "Qn — " quadrant prefix from a category so chart legends read in
+// plain language (users don't think in quadrant numbers).
+function prettyCategory(cat) {
+  if (!cat) return 'Uncategorised';
+  if (cat === 'Mixed / Pending Review') return 'Pending Review';
+  return cat.replace(/^Q[1-4]\s*[—-]\s*/, '');
+}
+
 // Groups a list of document-derived entries (each with `category` and
 // `amountNumeric`) into chart segments, summing amounts per category.
 function segmentsByCategory(entries) {
   const totals = new Map();
   (entries || []).forEach((e) => {
-    const label = e.category || 'Uncategorised';
+    const label = prettyCategory(e.category);
     totals.set(label, (totals.get(label) || 0) + (e.amountNumeric || 0));
   });
   return Array.from(totals.entries())
@@ -153,29 +209,34 @@ function segmentsByCategory(entries) {
 }
 
 // Same idea, but for the already-grouped relief breakdown the backend
-// returns (each item has `category` and `cappedTotal`).
+// returns (each item has `category`, `rawTotal`, `cap`, `cappedTotal`,
+// `wasCapped`). We carry the cap fields through so the legend can show each
+// relief's progress toward its statutory cap.
 function segmentsFromReliefBreakdown(breakdown) {
   return (breakdown || [])
     .filter((b) => (b.cappedTotal || 0) > 0)
-    .map((b, i) => ({ label: b.category, value: b.cappedTotal, color: SEGMENT_PALETTE[i % SEGMENT_PALETTE.length] }));
+    .map((b, i) => ({
+      label: prettyCategory(b.category),
+      value: b.cappedTotal,
+      color: SEGMENT_PALETTE[i % SEGMENT_PALETTE.length],
+      cap: (b.cap ?? null),           // statutory ceiling for this relief (RM), or null if uncapped
+      rawTotal: (b.rawTotal ?? null), // total the user actually uploaded, before capping
+      wasCapped: !!b.wasCapped,       // true once uploads exceed the cap
+    }));
 }
 
-// ── PieChartsCarousel ──────────────────────────────────────────────────────────
-// Cycles through 3 donut charts (Business, Personal, Tax Summary) with dots.
-// Fills the right col of the body grid — the space previously held by DeadlinesCard.
-function PieChartsCarousel({ charts }) {
-  const [idx, setIdx] = useState(0);
+// ── Pie slide (4-column: legend + footer | enlarged donut) ────────────────────
+function PieSlide({ chart }) {
   const [hovered, setHovered] = useState(null);
   const [mouse, setMouse] = useState({ x: 0, y: 0 });
-  const chart = charts[idx];
 
-  const SIZE = 150;
+  const SIZE = 190;                         // enlarged from 150
   const CX = SIZE / 2, CY = SIZE / 2;
-  const R = SIZE * 0.39, INNER = SIZE * 0.22;
+  const R = SIZE * 0.40, INNER = SIZE * 0.23;
   const { slices, total } = buildSlices(chart.segments, CX, CY, R, INNER);
 
   return (
-    <section className="flex h-full flex-col rounded-xl border border-border bg-surface p-4">
+    <div className="grid flex-1 min-h-0 grid-cols-4 gap-3">
       {/* Tooltip portal */}
       {hovered && (
         <div
@@ -188,101 +249,229 @@ function PieChartsCarousel({ charts }) {
           </div>
           <p className="text-[10px] text-muted mt-1">{fmtRM(hovered.value)}</p>
           <p className="text-[10px] text-muted">{pct(hovered.value, total)} of total</p>
+          {hovered.cap != null && (
+            <p className={'text-[10px] mt-1 ' + (hovered.wasCapped ? 'text-warning font-semibold' : 'text-muted')}>
+              {hovered.wasCapped
+                ? `Cap reached — RM${Number(hovered.rawTotal || hovered.value).toLocaleString('en-MY',{maximumFractionDigits:0})} claimed, capped at ${fmtRM(hovered.cap)}`
+                : `Relief cap: ${fmtRM(hovered.cap)}`}
+            </p>
+          )}
         </div>
       )}
 
-      <p className="text-xs font-medium text-muted shrink-0 mb-2">Expense Breakdown</p>
-
-      {/* 2-column body: legend + total on the left, title + donut on the right.
-          Splitting these (rather than stacking title/donut above legend/total)
-          gives the donut more room to breathe and is easier to read at a glance. */}
-      <div className="flex-1 min-h-0 grid grid-cols-2 gap-4">
-        {/* Left column — legend (scrollable) + footer total */}
-        <div className="flex flex-col min-h-0">
-          <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5">
-            {slices.length === 0 ? (
-              <p className="text-[10px] text-muted">No data yet</p>
-            ) : (
-              slices.map(sl => (
-                <div key={sl.label} className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: sl.color }} />
-                    <span className="truncate text-[10px] text-muted">{sl.label}</span>
-                  </div>
-                  <span className="text-[10px] font-semibold text-headings shrink-0">{pct(sl.value, total)}</span>
-                </div>
-              ))
-            )}
-          </div>
-
-          {chart.footerLabel && (
-            <div className="shrink-0 mt-2 border-t border-border pt-2 flex justify-between items-center">
-              <span className="text-[10px] text-muted">{chart.footerLabel}</span>
-              <span className="text-[10px] font-bold" style={{ color: chart.footerColor || 'inherit' }}>{fmtRM(total)}</span>
-            </div>
-          )}
-        </div>
-
-        {/* Right column — chart title + bigger donut */}
-        <div className="flex flex-col items-center justify-center min-h-0">
-          <div className="text-center shrink-0 mb-2">
-            <p className="text-xs font-semibold text-headings">{chart.title}</p>
-            {chart.subtitle && <p className="text-[10px] text-muted mt-0.5">{chart.subtitle}</p>}
-          </div>
-
-          {total === 0 ? (
-            <div style={{ width: SIZE, height: SIZE }} className="flex items-center justify-center rounded-full border-2 border-dashed border-border">
-              <p className="text-[9px] text-muted text-center px-2">No data yet</p>
-            </div>
+      {/* Left column (1/4) — legend (scrollable) + footer total */}
+      <div className="col-span-1 flex flex-col min-h-0">
+        <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5">
+          {slices.length === 0 ? (
+            <p className="text-[10px] text-muted">No data yet</p>
           ) : (
-            <div className="relative" style={{ width: SIZE, height: SIZE }}>
-              <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
-                onMouseLeave={() => setHovered(null)} style={{ overflow: 'visible' }}>
-                {slices.map(sl => (
-                  <path key={sl.label} d={sl.d} fill={sl.color} fillRule="evenodd"
-                    opacity={hovered && hovered.label !== sl.label ? 0.4 : 1}
-                    style={{ cursor: 'pointer', transition: 'opacity 0.15s, transform 0.1s',
-                      transformOrigin: `${CX}px ${CY}px`,
-                      transform: hovered?.label === sl.label ? 'scale(1.04)' : 'scale(1)' }}
-                    onMouseEnter={e => { setMouse({ x: e.clientX, y: e.clientY }); setHovered(sl); }}
-                    onMouseMove={e => setMouse({ x: e.clientX, y: e.clientY })} />
-                ))}
-                <text x={CX} y={CY - 4} textAnchor="middle" fontSize={SIZE * 0.07} fill="var(--color-muted, #94A3B8)" fontFamily="sans-serif">total</text>
-                <text x={CX} y={CY + 9} textAnchor="middle" fontSize={SIZE * 0.075} fill="var(--color-headings, #0F172A)" fontWeight="700" fontFamily="sans-serif">
-                  {fmtRM(total)}
-                </text>
-              </svg>
-            </div>
+            slices.map(sl => (
+              <div key={sl.label} className="flex items-start justify-between gap-2">
+                <div className="flex items-start gap-1.5 min-w-0">
+                  <span className="mt-0.5 h-2 w-2 shrink-0 rounded-sm" style={{ background: sl.color }} />
+                  <div className="min-w-0">
+                    <span className="block truncate text-[10px] text-muted">{sl.label}</span>
+                    {/* Relief-cap progress: shown only for capped relief categories.
+                        Amber once the statutory ceiling is reached. */}
+                    {sl.cap != null && (
+                      <span className={'block text-[9px] leading-tight ' + (sl.wasCapped ? 'text-warning font-semibold' : 'text-muted')}>
+                        {fmtRM(Math.min(sl.value, sl.cap))} / {fmtRM(sl.cap)}
+                        {sl.wasCapped ? ' · cap reached' : ' cap'}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <span className="text-[10px] font-semibold text-headings shrink-0">{pct(sl.value, total)}</span>
+              </div>
+            ))
           )}
         </div>
+        {chart.footerLabel && (
+          <div className="shrink-0 mt-2 border-t border-border pt-2">
+            <p className="text-[10px] text-muted">{chart.footerLabel}</p>
+            <p className="text-xs font-bold" style={{ color: chart.footerColor || 'inherit' }}>{fmtRM(total)}</p>
+          </div>
+        )}
       </div>
 
-      {/* Dot navigation */}
-      <div className="flex items-center justify-center gap-1.5 shrink-0 pt-2">
-        {charts.map((_, i) => (
-          <button
-            key={i}
-            onClick={() => { setIdx(i); setHovered(null); }}
-            className={
-              'h-1.5 rounded-full transition-all duration-200 ' +
-              (i === idx ? 'w-4 bg-[#0D9488]' : 'w-1.5 bg-slate-300 hover:bg-slate-400')
-            }
-          />
-        ))}
+      {/* Right columns (3/4) — title + enlarged donut */}
+      <div className="col-span-3 flex flex-col items-center justify-center min-h-0">
+        <div className="text-center shrink-0 mb-2">
+          <p className="text-xs font-semibold text-headings">{chart.title}</p>
+          {chart.subtitle && <p className="text-[10px] text-muted mt-0.5">{chart.subtitle}</p>}
+        </div>
+        {total === 0 ? (
+          <div style={{ width: SIZE, height: SIZE }} className="flex items-center justify-center rounded-full border-2 border-dashed border-border">
+            <p className="text-[10px] text-muted text-center px-2">No data yet</p>
+          </div>
+        ) : (
+          <div className="relative" style={{ width: SIZE, height: SIZE }}>
+            <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
+              onMouseLeave={() => setHovered(null)} style={{ overflow: 'visible' }}>
+              {slices.map(sl => (
+                <path key={sl.label} d={sl.d} fill={sl.color} fillRule="evenodd"
+                  opacity={hovered && hovered.label !== sl.label ? 0.4 : 1}
+                  style={{ cursor: 'pointer', transition: 'opacity 0.15s, transform 0.1s',
+                    transformOrigin: `${CX}px ${CY}px`,
+                    transform: hovered?.label === sl.label ? 'scale(1.04)' : 'scale(1)' }}
+                  onMouseEnter={e => { setMouse({ x: e.clientX, y: e.clientY }); setHovered(sl); }}
+                  onMouseMove={e => setMouse({ x: e.clientX, y: e.clientY })} />
+              ))}
+              <text x={CX} y={CY - 5} textAnchor="middle" fontSize={SIZE * 0.065} fill="var(--color-muted, #94A3B8)" fontFamily="sans-serif">total</text>
+              <text x={CX} y={CY + 10} textAnchor="middle" fontSize={SIZE * 0.072} fill="var(--color-headings, #0F172A)" fontWeight="700" fontFamily="sans-serif">
+                {fmtRM(total)}
+              </text>
+            </svg>
+          </div>
+        )}
       </div>
-    </section>
+    </div>
   );
 }
+
+// ── Bar slide — grouped bars of the key tax figures for each year ─────────────
+// Total Income / Total Deductions / Chargeable Income / Est. Tax are DIFFERENT
+// measures (not parts of one whole), so they're drawn as a grouped bar per year
+// rather than stacked, which would visually imply they sum together.
+const BAR_METRICS = [
+  { key: 'totalIncome',                label: 'Total Income',      color: '#0D9488' },
+  { key: 'q3TotalDeductions',          label: 'Total Deductions',  color: '#F59E0B' },
+  { key: 'estimatedChargeableIncome',  label: 'Chargeable Income', color: '#6366F1' },
+  { key: 'estimatedTaxPayable',        label: 'Est. Tax Payable',  color: '#DC2626' },
+];
+
+function BarSlide({ chart }) {
+  const [hovered, setHovered] = useState(null);
+  const [mouse, setMouse] = useState({ x: 0, y: 0 });
+
+  const years = (chart.years || []).filter(Boolean);
+  const rows = years.map(y => ({
+    year: y.year,
+    vals: BAR_METRICS.map(m => Number(y.totals?.[m.key]) || 0),
+  }));
+  const maxAbs = Math.max(1, ...rows.flatMap(r => r.vals.map(v => Math.abs(v))));
+
+  // SVG geometry (responsive via viewBox).
+  const H = 150, PAD_BOTTOM = 22, PAD_TOP = 8;
+  const baseline = H - PAD_BOTTOM;
+  const maxBarUp = baseline - PAD_TOP;
+  const groupW = 60, barW = 11, barGap = 2;
+  const groupInner = BAR_METRICS.length * barW + (BAR_METRICS.length - 1) * barGap;
+  const W = Math.max(rows.length * groupW + 16, 160);
+
+  return (
+    <div className="grid flex-1 min-h-0 grid-cols-4 gap-3">
+      {/* Tooltip portal — same interaction as the donut slides */}
+      {hovered && (
+        <div
+          className="fixed z-[9999] pointer-events-none rounded-lg border border-border bg-surface px-3 py-2 shadow-lg"
+          style={{ left: Math.min(mouse.x + 14, (typeof window !== 'undefined' ? window.innerWidth : 800) - 200), top: mouse.y - 12, width: 176 }}
+        >
+          <div className="flex items-center gap-1.5">
+            <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: hovered.color }} />
+            <span className="text-[10px] font-semibold text-headings leading-tight">{hovered.label}</span>
+          </div>
+          <p className="text-[10px] text-muted mt-1">{fmtRM(hovered.value)}</p>
+          <p className="text-[10px] text-muted">YA {hovered.year}</p>
+        </div>
+      )}
+
+      {/* Left column — metric legend */}
+      <div className="col-span-1 flex flex-col justify-center gap-2 min-h-0">
+        {BAR_METRICS.map(m => (
+          <div key={m.key} className="flex items-center gap-1.5 min-w-0">
+            <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: m.color }} />
+            <span className="truncate text-[10px] text-muted">{m.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Right columns — title + grouped bars */}
+      <div className="col-span-3 flex flex-col min-h-0">
+        <div className="text-center shrink-0 mb-2">
+          <p className="text-xs font-semibold text-headings">Tax Summary by Year</p>
+          <p className="text-[10px] text-muted mt-0.5">Across years of assessment</p>
+        </div>
+        {rows.length === 0 ? (
+          <div className="flex flex-1 items-center justify-center">
+            <p className="text-[10px] text-muted">No data yet</p>
+          </div>
+        ) : (
+          <div className="flex-1 min-h-0 overflow-x-auto cukai-carousel" style={{ scrollbarWidth: 'none' }}>
+            <svg width="100%" height="100%" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" style={{ minWidth: W, overflow: 'visible' }}
+              onMouseLeave={() => setHovered(null)}>
+              <line x1="0" y1={baseline} x2={W} y2={baseline} stroke="var(--color-border, #E2E8F0)" strokeWidth="1" />
+              {rows.map((r, gi) => {
+                const gx = 8 + gi * groupW + (groupW - 16 - groupInner) / 2;
+                return (
+                  <g key={r.year}>
+                    {r.vals.map((v, bi) => {
+                      const h = Math.min(Math.abs(v) / maxAbs * maxBarUp, maxBarUp);
+                      const x = gx + bi * (barW + barGap);
+                      const up = v >= 0;
+                      const y = up ? baseline - h : baseline;
+                      const drawH = up ? h : Math.min(h, PAD_BOTTOM - 6);
+                      const barId = `${gi}-${bi}`;
+                      const metric = BAR_METRICS[bi];
+                      const baseOpacity = up ? 1 : 0.6;
+                      return (
+                        <rect key={bi} x={x} y={y} width={barW} height={Math.max(drawH, v === 0 ? 0 : 1)}
+                          rx="1.5" fill={metric.color}
+                          opacity={hovered && hovered.id !== barId ? 0.35 : baseOpacity}
+                          style={{ cursor: 'pointer', transition: 'opacity 0.15s' }}
+                          onMouseEnter={e => { setMouse({ x: e.clientX, y: e.clientY }); setHovered({ id: barId, label: metric.label, color: metric.color, value: v, year: r.year }); }}
+                          onMouseMove={e => setMouse({ x: e.clientX, y: e.clientY })} />
+                      );
+                    })}
+                    <text x={gx + groupInner / 2} y={H - 7} textAnchor="middle" fontSize="10"
+                      fill="var(--color-muted, #94A3B8)" fontFamily="sans-serif">{r.year}</text>
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── PieChartsCarousel ──────────────────────────────────────────────────────────
+// Donut slides (Business / Deductible / Reliefs) plus a per-year bar slide,
+// navigated by dots or by side-scrolling. Fills the right col of the body grid.
+function PieChartsCarousel({ charts }) {
+  const slides = (charts || []).map((c, i) =>
+    c.type === 'bar' ? <BarSlide key={i} chart={c} /> : <PieSlide key={i} chart={c} />
+  );
+  return <CarouselShell label="Breakdown & Trends" slides={slides} dotsUnderRight />;
+}
+
+// ── Neutral placeholders shown until the first fetch resolves ──────────────────
+// Using neutral skeletons (not the mock dashboardData) means the first paint
+// shows empty "—" cards and "No data yet" charts rather than fake figures that
+// then snap to real ones — no jarring flash of numbers that were never real.
+const SKELETON_STATS = [
+  { label: 'Total Income',      value: '—', change: '' },
+  { label: 'Total Deductions',  value: '—', change: '' },
+  { label: 'Chargeable Income', value: '—', change: '' },
+  { label: 'Est. Tax Payable',  value: '—', change: '' },
+];
+const SKELETON_PIES = [
+  { title: 'Business Income',     subtitle: '', segments: [], footerLabel: 'Total Business Income',  footerColor: '#0D9488' },
+  { title: 'Deductible Expenses', subtitle: '', segments: [], footerLabel: 'Total Deductions',       footerColor: '#F59E0B' },
+  { title: 'Personal Reliefs',    subtitle: '', segments: [], footerLabel: 'Total Reliefs Claimed',  footerColor: '#6366F1' },
+];
+const SKELETON_ACCOUNT = { name: '', entity: '', msic: '', assessmentYear: '', deadlineNote: '' };
 
 // ── Overview ───────────────────────────────────────────────────────────────────
 export default function Overview() {
   const navigate = useNavigate();
 
-  // 1. Establish state variables using the static data as default placeholders
-  const [liveAccount, setLiveAccount] = useState(initialAccount);
-  const [liveStats, setLiveStats] = useState(initialStats);
-  const [livePieCharts, setLivePieCharts] = useState(initialPieCharts);
-  const [liveAlert, setLiveAlert] = useState(initialAlert);
+  // 1. Establish state variables using neutral skeletons as placeholders
+  const [liveAccount, setLiveAccount] = useState(SKELETON_ACCOUNT);
+  const [liveStats, setLiveStats] = useState(SKELETON_STATS);
+  const [livePieCharts, setLivePieCharts] = useState(SKELETON_PIES);
+  const [liveAlert, setLiveAlert] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // Load dashboard data for the currently active entity.
@@ -334,19 +523,39 @@ export default function Overview() {
       const pendingReview = cy?.pendingReviewCount ?? 0;
       const daysLeft = daysToFormBDeadline();
 
-      // ── Stats grid: derived from uploaded-document totals when available,
-      // falling back to the raw entity figures if no documents have been
-      // processed yet for this year.
-      if (totals) {
+      // ── Stats grid: derived from uploaded-document totals only when this
+      // year actually has processed documents. Without the docCount guard the
+      // summary always returns a (zeroed) totals object, so a year with no
+      // documents would show RM0 everywhere instead of the entity's own figures.
+      if (totals && docCount > 0) {
+        // Year-over-year movement vs the prior YA's totals (from the same
+        // summary payload). The arrow shows the direction of change; the colour
+        // shows whether that direction is *favourable* for the metric — income
+        // and deductions rising is good (green), chargeable income and tax
+        // rising is bad (red). `favorable` encodes "which way is good".
+        const priorTotals = summary?.priorYear?.totals || null;
+        const priorLabel  = assessmentYear - 1;
+        const fmtDelta = (n) =>
+          (n >= 0 ? '+' : '−') + 'RM ' +
+          Number(Math.abs(n)).toLocaleString('en-MY', { maximumFractionDigits: 0 });
+        const yoy = (curr, prior, favorable) => {
+          if (prior == null) return { change: 'No prior YA to compare', trend: 'flat', tone: 'muted' };
+          const delta = (Number(curr) || 0) - (Number(prior) || 0);
+          if (Math.abs(delta) < 0.5) return { change: `No change vs YA ${priorLabel}`, trend: 'flat', tone: 'muted' };
+          const trend = delta > 0 ? 'up' : 'down';
+          const good  = (delta > 0) === (favorable === 'up');
+          return { change: `${fmtDelta(delta)} vs YA ${priorLabel}`, trend, tone: good ? 'success' : 'danger' };
+        };
+
         setLiveStats([
           { label: 'Total Income',      value: fmtRM(totals.totalIncome || 0),
-            change: `${docCount} document${docCount === 1 ? '' : 's'}`, trend: 'up' },
+            ...yoy(totals.totalIncome, priorTotals?.totalIncome, 'up') },
           { label: 'Total Deductions',  value: fmtRM(totals.q3TotalDeductions || 0),
-            change: 'From receipts',  trend: 'down' },
+            ...yoy(totals.q3TotalDeductions, priorTotals?.q3TotalDeductions, 'up') },
           { label: 'Chargeable Income', value: fmtRM(totals.estimatedChargeableIncome || 0),
-            change: 'Calculated',     trend: totals.estimatedChargeableIncome >= 0 ? 'up' : 'down' },
+            ...yoy(totals.estimatedChargeableIncome, priorTotals?.estimatedChargeableIncome, 'down') },
           { label: 'Est. Tax Payable',  value: fmtRM(totals.estimatedTaxPayable || 0),
-            change: 'Formulaic',      trend: 'neutral' },
+            ...yoy(totals.estimatedTaxPayable, priorTotals?.estimatedTaxPayable, 'down') },
         ]);
       } else if (activeEntity) {
         const turnover  = parseFloat(activeEntity.salesTurnover)    || 0;
@@ -389,6 +598,10 @@ export default function Overview() {
           footerLabel: 'Total Reliefs Claimed',
           footerColor: '#6366F1',
         },
+        {
+          type: 'bar',
+          years: summary?.yearlyTrend || [],
+        },
       ]);
 
       // ── Action banner: reflects documents waiting on review in the Upload
@@ -397,7 +610,7 @@ export default function Overview() {
         pendingReview > 0
           ? {
               title: 'Action Required',
-              message: `${pendingReview} of ${docCount} uploaded document${docCount === 1 ? '' : 's'} need${pendingReview === 1 ? 's' : ''} your review before filing.`,
+              message: `${pendingReview} of ${docCount} document${docCount === 1 ? '' : 's'} for YA ${assessmentYear} need${pendingReview === 1 ? 's' : ''} your review before filing.`,
               actionLabel: 'Review',
             }
           : null
@@ -448,7 +661,7 @@ export default function Overview() {
           title={liveAlert.title}
           message={liveAlert.message}
           actionLabel={liveAlert.actionLabel}
-          onAction={() => navigate(UPLOAD_TAB_ROUTE)}
+          onAction={() => navigate(`${UPLOAD_TAB_ROUTE}&filter=needs_review`)}
           compact
         />
       )}

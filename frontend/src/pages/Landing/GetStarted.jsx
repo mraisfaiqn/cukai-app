@@ -713,7 +713,8 @@ export default function GetStarted({ onLogin }) {
         data={data}
         setData={setData}
         onBack={() => setStep(3)}
-        onNext={() => handleRegisterUser(async () => setStep(5))}
+        // onNext={() => handleRegisterUser(async () => setStep(5))}
+        onNext={() => handleRegisterUser(async () => setStep(6))}
       />
     </>
   );

@@ -210,20 +210,38 @@ export const retryDocument = async (docId, userId = null, entityId = null) => {
  * Pass `amount` and/or `date` when the original OCR extraction failed to
  * capture them — each overwrites the corresponding extractedData field on
  * the backend. `date` should be an ISO YYYY-MM-DD string.
+ * `deductiblePct` (0–100) applies only to apportioned Q3 categories
+ * (client entertainment, gifts, mixed-use vehicle, hire purchase) and tells
+ * the backend what portion of the amount is deductible; it's ignored for
+ * every other category.
  * Returns the updated Document record.
  */
-export const reclassifyDocument = async (docId, status, category, userId = null, entityId = null, amount = null, date = null) => {
+export const reclassifyDocument = async (docId, status, category, userId = null, entityId = null, amount = null, date = null, deductiblePct = null) => {
   const params = {};
   if (userId)   params.user_id   = userId;
   if (entityId) params.entity_id = entityId;
   const body = { status, category };
   if (amount !== null && amount !== undefined && amount !== '') body.amount = amount;
   if (date !== null && date !== undefined && date !== '') body.date = date;
+  if (deductiblePct !== null && deductiblePct !== undefined && deductiblePct !== '') body.deductible_pct = deductiblePct;
   const { data } = await api.patch(
     `/api/documents/${docId}/reclassify`,
     body,
     { params },
   );
+  return data;
+};
+
+/**
+ * Revert a user-edited document to the LLM's original classification
+ * (category, status, amount, date, year of assessment). Only valid once the
+ * document has been edited at least once. Returns the reset Document record.
+ */
+export const resetDocument = async (docId, userId = null, entityId = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.patch(`/api/documents/${docId}/reset`, {}, { params });
   return data;
 };
 
@@ -245,10 +263,14 @@ export const getTaxProfileSummary = async (year, userId = null, entityId = null)
 
 /**
  * Fetch the structured Form B data extracted from a previously filed return.
+ * Pass entityId to scope to a specific business entity (each entity keeps its
+ * own filed Form B per year); omit it for the no-entity record.
  * Returns null if no Form B has been uploaded for that year.
  */
-export const getFormBProfile = async (year, userId = null) => {
-  const params = userId ? { user_id: userId } : {};
+export const getFormBProfile = async (year, userId = null, entityId = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
   const { data } = await api.get(`/api/profile/form-b/${year}`, { params });
   return data;
 };

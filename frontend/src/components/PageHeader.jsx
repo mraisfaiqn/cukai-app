@@ -29,10 +29,13 @@ const AccountIcon = () => (
   </svg>
 );
 
-const BellIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" className="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+const InsightsIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-[16px] w-[16px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .962 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.962 0z" />
+    <path d="M20 3v4" />
+    <path d="M22 5h-4" />
+    <path d="M4 17v2" />
+    <path d="M5 18H3" />
   </svg>
 );
 
@@ -123,61 +126,12 @@ function Dropdown({ trigger, items, navLinks = false }) {
   );
 }
 
-// ── Dropdown content ──────────────────────────────────────────────────────────
-
-const insightsAIItems = [
-  { label: 'Tax filing deadline soon', badge: 'New' },
-  { label: 'Receipt #1042 processed' },
-  { label: 'E-invoice generated' },
-];
-
-function InsightsAIDropdown({ trigger }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-
-  useEffect(() => {
-    function handleClick(e) {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
-    }
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, []);
-
-  return (
-    <div className="relative" ref={ref}>
-      <div onClick={() => setOpen(o => !o)}>{trigger(open)}</div>
-      {open && (
-        <div className="absolute right-0 top-full mt-2 w-64 rounded-xl border border-slate-100 bg-white py-1 shadow-lg z-50">
-          <p className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-[#64748B]">AI Insights✨</p>
-          <div className="my-1 border-t border-slate-100" />
-          {insightsAIItems.map((item, i) => (
-            <div key={i} className="flex items-start gap-2.5 px-4 py-2">
-              <span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#10B981]" />
-              <span className="text-sm text-[#0F172A] leading-snug">{item.label}</span>
-              {item.badge && (
-                <span className="ml-auto shrink-0 rounded-full bg-[#10B981] px-1.5 py-0.5 text-[10px] font-semibold text-white">{item.badge}</span>
-              )}
-            </div>
-          ))}
-          <div className="my-1 border-t border-slate-100" />
-          <NavLink
-            to="/insightsinbox"
-            onClick={() => setOpen(false)}
-            className={({ isActive }) => `flex items-center justify-center px-4 py-2 text-sm font-medium transition-colors duration-150 ${isActive ? 'text-[#0D9488]' : 'text-[#0D9488] hover:bg-[#f0fdf9]'}`}
-          >
-            View All
-          </NavLink>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Nav links ─────────────────────────────────────────────────────────────────
 
 const navLinks = [
   { href: '/overview', label: 'Overview', Icon: OverviewIcon },
   { href: '/account', label: 'Account', Icon: AccountIcon },
+  { href: '/insightsinbox', label: 'Insights', Icon: InsightsIcon },
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -233,24 +187,13 @@ function PageHeader({ onLogout }) {
             </NavLink>
           ))}
           <NavLink to="/cukaibot" className={({ isActive }) => `flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-base font-medium transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}>
-            <img src={cukaiBot} alt="CukaiBot" className="h-6 w-6 -m-1 object-contain" />
+            <img src={cukaiBot} alt="CukaiBot" className="h-6.5 w-6.5 pt-0.5 -m-1 object-contain" />
             CukaiBot
           </NavLink>
         </nav>
 
         {/* Right icons */}
-        <div className="flex items-center gap-1">
-
-          {/* AI Insights */}
-          <InsightsAIDropdown
-            trigger={(open) => (
-              <button className={`relative flex h-9 w-9 items-center justify-center rounded-lg text-[#64748B] transition-colors duration-150 hover:bg-[#f0fdf9] hover:text-[#0D9488] ${open ? 'bg-[#f0fdf9] text-[#0D9488]' : ''}`}>
-                <BellIcon />
-                <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-[#10B981]" />
-              </button>
-            )}
-          />
-
+        <div className="flex items-center">
           {/* Account */}
           <Dropdown
             navLinks
