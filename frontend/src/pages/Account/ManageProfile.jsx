@@ -15,11 +15,6 @@ const BuildingIcon = () => (
     <path d="M8 6h2v2H8V6zm4 0h2v2h-2V6zM8 10h2v2H8v-2zm4 0h2v2h-2v-2z" />
   </svg>
 );
-const UsersIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" className="h-[16px] w-[16px] text-[#64748B]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
-  </svg>
-);
 const SwitchIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="16 3 21 8 16 13" /><line x1="21" y1="8" x2="9" y2="8" /><polyline points="8 21 3 16 8 11" /><line x1="3" y1="16" x2="15" y2="16" />
@@ -43,16 +38,6 @@ const CheckIcon = () => (
 const XIcon = ({ className = "h-4 w-4" }) => (
   <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-  </svg>
-);
-const ChevronLeftIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="15 18 9 12 15 6" />
-  </svg>
-);
-const StarIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 shrink-0" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-    <path d="M12 2l2.9 6.6L22 9.3l-5 4.9 1.2 7.1L12 17.8l-6.2 3.5L7 14.2 2 9.3l7.1-0.7L12 2z" />
   </svg>
 );
 const MapPinIcon = () => (
@@ -85,7 +70,6 @@ const MALAYSIAN_STATES = [
 ];
 
 const BLANK_SOLE_PROP = {
-  entityType: 'sole-prop',
   name: '',
   businessCode: '',
   businessActivity: '',
@@ -101,34 +85,6 @@ const BLANK_SOLE_PROP = {
   netProfitLoss: '',
   totalAssets: '',
   totalLiabilities: '',
-};
-
-const BLANK_PARTNERSHIP = {
-  entityType: 'partnership',
-  name: '',
-  isPrecedentPartner: null, // true | false
-  businessCode: '',
-  businessActivity: '',
-  ssmNo: '',
-  tin: '', // Income tax no. with D prefix
-  partnerCount: '',
-  basisOfApportionment: '',
-  employerNo: '',
-  precedentPartnerName: '',
-  mainBusinessAddress: '',
-  mainBusinessPostcode: '',
-  mainBusinessCity: '',
-  mainBusinessState: '',
-  partners: [],
-};
-
-const BLANK_PARTNER = {
-  name: '',
-  identificationNo: '',
-  incomeTaxNo: '',
-  countryOfResidence: 'MYS',
-  profitShare: '',
-  dateAppointed: '',
 };
 
 const BLANK_PERSONAL_PROFILE = {
@@ -219,30 +175,12 @@ const formatMoney = (val) => {
 };
 
 const formatAddress = (entity) => {
-  const isPartnership = entity.entityType === 'partnership';
-  const line = isPartnership ? entity.mainBusinessAddress : entity.premiseAddress;
-  const city = isPartnership ? entity.mainBusinessCity : entity.premiseCity;
-  const state = isPartnership ? entity.mainBusinessState : entity.premiseState;
-  const postcode = isPartnership ? entity.mainBusinessPostcode : entity.premisePostcode;
+  const line = entity.premiseAddress;
+  const city = entity.premiseCity;
+  const state = entity.premiseState;
+  const postcode = entity.premisePostcode;
   const cityLine = [postcode, city].filter(Boolean).join(' ');
   return [line, cityLine, state].filter(Boolean).join(', ');
-};
-
-/* ---------- Badges ---------- */
-
-const RoleBadge = ({ isPrecedentPartner }) => {
-  if (isPrecedentPartner) {
-    return (
-      <span className="inline-flex items-center gap-1 bg-[#fdf3ea] text-[#854F0B] border border-amber-100 px-1.5 py-0.5 rounded-full text-[9px] font-bold shrink-0">
-        <StarIcon /> Precedent
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center bg-slate-50 text-[#64748B] border border-slate-200 px-1.5 py-0.5 rounded-full text-[9px] font-semibold shrink-0">
-      Partner
-    </span>
-  );
 };
 
 /* =========================================================================
@@ -555,13 +493,10 @@ const ProfileTabNav = ({ active, onChange }) => {
    ========================================================================= */
 
 const EntityCard = ({ entity, active, onSwitch, onOpenPreview, personalTin }) => {
-  const isPartnership = entity.entityType === 'partnership';
-  const Icon = isPartnership ? UsersIcon : BuildingIcon;
-  const filingNote = isPartnership
-    ? (entity.isPrecedentPartner ? 'Files Form P + B' : 'Files Form B only')
-    : 'Files Form B';
+  const Icon = BuildingIcon;
+  const filingNote = 'Files Form B';
   const address = formatAddress(entity);
-  const netProfit = !isPartnership ? formatMoney(entity.netProfitLoss) : null;
+  const netProfit = formatMoney(entity.netProfitLoss);
 
   return (
     <button
@@ -575,9 +510,8 @@ const EntityCard = ({ entity, active, onSwitch, onOpenPreview, personalTin }) =>
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 min-w-0">
               <h3 className="text-sm font-bold text-[#0F172A] truncate">{entity.name || 'Untitled Entity'}</h3>
-              {isPartnership && <RoleBadge isPrecedentPartner={entity.isPrecedentPartner} />}
             </div>
-            <p className="text-[11px] text-[#64748B]">{isPartnership ? 'General Partnership' : 'Sole Proprietorship'}</p>
+            <p className="text-[11px] text-[#64748B]">Sole Proprietorship</p>
           </div>
         </div>
         {active && (
@@ -591,15 +525,7 @@ const EntityCard = ({ entity, active, onSwitch, onOpenPreview, personalTin }) =>
         <span className="text-[#64748B]">SSM No:</span><span className="font-semibold text-[#0F172A] truncate">{entity.ssmNo || '—'}</span>
         <span className="text-[#64748B]">Personal TIN:</span><span className="font-semibold text-[#0F172A] truncate">{personalTin || '—'}</span>
         <span className="text-[#64748B]">Code:</span><span className="font-semibold text-[#0F172A] truncate">{entity.businessCode || '—'}</span>
-        {isPartnership ? (
-          <>
-            <span className="text-[#64748B]">Partners:</span><span className="font-semibold text-[#0F172A]">{entity.partnerCount || '—'}</span>
-          </>
-        ) : (
-          <>
-            <span className="text-[#64748B]">Net profit:</span><span className="font-semibold text-[#0F172A] truncate">{netProfit ?? '—'}</span>
-          </>
-        )}
+        <span className="text-[#64748B]">Net profit:</span><span className="font-semibold text-[#0F172A] truncate">{netProfit ?? '—'}</span>
       </div>
 
       <p className="text-[11px] text-[#64748B] truncate mb-2">{entity.businessActivity || 'No activity specified'}</p>
@@ -626,63 +552,23 @@ const EntityCard = ({ entity, active, onSwitch, onOpenPreview, personalTin }) =>
 /* =========================================================================
    ENTITY PREVIEW / EDIT SLIDE-OVER — full depth
    ========================================================================= */
-
-const PartnerRow = ({ partner, onChange, onRemove }) => {
-  const set = (key) => (e) => onChange({ ...partner, [key]: e.target.value });
-  return (
-    <div className="rounded-lg border border-slate-100 p-3 flex flex-col gap-2.5">
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-[#94A3B8]">Partner</span>
-        <button onClick={onRemove} className="text-[#94A3B8] hover:text-[#D85A30] transition-colors duration-150" aria-label="Remove partner">
-          <TrashIcon />
-        </button>
-      </div>
-      <Field label="Name">
-        <TextInput value={partner.name} onChange={set('name')} placeholder="Partner's full name" />
-      </Field>
-      <div className="grid grid-cols-2 gap-2">
-        <Field label="Identification no.">
-          <TextInput value={partner.identificationNo} onChange={set('identificationNo')} placeholder="e.g. 950312-10-5521" />
-        </Field>
-        <Field label="Income tax no.">
-          <TextInput value={partner.incomeTaxNo} onChange={set('incomeTaxNo')} placeholder="e.g. IG 1234567890" />
-        </Field>
-      </div>
-      <div className="grid grid-cols-3 gap-2">
-        <Field label="Country">
-          <TextInput value={partner.countryOfResidence} onChange={set('countryOfResidence')} placeholder="MYS" />
-        </Field>
-        <Field label="Profit share %">
-          <TextInput value={partner.profitShare} onChange={set('profitShare')} placeholder="e.g. 25" inputMode="decimal" />
-        </Field>
-        <Field label="Date appointed">
-          <input type="date" className={inputClass} value={partner.dateAppointed} onChange={set('dateAppointed')} />
-        </Field>
-      </div>
-    </div>
-  );
-};
-
 const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClose, onSave, onSwitch, onDelete }) => {
   const [draft, setDraft] = useState(entity);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-
-  const isPartnership = draft.entityType === 'partnership';
+  const [saving, setSaving] = useState(false);
   const set = (key) => (e) => setDraft({ ...draft, [key]: e.target.value });
-
   const canSave = isNew ? !!(draft.name && draft.ssmNo) : true;
-  const handleSave = () => { if (canSave) onSave(draft); };
-
-  const updatePartner = (index, updated) => {
-    const next = [...draft.partners];
-    next[index] = updated;
-    setDraft({ ...draft, partners: next });
-  };
-  const removePartner = (index) => {
-    setDraft({ ...draft, partners: draft.partners.filter((_, i) => i !== index) });
-  };
-  const addPartner = () => {
-    setDraft({ ...draft, partners: [...(draft.partners || []), { ...BLANK_PARTNER }] });
+  const handleSave = async () => {
+    if (!canSave || saving) return;
+    setSaving(true);
+    try {
+      await onSave(draft);
+    } finally {
+      // On success the parent closes this panel (unmounting it); on failure it
+      // stays open, so re-enable the button. Resetting after an unmount is a
+      // harmless no-op in React 18.
+      setSaving(false);
+    }
   };
 
   return (
@@ -695,16 +581,15 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClo
         <div className="shrink-0 flex items-start justify-between gap-3 px-5 py-4 border-b border-slate-100">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="p-2 bg-[#f0fdf9] rounded-lg border border-slate-100 shrink-0">
-              {isPartnership ? <UsersIcon /> : <BuildingIcon />}
+              <BuildingIcon />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 min-w-0">
                 <h3 className="text-sm font-bold text-[#0F172A] truncate">
                   {isNew ? 'New Sole Proprietorship' : (draft.name || 'Untitled Entity')}
                 </h3>
-                {isPartnership && <RoleBadge isPrecedentPartner={draft.isPrecedentPartner} />}
               </div>
-              <p className="text-[11px] text-[#64748B]">{isPartnership ? 'General Partnership' : 'Sole Proprietorship'}</p>
+              <p className="text-[11px] text-[#64748B]">Sole Proprietorship</p>
             </div>
           </div>
           <button onClick={onClose} className="text-[#94A3B8] hover:text-[#0F172A] transition-colors duration-150 shrink-0" aria-label="Close panel">
@@ -723,18 +608,13 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClo
         <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 flex flex-col gap-2.5">
 
           {/* Business particulars */}
-          <SectionLabel>{isPartnership ? 'Partnership Particulars' : 'Business Particulars'}</SectionLabel>
-          <Field label={isPartnership ? 'Partnership name' : 'Business name'} required>
+          <SectionLabel>Business Particulars</SectionLabel>
+          <Field label='Business name' required>
             <TextInput value={draft.name} onChange={set('name')} placeholder="As registered with SSM" />
           </Field>
           <Field label="SSM registration no." required>
             <TextInput value={draft.ssmNo} onChange={set('ssmNo')} placeholder="e.g. 202103145678" />
           </Field>
-          {isPartnership && (
-            <Field label="Partnership Tax Identification No." required hint="Begins with D — unique to this partnership">
-              <TextInput value={draft.tin} onChange={set('tin')} placeholder="D 1234567890" />
-            </Field>
-          )}
           <div className="grid grid-cols-2 gap-2.5">
             <Field label="Business code">
               <TextInput value={draft.businessCode} onChange={set('businessCode')} placeholder="LHDN business code" />
@@ -743,121 +623,58 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClo
               <TextInput value={draft.businessActivity} onChange={set('businessActivity')} placeholder="e.g. F&B retail" />
             </Field>
           </div>
-          {isPartnership && (
-            <Field label="Employer's no.">
-              <TextInput value={draft.employerNo} onChange={set('employerNo')} placeholder="E 1234567890" />
-            </Field>
-          )}
-
-          {/* Role / partner roster — partnership only */}
-          {isPartnership && (
-            <>
-              <SectionLabel><span className="mt-2 block">Your Role</span></SectionLabel>
-              <div className="grid grid-cols-2 gap-2.5">
-                <Field label="Number of partners" required>
-                  <TextInput value={draft.partnerCount} onChange={set('partnerCount')} placeholder="e.g. 3" inputMode="numeric" />
-                </Field>
-                <Field label="Basis of apportionment" hint="How divisible income/loss is allocated among partners">
-                  <SelectInput value={draft.basisOfApportionment} onChange={set('basisOfApportionment')}>
-                    <option value="" disabled>Select basis</option>
-                    <option value="Equal Split">Equal Split</option>
-                    <option value="No Salaries or Interest">No Salaries or Interest</option>
-                    <option value="Loan Advance Interest">Loan Advance Interest</option>
-                  </SelectInput>
-                </Field>
-              </div>
-              <Field label="Your role in this partnership" required>
-                <SelectInput
-                  value={draft.isPrecedentPartner === null ? '' : String(draft.isPrecedentPartner)}
-                  onChange={(e) => setDraft({ ...draft, isPrecedentPartner: e.target.value === 'true' })}
-                >
-                  <option value="" disabled>Select role</option>
-                  <option value="true">I am the precedent partner — I file Form P</option>
-                  <option value="false">I am a partner — I only file Form B</option>
-                </SelectInput>
-              </Field>
-              {draft.isPrecedentPartner === false && (
-                <Field label="Precedent partner's name" required hint="The partner who submits Form P on behalf of the partnership">
-                  <TextInput value={draft.precedentPartnerName} onChange={set('precedentPartnerName')} placeholder="Full name" />
-                </Field>
-              )}
-
-              <SectionLabel><span className="mt-2 block">Partner Roster</span></SectionLabel>
-              <p className="text-[10px] text-[#94A3B8] -mt-1.5 mb-1">Identification, share, and benefits for each partner (Form P Part G).</p>
-              <div className="flex flex-col gap-2">
-                {(draft.partners || []).map((partner, index) => (
-                  <PartnerRow
-                    key={index}
-                    partner={partner}
-                    onChange={(updated) => updatePartner(index, updated)}
-                    onRemove={() => removePartner(index)}
-                  />
-                ))}
-              </div>
-              <button
-                onClick={addPartner}
-                className="inline-flex items-center justify-center gap-1.5 py-1.5 px-3 text-xs border border-dashed border-slate-300 rounded-lg font-medium text-[#64748B] hover:border-[#0D9488] hover:text-[#0D9488] transition-colors duration-150"
-              >
-                <PlusIcon />Add Partner
-              </button>
-            </>
-          )}
 
           {/* Financial particulars — sole prop only */}
-          {!isPartnership && (
-            <>
-              <SectionLabel><span className="mt-2 block">Financial Particulars (Form N)</span></SectionLabel>
-              <p className="text-[10px] text-[#94A3B8] -mt-1.5 mb-1">High-level P&L and balance sheet figures. Detailed line items are entered during filing.</p>
-              <div className="grid grid-cols-2 gap-2.5">
-                <Field label="Sales / turnover">
-                  <TextInput value={draft.salesTurnover} onChange={set('salesTurnover')} placeholder="0.00" inputMode="decimal" />
-                </Field>
-                <Field label="Total expenditure">
-                  <TextInput value={draft.totalExpenditure} onChange={set('totalExpenditure')} placeholder="0.00" inputMode="decimal" />
-                </Field>
-              </div>
-              <Field label="Net profit / loss">
-                <TextInput value={draft.netProfitLoss} onChange={set('netProfitLoss')} placeholder="0.00" inputMode="decimal" />
-              </Field>
-              <div className="grid grid-cols-2 gap-2.5">
-                <Field label="Total assets">
-                  <TextInput value={draft.totalAssets} onChange={set('totalAssets')} placeholder="0.00" inputMode="decimal" />
-                </Field>
-                <Field label="Total liabilities">
-                  <TextInput value={draft.totalLiabilities} onChange={set('totalLiabilities')} placeholder="0.00" inputMode="decimal" />
-                </Field>
-              </div>
-            </>
-          )}
+          <SectionLabel><span className="mt-2 block">Financial Particulars (Form N)</span></SectionLabel>
+          <p className="text-[10px] text-[#94A3B8] -mt-1.5 mb-1">High-level P&L and balance sheet figures. Detailed line items are entered during filing.</p>
+          <div className="grid grid-cols-2 gap-2.5">
+            <Field label="Sales / turnover">
+              <TextInput value={draft.salesTurnover} onChange={set('salesTurnover')} placeholder="0.00" inputMode="decimal" />
+            </Field>
+            <Field label="Total expenditure">
+              <TextInput value={draft.totalExpenditure} onChange={set('totalExpenditure')} placeholder="0.00" inputMode="decimal" />
+            </Field>
+          </div>
+          <Field label="Net profit / loss">
+            <TextInput value={draft.netProfitLoss} onChange={set('netProfitLoss')} placeholder="0.00" inputMode="decimal" />
+          </Field>
+          <div className="grid grid-cols-2 gap-2.5">
+            <Field label="Total assets">
+              <TextInput value={draft.totalAssets} onChange={set('totalAssets')} placeholder="0.00" inputMode="decimal" />
+            </Field>
+            <Field label="Total liabilities">
+              <TextInput value={draft.totalLiabilities} onChange={set('totalLiabilities')} placeholder="0.00" inputMode="decimal" />
+            </Field>
+          </div>
 
           {/* Address */}
-          <SectionLabel><span className="mt-2 block">{isPartnership ? 'Main Business Address' : 'Business Premise'}</span></SectionLabel>
+          <SectionLabel><span className="mt-2 block">Business Premise</span></SectionLabel>
           <Field label="Address">
             <TextInput
-              value={isPartnership ? draft.mainBusinessAddress : draft.premiseAddress}
-              onChange={set(isPartnership ? 'mainBusinessAddress' : 'premiseAddress')}
+              value={draft.premiseAddress}
+              onChange={set('premiseAddress')}
               placeholder="Street address"
             />
           </Field>
           <div className="grid grid-cols-3 gap-2.5">
             <Field label="Postcode">
               <TextInput
-                value={isPartnership ? draft.mainBusinessPostcode : draft.premisePostcode}
-                onChange={set(isPartnership ? 'mainBusinessPostcode' : 'premisePostcode')}
+                value={draft.premisePostcode}
+                onChange={set('premisePostcode')}
                 placeholder="40150"
               />
             </Field>
             <Field label="City">
               <TextInput
-                value={isPartnership ? draft.mainBusinessCity : draft.premiseCity}
-                onChange={set(isPartnership ? 'mainBusinessCity' : 'premiseCity')}
+                value={draft.premiseCity}
+                onChange={set('premiseCity')}
                 placeholder="Shah Alam"
               />
             </Field>
             <Field label="State">
               <SelectInput
-                value={isPartnership ? draft.mainBusinessState : draft.premiseState}
-                onChange={set(isPartnership ? 'mainBusinessState' : 'premiseState')}
+                value={draft.premiseState}
+                onChange={set('premiseState')}
               >
                 <option value="" disabled>Select</option>
                 {MALAYSIAN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -930,10 +747,22 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClo
           )}
           <button
             onClick={handleSave}
-            disabled={!canSave}
-            className={`flex-1 py-2 px-3 text-xs rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-colors duration-150 ${canSave ? "bg-[#0D9488] text-white hover:bg-[#0f766e]" : "bg-slate-100 text-slate-400 cursor-not-allowed"}`}
+            disabled={!canSave || saving}
+            className={`flex-1 py-2 px-3 text-xs rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-colors duration-150 ${!canSave ? "bg-slate-100 text-slate-400 cursor-not-allowed" : saving ? "bg-[#0D9488]/70 text-white cursor-wait" : "bg-[#0D9488] text-white hover:bg-[#0f766e]"}`}
           >
-            <CheckIcon />{isNew ? 'Create Entity' : 'Save Changes'}
+            {saving ? (
+              <>
+                <svg className="animate-spin h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
+                  <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-90" />
+                </svg>
+                Saving…
+              </>
+            ) : (
+              <>
+                <CheckIcon />{isNew ? 'Create Entity' : 'Save Changes'}
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -1356,209 +1185,6 @@ const GenerateFormsPanel = ({ profile, entities }) => {
 };
 
 /* =========================================================================
-   CREATE ENTITY MODAL
-   ========================================================================= */
-
-const TypeChoiceCard = ({ Icon, title, description, onClick }) => (
-  <button
-    onClick={onClick}
-    className="flex-1 text-left p-4 rounded-xl border border-slate-200 hover:border-[#0D9488] hover:bg-[#f0fdf9] transition-colors duration-150 group"
-  >
-    <div className="p-2 bg-[#f0fdf9] group-hover:bg-white rounded-lg border border-slate-100 w-fit mb-2.5 transition-colors duration-150">
-      <Icon />
-    </div>
-    <h4 className="text-sm font-bold text-[#0F172A] mb-1">{title}</h4>
-    <p className="text-[11px] text-[#64748B] leading-relaxed">{description}</p>
-  </button>
-);
-
-const CreateEntityModal = ({ onClose, onCreate }) => {
-  const [step, setStep] = useState('choose-type'); // 'choose-type' | 'sole-prop' | 'partnership'
-  const [draft, setDraft] = useState(null);
-
-  const startSoleProp = () => { setDraft({ ...BLANK_SOLE_PROP }); setStep('sole-prop'); };
-  const startPartnership = () => { setDraft({ ...BLANK_PARTNERSHIP, partners: [{ ...BLANK_PARTNER }] }); setStep('partnership'); };
-  const back = () => { setStep('choose-type'); setDraft(null); };
-
-  const set = (key) => (e) => setDraft({ ...draft, [key]: e.target.value });
-
-  const isPartnership = step === 'partnership';
-  const canSubmit = draft && draft.name && draft.ssmNo && draft.tin && (
-    !isPartnership || (draft.partnerCount && draft.isPrecedentPartner !== null && (draft.isPrecedentPartner || draft.precedentPartnerName))
-  );
-
-  const handleSubmit = () => {
-    if (!canSubmit) return;
-    onCreate(draft);
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40">
-      <div className="w-full max-w-lg max-h-[85vh] bg-white rounded-xl shadow-xl flex flex-col overflow-hidden">
-
-        <div className="shrink-0 flex items-center justify-between px-5 py-4 border-b border-slate-100">
-          <div className="flex items-center gap-2">
-            {step !== 'choose-type' && (
-              <button onClick={back} className="text-[#64748B] hover:text-[#0F172A] transition-colors duration-150 mr-1" aria-label="Back">
-                <ChevronLeftIcon />
-              </button>
-            )}
-            <h3 className="text-sm font-bold text-[#0F172A]">
-              {step === 'choose-type' ? 'Create New Entity' : isPartnership ? 'New Partnership' : 'New Sole Proprietorship'}
-            </h3>
-          </div>
-          <button onClick={onClose} className="text-[#94A3B8] hover:text-[#0F172A] transition-colors duration-150" aria-label="Close">
-            <XIcon />
-          </button>
-        </div>
-
-        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
-          {step === 'choose-type' && (
-            <div className="flex flex-col gap-3">
-              <p className="text-xs text-[#64748B] mb-1">Select the type of entity you want to add. This determines which LHDN forms apply.</p>
-              <div className="flex gap-3">
-                <TypeChoiceCard
-                  Icon={BuildingIcon}
-                  title="Sole Proprietorship"
-                  description="A business you run on your own. Files Form B."
-                  onClick={startSoleProp}
-                />
-                <TypeChoiceCard
-                  Icon={UsersIcon}
-                  title="Partnership"
-                  description="A business with other partners. Files Form P and/or Form B."
-                  onClick={startPartnership}
-                />
-              </div>
-            </div>
-          )}
-
-          {step === 'sole-prop' && (
-            <div className="flex flex-col gap-2.5">
-              <SectionLabel>Business Particulars</SectionLabel>
-              <Field label="Business name" required>
-                <TextInput value={draft.name} onChange={set('name')} placeholder="As registered with SSM" />
-              </Field>
-              <div className="grid grid-cols-2 gap-2.5">
-                <Field label="SSM registration no." required>
-                  <TextInput value={draft.ssmNo} onChange={set('ssmNo')} placeholder="e.g. 202103145678" />
-                </Field>
-                <Field label="Tax Identification No." required>
-                  <TextInput value={draft.tin} onChange={set('tin')} placeholder="IG 1234567890" />
-                </Field>
-              </div>
-              <div className="grid grid-cols-2 gap-2.5">
-                <Field label="Business code">
-                  <TextInput value={draft.businessCode} onChange={set('businessCode')} placeholder="LHDN business code" />
-                </Field>
-                <Field label="Type of business activity">
-                  <TextInput value={draft.businessActivity} onChange={set('businessActivity')} placeholder="e.g. F&B retail" />
-                </Field>
-              </div>
-
-              <SectionLabel><span className="mt-2 block">Business Premise</span></SectionLabel>
-              <Field label="Address">
-                <TextInput value={draft.premiseAddress} onChange={set('premiseAddress')} placeholder="Street address" />
-              </Field>
-              <div className="grid grid-cols-3 gap-2.5">
-                <Field label="Postcode">
-                  <TextInput value={draft.premisePostcode} onChange={set('premisePostcode')} placeholder="40150" />
-                </Field>
-                <Field label="City">
-                  <TextInput value={draft.premiseCity} onChange={set('premiseCity')} placeholder="Shah Alam" />
-                </Field>
-                <Field label="State">
-                  <SelectInput value={draft.premiseState} onChange={set('premiseState')}>
-                    <option value="" disabled>Select</option>
-                    {MALAYSIAN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
-                  </SelectInput>
-                </Field>
-              </div>
-            </div>
-          )}
-
-          {step === 'partnership' && (
-            <div className="flex flex-col gap-2.5">
-              <SectionLabel>Partnership Particulars</SectionLabel>
-              <Field label="Partnership name" required>
-                <TextInput value={draft.name} onChange={set('name')} placeholder="As registered with SSM" />
-              </Field>
-              <div className="grid grid-cols-2 gap-2.5">
-                <Field label="SSM registration no." required>
-                  <TextInput value={draft.ssmNo} onChange={set('ssmNo')} placeholder="e.g. 202301982734" />
-                </Field>
-                <Field label="Tax Identification No." required hint="Partnership TIN begins with D">
-                  <TextInput value={draft.tin} onChange={set('tin')} placeholder="D 1234567890" />
-                </Field>
-              </div>
-              <div className="grid grid-cols-2 gap-2.5">
-                <Field label="Business code">
-                  <TextInput value={draft.businessCode} onChange={set('businessCode')} placeholder="LHDN business code" />
-                </Field>
-                <Field label="Number of partners" required>
-                  <TextInput value={draft.partnerCount} onChange={set('partnerCount')} placeholder="e.g. 3" inputMode="numeric" />
-                </Field>
-              </div>
-
-              <SectionLabel><span className="mt-2 block">Your Role</span></SectionLabel>
-              <Field label="Are you the precedent partner?" required hint="The precedent partner submits Form P on behalf of the partnership">
-                <SelectInput
-                  value={draft.isPrecedentPartner === null ? '' : String(draft.isPrecedentPartner)}
-                  onChange={(e) => setDraft({ ...draft, isPrecedentPartner: e.target.value === 'true' })}
-                >
-                  <option value="" disabled>Select role</option>
-                  <option value="true">Yes — I am the precedent partner (files Form P + Form B)</option>
-                  <option value="false">No — I am a partner (files Form B only)</option>
-                </SelectInput>
-              </Field>
-              {draft.isPrecedentPartner === false && (
-                <Field label="Precedent partner's name" required>
-                  <TextInput value={draft.precedentPartnerName} onChange={set('precedentPartnerName')} placeholder="Full name" />
-                </Field>
-              )}
-
-              <SectionLabel><span className="mt-2 block">Main Business Address</span></SectionLabel>
-              <Field label="Address">
-                <TextInput value={draft.mainBusinessAddress} onChange={set('mainBusinessAddress')} placeholder="Street address" />
-              </Field>
-              <div className="grid grid-cols-3 gap-2.5">
-                <Field label="Postcode">
-                  <TextInput value={draft.mainBusinessPostcode} onChange={set('mainBusinessPostcode')} placeholder="40150" />
-                </Field>
-                <Field label="City">
-                  <TextInput value={draft.mainBusinessCity} onChange={set('mainBusinessCity')} placeholder="Shah Alam" />
-                </Field>
-                <Field label="State">
-                  <SelectInput value={draft.mainBusinessState} onChange={set('mainBusinessState')}>
-                    <option value="" disabled>Select</option>
-                    {MALAYSIAN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
-                  </SelectInput>
-                </Field>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {step !== 'choose-type' && (
-          <div className="shrink-0 flex gap-2 px-5 py-4 border-t border-slate-100">
-            <button onClick={onClose} className="flex-1 py-2 px-3 text-xs border border-slate-200 rounded-lg font-medium text-[#0F172A] hover:bg-slate-50 transition-colors duration-150">
-              Cancel
-            </button>
-            <button
-              onClick={handleSubmit}
-              disabled={!canSubmit}
-              className="flex-1 py-2 px-3 text-xs bg-[#0D9488] text-white rounded-lg font-semibold flex items-center justify-center gap-1.5 hover:bg-[#0f766e] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-[#0D9488] transition-colors duration-150"
-            >
-              <CheckIcon />Confirm & Create Entity
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-/* =========================================================================
    MAIN COMPONENT
    ========================================================================= */
 
@@ -1646,7 +1272,7 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
       const created = await onCreateEntity(draft);
       if (!created) {
         alert('Could not create entity. Please try again.');
-        return;
+        return false; // keep the create panel open so the user can retry
       }
       // Use the server-returned entity (with its real id)
       setEntities((prev) => [...prev, created]);
@@ -1658,7 +1284,8 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
       setEntities((prev) => [...prev, draft]);
       setActiveIndex(entities.length);
     }
-    setShowCreateModal(false);
+    // The create panel is closed by its own onSave handler on success.
+    return true;
   };
 
   const handleSavePersonal = async (updatedData) => {
@@ -1761,7 +1388,7 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
           isOnlyEntity={false}
           isNew={true}
           onClose={() => setNewEntityDraft(null)}
-          onSave={(draft) => { handleCreateEntity(draft); setNewEntityDraft(null); }}
+          onSave={async (draft) => { const ok = await handleCreateEntity(draft); if (ok) setNewEntityDraft(null); }}
           onSwitch={() => {}}
           onDelete={() => setNewEntityDraft(null)}
         />
