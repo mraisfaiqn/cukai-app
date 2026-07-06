@@ -520,6 +520,7 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
 @limiter.limit("30/minute")
 async def upload_document(
   request: Request,
+  # ... (Ellipsis) means this field is strictly required
   file: UploadFile = File(...),
   user_id: Optional[str] = Query(default=None),
   entity_id: Optional[int] = Query(default=None),
