@@ -18,7 +18,10 @@ function StatCard({
                          //   (left bar + tinted background + teal text). Lets the parent flag the lead metric
   compact = false,       // tighter padding + smaller value text for the no-scroll viewport layout
 }) {
-  const changeColor = changeTone === 'success' ? 'text-success' : 'text-muted';
+  const changeColor =
+    changeTone === 'success' ? 'text-success'
+    : changeTone === 'danger' ? 'text-critical'
+    : 'text-muted';
 
   return (
     <div

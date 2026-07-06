@@ -6,7 +6,9 @@ import os
 import re
 import uuid
 import bcrypt
+from contextlib import asynccontextmanager
 from datetime import date
+from decimal import Decimal
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -17,14 +19,19 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from database import init_db, SessionLocal
 import models
-from models import Document, FormBProfile
+from models import Document, FormBProfile, CapitalAsset
+from capital_allowance import compute_capital_allowance_for_year
+from utils import parse_amount, money
 from pipeline import (
   run_document_pipeline, validate_upload,
   CATEGORY_STATUS_MAP, ALL_Q1, ALL_Q2, ALL_Q3, ALL_Q4,
   REVIEW_CATEGORY, NON_TAX_CATEGORY,
+  derive_document_role, derive_aggregation_state,
+  APPORTIONED_CATEGORIES, resolve_deductible_pct,
 )
 
 _pipeline_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="pipeline")
@@ -32,8 +39,64 @@ _pipeline_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread
 load_dotenv()
 logger = logging.getLogger("uvicorn.error")
 
+STORAGE_DIR = "./stored_documents"
+MAX_BATCH_FILES = 10
+MAX_BATCH_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+def _requeue_interrupted_documents() -> None:
+  """Re-queue documents left mid-flight by a previous process (status
+  'processing' or 'pending'). Without this, a restart during OCR leaves a
+  document stuck forever, since the retry endpoint only accepts 'failed'.
+  Runs once at startup, before the app serves traffic."""
+  db = SessionLocal()
+  try:
+    stuck = db.query(Document).filter(Document.status.in_(["processing", "pending"])).all()
+    requeued = orphaned = 0
+    for doc in stuck:
+      if doc.file_path and os.path.isfile(doc.file_path):
+        doc.status = "pending"
+        db.commit()
+        _pipeline_executor.submit(run_document_pipeline, doc.id, doc.file_path, SessionLocal)
+        requeued += 1
+      else:
+        doc.status = "failed"
+        doc.extracted_data = {
+          "error_message": "Processing was interrupted and the stored file is no "
+                           "longer available. Please re-upload."
+        }
+        db.commit()
+        orphaned += 1
+    if requeued or orphaned:
+      logger.info(f"[Startup] Re-queued {requeued} interrupted document(s); "
+                  f"marked {orphaned} orphaned as failed.")
+  except Exception as e:
+    logger.error(f"[Startup] Failed to re-queue interrupted documents: {e}")
+    db.rollback()
+  finally:
+    db.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+  # ── Startup ──
+  init_db()
+  os.makedirs(STORAGE_DIR, exist_ok=True)
+  app.mount("/files", StaticFiles(directory=STORAGE_DIR), name="stored_documents")
+  _requeue_interrupted_documents()
+  try:
+    yield
+  finally:
+    # ── Shutdown ── stop accepting new pipeline work and wind the pool down.
+    _pipeline_executor.shutdown(wait=False, cancel_futures=True)
+
+
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title="Cukai.ai — LHDN Document Classification Engine", version="2.0.0")
+app = FastAPI(
+  title="Cukai.ai — LHDN Document Classification Engine",
+  version="2.0.0",
+  lifespan=lifespan,
+)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -48,17 +111,6 @@ app.add_middleware(
   allow_headers=["*"],
 )
 
-STORAGE_DIR = "./stored_documents"
-MAX_BATCH_FILES = 10
-MAX_BATCH_BYTES = 100 * 1024 * 1024  # 100 MB
-
-
-@app.on_event("startup")
-def startup_event():
-  init_db()
-  os.makedirs(STORAGE_DIR, exist_ok=True)
-  app.mount("/files", StaticFiles(directory=STORAGE_DIR), name="stored_documents")
-
 
 def get_db():
   db = SessionLocal()
@@ -66,6 +118,44 @@ def get_db():
     yield db
   finally:
     db.close()
+
+
+# ── Data scoping ─────────────────────────────────────────────────────────────
+# TEMPORARY scoping layer. There is no session/token auth yet, so `user_id`
+# (and, where relevant, `entity_id`) arrive as request parameters. This is NOT
+# real authorization — a caller can still pass any user_id — but it does close
+# the far worse hole where OMITTING the parameter silently returned or mutated
+# data across ALL users. Every data endpoint now REQUIRES user_id, so a query
+# is always scoped to exactly one user. Replace this with a dependency that
+# derives the user from a verified session token when auth lands (see the
+# "detailed auth" pass) — every call site already funnels through here, so that
+# swap is localised.
+
+def _verify_entity_owned(db: Session, user_id: str, entity_id: Optional[int]) -> None:
+  """When an entity_id is supplied, ensure it belongs to user_id. String-compares
+  to sidestep the int(Person.id)/str(Document.user_id) mismatch in the schema."""
+  if entity_id is None:
+    return
+  entity = db.query(models.Entity).filter(models.Entity.id == entity_id).first()
+  if not entity:
+    raise HTTPException(status_code=404, detail="Entity not found.")
+  if str(entity.person_id) != str(user_id):
+    raise HTTPException(status_code=403, detail="This entity does not belong to the requesting user.")
+
+
+def _scoped_document_or_404(
+  db: Session, doc_id: int, user_id: str, entity_id: Optional[int]
+) -> Document:
+  """Fetch a single document, scoped to its owner (and entity when supplied).
+  A document that exists but belongs to someone else 404s exactly like a missing
+  one, so IDs can't be probed for existence."""
+  q = db.query(Document).filter(Document.id == doc_id, Document.user_id == user_id)
+  if entity_id is not None:
+    q = q.filter(Document.entity_id == entity_id)
+  doc = q.first()
+  if not doc:
+    raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
+  return doc
 
 
 def hash_password(plain: str) -> str:
@@ -145,6 +235,11 @@ def _serialize_entity(entity: models.Entity) -> dict:
 
 
 def _serialize_doc(doc: Document) -> dict:
+  ed = doc.extracted_data or {}
+  # Basename of the stored file so the frontend can build a preview URL
+  # (${API}/files/<basename>) for ANY document — not just ones still holding a
+  # session blob. Fixes previews going blank after retry or page reload.
+  file_basename = os.path.basename(doc.file_path) if doc.file_path else None
   return {
     "id":                doc.id,
     "userId":            doc.user_id,
@@ -155,8 +250,11 @@ def _serialize_doc(doc: Document) -> dict:
     "category":          doc.category,
     "taxStatus":         doc.tax_status,
     "yearOfAssessment":  doc.year_of_assessment,
-    "quadrant":          doc.extracted_data.get("quadrant")    if doc.extracted_data else None,
-    "itaSection":        doc.extracted_data.get("ita_section") if doc.extracted_data else None,
+    "quadrant":          ed.get("quadrant"),
+    "itaSection":        ed.get("ita_section"),
+    "documentRole":      ed.get("document_role"),
+    "aggregationState":  ed.get("aggregation_state"),
+    "fileBasename":      file_basename,
     "extractedData":     doc.extracted_data,
     "uploadedAt":        doc.created_at.strftime("%Y-%m-%d %H:%M:%S"),
   }
@@ -422,7 +520,20 @@ async def update_entity(entity_id: int, payload: dict, db: Session = Depends(get
 
 @app.delete("/entities/{entity_id}")
 async def delete_entity(entity_id: int = Path(gt=0), db: Session = Depends(get_db)):
-  """Delete an entity. Refuses to delete a person's only remaining entity."""
+  """
+  Delete an entity and, persistently, everything scoped to it.
+
+  entity_id is an ondelete=SET NULL foreign key on documents, capital_assets and
+  form_b_profiles, so a bare `db.delete(entity)` would leave those rows behind
+  with a null entity_id — their figures would keep driving the summary / prior-
+  year charts and their uploaded files would linger on disk. Mirroring the
+  explicit-cleanup pattern used in delete_document(), we remove all of this
+  entity's data in the same transaction (documents + their files, capital
+  assets, filed Form B profiles) before deleting the entity itself, so nothing
+  is orphaned.
+
+  Refuses to delete a person's only remaining entity.
+  """
   entity = db.query(models.Entity).filter(models.Entity.id == entity_id).first()
   if not entity:
     raise HTTPException(status_code=404, detail="Entity not found")
@@ -435,9 +546,67 @@ async def delete_entity(entity_id: int = Path(gt=0), db: Session = Depends(get_d
   if sibling_count <= 1:
     raise HTTPException(status_code=400, detail="Cannot delete your only entity")
 
+  # Gather this entity's documents first so their files can be removed from disk
+  # once the DB deletions commit.
+  docs = db.query(Document).filter(Document.entity_id == entity_id).all()
+  doc_ids = [d.id for d in docs]
+  file_paths = [d.file_path for d in docs if d.file_path]
+
+  # Capital assets tied to the entity — both those scoped directly by entity_id
+  # and any sourced from one of the entity's documents (covers rows created
+  # before entity_id was populated).
+  ca_conditions = [CapitalAsset.entity_id == entity_id]
+  if doc_ids:
+    ca_conditions.append(CapitalAsset.source_document_id.in_(doc_ids))
+  ca_deleted = (
+    db.query(CapitalAsset)
+    .filter(or_(*ca_conditions))
+    .delete(synchronize_session=False)
+  )
+
+  # Filed Form B profiles tied to the entity (or to one of its documents).
+  fb_conditions = [FormBProfile.entity_id == entity_id]
+  if doc_ids:
+    fb_conditions.append(FormBProfile.source_document_id.in_(doc_ids))
+  fb_deleted = (
+    db.query(FormBProfile)
+    .filter(or_(*fb_conditions))
+    .delete(synchronize_session=False)
+  )
+
+  # The entity's documents themselves.
+  doc_deleted = (
+    db.query(Document)
+    .filter(Document.entity_id == entity_id)
+    .delete(synchronize_session=False)
+  )
+
   db.delete(entity)
   db.commit()
-  return {"deleted": True, "id": entity_id}
+
+  # Remove files only after the transaction commits, so a rolled-back delete
+  # never leaves the DB pointing at files we've already unlinked.
+  removed_files = 0
+  for fp in file_paths:
+    try:
+      if os.path.isfile(fp):
+        os.remove(fp)
+        removed_files += 1
+    except OSError as e:
+      logger.warning(f"[DeleteEntity] Could not remove file '{fp}': {e}")
+
+  logger.info(
+    f"[DeleteEntity] Entity {entity_id} deleted with {doc_deleted} document(s), "
+    f"{ca_deleted} capital asset(s), {fb_deleted} Form B profile(s); "
+    f"{removed_files} file(s) removed from disk."
+  )
+  return {
+    "deleted": True,
+    "id": entity_id,
+    "documentsDeleted": doc_deleted,
+    "capitalAssetsDeleted": ca_deleted,
+    "formBProfilesDeleted": fb_deleted,
+  }
 
 
 @app.get("/entities/detail/{entity_id}")
@@ -477,11 +646,15 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
     raise HTTPException(status_code=422, detail=f"{original_name}: {error_msg}")
 
   from datetime import timedelta
-  recent_cutoff = datetime.datetime.utcnow() - timedelta(hours=24)
+  # Naive UTC to match the (tz-naive) Document.created_at column. utcnow() is
+  # deprecated in 3.12, so derive the same value from an aware clock.
+  recent_cutoff = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
+  # Duplicate check is scoped to the USER, not the entity: the same file should
+  # not be uploaded twice across a user's entities either (a receipt belongs to
+  # one business, not several). entity_id is deliberately NOT in the filter.
   duplicate = db.query(Document).filter(
     Document.file_name == original_name,
     Document.user_id == user_id,
-    Document.entity_id == entity_id,
     Document.created_at >= recent_cutoff,
     Document.status.in_(["pending", "processing", "completed"]),
   ).first()
@@ -520,16 +693,13 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
 async def upload_document(
   request: Request,
   file: UploadFile = File(...),
-  user_id: Optional[str] = Query(default=None),
+  user_id: str = Query(..., description="Owner the uploaded document is attributed to."),
   entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
+  _verify_entity_owned(db, user_id, entity_id)
   file_content = await file.read()
-  is_valid, error_msg = validate_upload(
-    filename=file.filename, content_type=file.content_type or "", file_size_bytes=len(file_content)
-  )
-  if not is_valid:
-    raise HTTPException(status_code=422, detail=error_msg)
+  # Validation happens inside _save_and_queue; no need to repeat it here.
   result = _save_and_queue(file_content, file.filename, user_id, entity_id, db)
   return {"message": "Document uploaded and queued for classification.", **result}
 
@@ -539,10 +709,11 @@ async def upload_document(
 async def batch_upload_documents(
   request: Request,
   files: list[UploadFile] = File(...),
-  user_id: Optional[str] = Query(default=None),
+  user_id: str = Query(..., description="Owner the uploaded documents are attributed to."),
   entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
+  _verify_entity_owned(db, user_id, entity_id)
   if not files:
     raise HTTPException(status_code=422, detail="No files provided.")
   if len(files) > MAX_BATCH_FILES:
@@ -629,7 +800,7 @@ def _generate_manual_receipt_text(payload: dict, line_items: list[dict], total: 
 def create_manual_document(
   request: Request,
   payload: dict,
-  user_id:   Optional[str] = Query(default=None),
+  user_id:   str            = Query(..., description="Owner the manual document is attributed to."),
   entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
@@ -639,6 +810,7 @@ def create_manual_document(
   uploaded as a file. A plain-text receipt is generated and stored on disk
   so the record behaves consistently with every other Document row.
   """
+  _verify_entity_owned(db, user_id, entity_id)
   vendor    = (payload.get("vendor") or "").strip()
   doc_no    = (payload.get("doc_no") or "").strip()
   doc_date  = (payload.get("date") or "").strip()
@@ -718,15 +890,14 @@ def create_manual_document(
 
 @app.get("/api/documents")
 def get_all_documents(
-  user_id:   Optional[str] = Query(default=None),
-  entity_id: Optional[int] = Query(default=None),
+  user_id:   str            = Query(..., description="Owner of the documents — required so results are scoped to one user."),
+  entity_id: Optional[int] = Query(default=None, description="Active entity; when supplied, restricts to that entity's documents."),
   year:      Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
-  q = db.query(Document).order_by(Document.id.desc())
-  if user_id:
-    q = q.filter(Document.user_id == user_id)
-  if entity_id:
+  _verify_entity_owned(db, user_id, entity_id)
+  q = db.query(Document).filter(Document.user_id == user_id).order_by(Document.id.desc())
+  if entity_id is not None:
     q = q.filter(Document.entity_id == entity_id)
   if year:
     q = q.filter(Document.year_of_assessment == year)
@@ -736,18 +907,11 @@ def get_all_documents(
 @app.get("/api/documents/{doc_id}/status")
 def get_document_status(
   doc_id: int,
-  user_id:   Optional[str] = Query(default=None),
+  user_id:   str            = Query(..., description="Owner of the document."),
   entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
-  q = db.query(Document).filter(Document.id == doc_id)
-  if user_id:
-    q = q.filter(Document.user_id == user_id)
-  if entity_id:
-    q = q.filter(Document.entity_id == entity_id)
-  doc = q.first()
-  if not doc:
-    raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
+  doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
 
   payload: dict = {"id": doc.id, "status": doc.status}
   if doc.status == "completed":
@@ -768,37 +932,56 @@ def get_document_status(
 @app.get("/api/documents/{doc_id}")
 def get_document(
   doc_id: int,
-  user_id:   Optional[str] = Query(default=None),
+  user_id:   str            = Query(..., description="Owner of the document."),
   entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
-  q = db.query(Document).filter(Document.id == doc_id)
-  if user_id:
-    q = q.filter(Document.user_id == user_id)
-  if entity_id:
-    q = q.filter(Document.entity_id == entity_id)
-  doc = q.first()
-  if not doc:
-    raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
+  doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
   return _serialize_doc(doc)
 
 
 @app.delete("/api/documents/{doc_id}", status_code=200)
 def delete_document(
   doc_id: int,
-  user_id:   Optional[str] = Query(default=None),
+  user_id:   str            = Query(..., description="Owner of the document."),
   entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
-  q = db.query(Document).filter(Document.id == doc_id)
-  if user_id:
-    q = q.filter(Document.user_id == user_id)
-  if entity_id:
-    q = q.filter(Document.entity_id == entity_id)
-  doc = q.first()
-  if not doc:
-    raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
+  doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
   file_path = doc.file_path
+
+  # A filed Form B document also created a FormBProfile row, linked back to this
+  # document via source_document_id. That column is a plain integer, not a
+  # cascading FK, so deleting the document would otherwise ORPHAN the profile —
+  # leaving its figures driving the summary and prior-year bar chart for a
+  # document the user just removed. Delete the linked profile in the same
+  # transaction. (Matching on source_document_id means a profile that a LATER
+  # Form B upload re-pointed to a different document is correctly left alone.)
+  fb_deleted = (
+    db.query(FormBProfile)
+    .filter(FormBProfile.source_document_id == doc_id, FormBProfile.user_id == user_id)
+    .delete(synchronize_session=False)
+  )
+  if fb_deleted:
+    logger.info(f"[Delete] Removed {fb_deleted} FormBProfile row(s) linked to document ID {doc_id}.")
+
+  # A capital-asset document likewise created a CapitalAsset registry row
+  # (source_document_id is a unique FK to this document, one asset per document).
+  # Its FK is ondelete=SET NULL, so a raw delete would leave the asset behind
+  # with a null source. We remove it here so deleting the purchase document also
+  # removes the asset. NOTE: capital allowance is MULTI-YEAR — this asset also
+  # drives Annual Allowance in every subsequent year until it's fully written
+  # down, so deleting it removes those future years' allowance too, not just the
+  # acquisition year's. Deleting the source document is treated as "this asset
+  # shouldn't exist", which is what the user intends here.
+  ca_deleted = (
+    db.query(CapitalAsset)
+    .filter(CapitalAsset.source_document_id == doc_id, CapitalAsset.user_id == user_id)
+    .delete(synchronize_session=False)
+  )
+  if ca_deleted:
+    logger.info(f"[Delete] Removed {ca_deleted} CapitalAsset row(s) linked to document ID {doc_id}.")
+
   db.delete(doc)
   db.commit()
   try:
@@ -812,7 +995,7 @@ def delete_document(
 @app.patch("/api/documents/{doc_id}/retry", status_code=202)
 def retry_document(
   doc_id: int,
-  user_id:   Optional[str] = Query(default=None),
+  user_id:   str            = Query(..., description="Owner of the document."),
   entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
@@ -820,14 +1003,7 @@ def retry_document(
   Re-run the OCR/classification pipeline on a previously failed document,
   using the file already stored on disk — no re-upload required.
   """
-  q = db.query(Document).filter(Document.id == doc_id)
-  if user_id:
-    q = q.filter(Document.user_id == user_id)
-  if entity_id:
-    q = q.filter(Document.entity_id == entity_id)
-  doc = q.first()
-  if not doc:
-    raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
+  doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
   if doc.status != "failed":
     raise HTTPException(status_code=422, detail=f"Document ID {doc_id} is not in a failed state (status: {doc.status}).")
   if not doc.file_path or not os.path.isfile(doc.file_path):
@@ -854,18 +1030,11 @@ def retry_document(
 @app.patch("/api/documents/{doc_id}/archive", status_code=200)
 def archive_document(
   doc_id: int,
-  user_id:   Optional[str] = Query(default=None),
+  user_id:   str            = Query(..., description="Owner of the document."),
   entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
-  q = db.query(Document).filter(Document.id == doc_id)
-  if user_id:
-    q = q.filter(Document.user_id == user_id)
-  if entity_id:
-    q = q.filter(Document.entity_id == entity_id)
-  doc = q.first()
-  if not doc:
-    raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
+  doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
   doc.status = "archived"
   db.commit()
   return {"message": f"Document ID {doc_id} archived.", "document_id": doc_id, "status": "archived"}
@@ -875,23 +1044,17 @@ def archive_document(
 def reclassify_document(
   doc_id: int,
   payload: dict,
-  user_id:   Optional[str] = Query(default=None),
+  user_id:   str            = Query(..., description="Owner of the document."),
   entity_id: Optional[int] = Query(default=None),
   db: Session = Depends(get_db),
 ):
-  q = db.query(Document).filter(Document.id == doc_id)
-  if user_id:
-    q = q.filter(Document.user_id == user_id)
-  if entity_id:
-    q = q.filter(Document.entity_id == entity_id)
-  doc = q.first()
-  if not doc:
-    raise HTTPException(status_code=404, detail=f"Document ID {doc_id} not found.")
+  doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
 
   new_status   = payload.get("status")
   new_category = payload.get("category")
   new_amount   = payload.get("amount")
   new_date     = payload.get("date")
+  new_deductible_pct = payload.get("deductible_pct")
   valid_statuses = {"income", "deductible", "mixed", "relief", "non_deductible", "not_applicable", "capital"}
   if new_status and new_status not in valid_statuses:
     raise HTTPException(status_code=422, detail=f"Invalid status '{new_status}'.")
@@ -906,6 +1069,51 @@ def reclassify_document(
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", str(new_date)):
       raise HTTPException(status_code=422, detail=f"Invalid date '{new_date}'. Expected YYYY-MM-DD.")
 
+  # Reject amount/date edits on documents whose role makes a single amount/date
+  # meaningless — a balance sheet / P&L / prior Form B (summary_statement) or a
+  # bank statement (ledger_source) is an aggregate or a ledger, not one dated
+  # line item. Gate on the document's ORIGINAL role (the same signal the UI uses
+  # to hide the inputs), so the two never disagree.
+  _existing_ed = doc.extracted_data or {}
+  _original_role = _existing_ed.get("document_role") or derive_document_role(doc.category or "")
+
+  # Amount is only meaningful for a single-transaction document. A summary
+  # statement (P&L, balance sheet, prior Form B — the REFERENCE_ONLY categories)
+  # or a bank-statement ledger is an aggregate, not one line item, so its amount
+  # is never user-editable here.
+  if new_amount is not None and _original_role not in ("transaction", "schedule_source"):
+    raise HTTPException(
+      status_code=422,
+      detail=(
+        f"This document is a '{_original_role}' and doesn't carry a single editable amount. "
+        "Edit the underlying documents it summarises instead."
+      ),
+    )
+  # A DATE, unlike an amount, IS meaningful for a summary statement (e.g. the
+  # year a prior Form B relates to), so those documents may have their date
+  # edited even though their amount can't. Only roles with genuinely no single
+  # date (bank-statement ledger, bare supporting evidence) reject a date edit.
+  if new_date is not None and _original_role not in ("transaction", "schedule_source", "summary_statement"):
+    raise HTTPException(
+      status_code=422,
+      detail=f"This document is a '{_original_role}' and doesn't carry a single editable date.",
+    )
+
+  # Capture the ORIGINAL (LLM-derived) values BEFORE mutating anything, so a
+  # later "reset" can restore them. doc.category/tax_status are overwritten just
+  # below, so this must happen first.
+  _pre_edit_ed = doc.extracted_data or {}
+  _original_snapshot = {
+    "category":           doc.category,
+    "tax_status":         doc.tax_status,
+    "year_of_assessment": doc.year_of_assessment,
+    "amount":             _pre_edit_ed.get("amount"),
+    "date":               _pre_edit_ed.get("date"),
+    "date_precision":     _pre_edit_ed.get("date_precision"),
+    "document_role":      _pre_edit_ed.get("document_role"),
+    "aggregation_state":  _pre_edit_ed.get("aggregation_state"),
+  }
+
   if new_status:
     doc.tax_status = new_status
   if new_category:
@@ -913,6 +1121,9 @@ def reclassify_document(
   doc.status = "completed"
 
   ed = dict(doc.extracted_data or {})
+  # Written once and never overwritten, so it always reflects the LLM's output.
+  if "_original" not in ed:
+    ed["_original"] = _original_snapshot
   ed["user_reclassified"] = True
   ed["user_reclassified_status"]   = new_status
   ed["user_reclassified_category"] = new_category
@@ -923,6 +1134,98 @@ def reclassify_document(
     ed["date"] = new_date
     ed["date_precision"] = "day"
     ed["user_entered_date"] = True
+    # Keep the indexed YA column in sync so the year-scoped overview/summary
+    # actually reflect the corrected date — previously only extracted_data.date
+    # changed, so moving a document's date never moved its year of assessment.
+    try:
+      new_ya = int(str(new_date)[:4])
+      if 2000 <= new_ya <= 2100:
+        doc.year_of_assessment = new_ya
+    except (TypeError, ValueError):
+      pass
+
+  # A manual correction changes which category/status this document carries,
+  # so document_role and aggregation_state must be recomputed off the FINAL
+  # values — otherwise a user resolving a "needs apportionment" item (e.g.
+  # confirming the deductible portion of a hire purchase statement) would
+  # still have it silently excluded from the totals because the stored
+  # aggregation_state was never refreshed.
+  final_category = doc.category
+  final_status   = new_status or doc.tax_status
+  ed["document_role"]     = derive_document_role(final_category or "")
+  ed["aggregation_state"] = derive_aggregation_state(final_category or "", final_status or "")
+  # The tax-profile summary buckets each document into an income/deduction/relief
+  # pie by extracted_data["quadrant"], NOT by category. So a correction that moves
+  # a document across quadrants (e.g. Business Income → Business Expense) must
+  # refresh the stored quadrant too, otherwise the document keeps showing under
+  # its OLD pie (as a stray segment) instead of moving to the new one.
+  ed["quadrant"] = _quadrant_for_category(final_category or "")
+  # A user-confirmed correction is, by definition, resolved — unless they're
+  # explicitly re-flagging it as mixed/relief-non-deductible/etc., in which
+  # case the derived state above already reflects that.
+  if new_status and new_status not in ("mixed", "not_applicable", "non_deductible") and ed["aggregation_state"] != "reference_only":
+    ed["aggregation_state"] = "resolved"
+
+  # Apportioned Q3 categories (client entertainment, gifts, mixed-use vehicle,
+  # hire purchase) are only PARTIALLY deductible. A user confirming such a
+  # category is resolving it — we store the deductible percentage and mark it
+  # resolved so aggregation sums ONLY that portion into the deduction total
+  # (never the full amount). Statutory categories ignore any requested pct;
+  # 'required' ones (vehicle/HP) reject the confirmation until a pct is supplied.
+  if final_category in APPORTIONED_CATEGORIES:
+    pct, ok, err = resolve_deductible_pct(final_category, new_deductible_pct)
+    if not ok:
+      raise HTTPException(status_code=422, detail=err)
+    ed["deductible_pct"] = pct
+    ed["aggregation_state"] = "resolved"
+  else:
+    # Category moved off an apportioned one (e.g. entertainment → plain expense);
+    # drop any stale split so the full amount is deductible again.
+    ed.pop("deductible_pct", None)
+
+  doc.extracted_data = ed
+  db.commit()
+  return _serialize_doc(doc)
+
+
+@app.patch("/api/documents/{doc_id}/reset", status_code=200)
+def reset_document_classification(
+  doc_id: int,
+  user_id:   str            = Query(..., description="Owner of the document."),
+  entity_id: Optional[int] = Query(default=None),
+  db: Session = Depends(get_db),
+):
+  """
+  Revert a user-edited document to the LLM's ORIGINAL classification (category,
+  status, amount, date, year of assessment). Only possible once the document has
+  been edited at least once (the original was snapshotted on the first edit).
+  """
+  doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
+  ed = dict(doc.extracted_data or {})
+  orig = ed.get("_original")
+  if not orig:
+    raise HTTPException(status_code=400, detail="This document hasn't been edited — there's nothing to reset.")
+
+  doc.category   = orig.get("category")
+  doc.tax_status = orig.get("tax_status")
+  if orig.get("year_of_assessment") is not None:
+    doc.year_of_assessment = orig["year_of_assessment"]
+
+  ed["amount"]            = orig.get("amount")
+  ed["date"]              = orig.get("date")
+  ed["date_precision"]    = orig.get("date_precision")
+  ed["document_role"]     = orig.get("document_role") or derive_document_role(doc.category or "")
+  ed["aggregation_state"] = orig.get("aggregation_state") or derive_aggregation_state(doc.category or "", doc.tax_status or "")
+
+  # Clear every user-edit marker so the document looks pristine again. Keep the
+  # _original snapshot so a fresh round of edits can still be reset.
+  for k in (
+    "user_reclassified", "user_reclassified_status", "user_reclassified_category",
+    "user_entered_amount", "user_entered_date", "ca_rate_note", "ca_rate_needs_review",
+    "deductible_pct",
+  ):
+    ed.pop(k, None)
+
   doc.extracted_data = ed
   db.commit()
   return _serialize_doc(doc)
@@ -951,41 +1254,76 @@ RELIEF_CAPS_FALLBACK_MYR = {
 
 # Automatic self relief every resident individual receives (Sch. 9 para 1)
 # before any of the above are applied.
-INDIVIDUAL_SELF_RELIEF_MYR = 9000.0
+INDIVIDUAL_SELF_RELIEF_MYR = Decimal("9000")
 
 # Standard tax rebate (s.6D) for chargeable income <= this threshold.
-LOW_INCOME_REBATE_THRESHOLD_MYR = 35000.0
-LOW_INCOME_REBATE_MYR = 400.0
+LOW_INCOME_REBATE_THRESHOLD_MYR = Decimal("35000")
+LOW_INCOME_REBATE_MYR = Decimal("400")
 
 
-# Progressive resident-individual bracket table (band size, rate). Shared by
-# _estimate_tax and _bracket_headroom so the two can never drift apart.
-TAX_BRACKETS_MYR = [
+# Progressive resident-individual bracket table as (band size, rate) tuples,
+# keyed by year of assessment. Rates change between YAs, so tax for a given year
+# must use that year's table — the same table can't be reused across the trend.
+#
+# The YA2023–2025 schedule (verified against LHDN-published rates, YA2025):
+#   0–5k 0% · 5–20k 1% · 20–35k 3% · 35–50k 6% · 50–70k 11% · 70–100k 19%
+#   100–400k 25% · 400–600k 26% · 600k–2m 28% · >2m 30%
+# VERIFY against the LHDN gazette before relying on this for a filing, and add
+# new years here as each Budget's rates are gazetted.
+_TAX_BRACKETS_YA2023_2025 = [
   (5_000,        0.00),
   (15_000,       0.01),
   (15_000,       0.03),
-  (15_000,       0.08),
-  (20_000,       0.13),
-  (30_000,       0.21),
-  (300_000,      0.24),
-  (200_000,      0.245),
-  (float("inf"), 0.25),
+  (15_000,       0.06),
+  (20_000,       0.11),
+  (30_000,       0.19),
+  (300_000,      0.25),
+  (200_000,      0.26),
+  (1_400_000,    0.28),
+  (float("inf"), 0.30),
 ]
 
+TAX_BRACKETS_BY_YA: dict[int, list] = {
+  2023: _TAX_BRACKETS_YA2023_2025,
+  2024: _TAX_BRACKETS_YA2023_2025,
+  2025: _TAX_BRACKETS_YA2023_2025,
+}
 
-def _estimate_tax(chargeable_income: float) -> float:
-  tax = 0.0
-  remaining = chargeable_income
-  for band_size, rate in TAX_BRACKETS_MYR:
+
+def _brackets_for_year(ya: Optional[int]) -> tuple[list, int]:
+  """Return (bracket_table, basis_ya_used). For a year without its own table,
+  fall back to the nearest earlier registered year (else the earliest), and
+  report which year's table was actually used so the estimate stays honest."""
+  registered = sorted(TAX_BRACKETS_BY_YA)
+  if ya in TAX_BRACKETS_BY_YA:
+    return TAX_BRACKETS_BY_YA[ya], ya
+  basis = registered[0]
+  for y in registered:
+    if ya is not None and y <= ya:
+      basis = y
+  if ya is not None and ya > registered[-1]:
+    basis = registered[-1]
+  return TAX_BRACKETS_BY_YA[basis], basis
+
+
+def _estimate_tax(chargeable_income, ya: Optional[int] = None) -> Decimal:
+  brackets, _ = _brackets_for_year(ya)
+  tax = Decimal("0")
+  remaining = Decimal(chargeable_income)
+  for band_size, rate in brackets:
     if remaining <= 0:
       break
-    taxable_in_band = min(remaining, band_size)
-    tax += taxable_in_band * rate
+    # band_size may be float('inf') for the top band; min() with a Decimal
+    # returns `remaining` there (finite < inf), so no Decimal/inf arithmetic
+    # is ever performed. rate is a float in the bracket table — convert via
+    # str() so the marginal rate is applied without binary drift.
+    taxable_in_band = min(remaining, band_size) if band_size != float("inf") else remaining
+    tax += taxable_in_band * Decimal(str(rate))
     remaining -= taxable_in_band
-  return round(tax, 2)
+  return money(tax)
 
 
-def _bracket_headroom(chargeable_income: float) -> dict:
+def _bracket_headroom(chargeable_income: float, ya: Optional[int] = None) -> dict:
   """
   Locate which marginal band `chargeable_income` currently sits in and how
   much more chargeable income it could absorb before crossing into the next
@@ -993,12 +1331,16 @@ def _bracket_headroom(chargeable_income: float) -> dict:
   current Y% bracket" — useful for year-end purchase/relief timing decisions.
   Returns None-filled values if already in the top band (no next bracket).
   """
+  brackets, _ = _brackets_for_year(ya)
+  # Display-only guidance ("RM X of headroom left"): compute in float so the
+  # float('inf') top band arithmetic works. Precision here is immaterial — this
+  # figure is never summed into a filed total.
+  chargeable_income = float(chargeable_income)
   floor = 0.0
-  for band_size, rate in TAX_BRACKETS_MYR:
+  for i, (band_size, rate) in enumerate(brackets):
     ceiling = floor + band_size
     if chargeable_income < ceiling or band_size == float("inf"):
-      band_index = TAX_BRACKETS_MYR.index((band_size, rate))
-      next_rate = TAX_BRACKETS_MYR[band_index + 1][1] if band_index + 1 < len(TAX_BRACKETS_MYR) else None
+      next_rate = brackets[i + 1][1] if i + 1 < len(brackets) else None
       headroom = round(ceiling - chargeable_income, 2) if ceiling != float("inf") else None
       return {
         "currentMarginalRatePct":   round(rate * 100, 2),
@@ -1012,17 +1354,21 @@ def _bracket_headroom(chargeable_income: float) -> dict:
 
 @app.get("/api/profile/summary")
 def get_tax_profile_summary(
-  year:    int            = Query(..., description="Year of assessment e.g. 2024"),
-  user_id: Optional[str] = Query(default=None),
+  year:      int            = Query(..., description="Year of assessment e.g. 2024"),
+  user_id:   str            = Query(..., description="Logged-in user — required so totals are scoped to one user."),
+  entity_id: Optional[int] = Query(
+    default=None,
+    description=(
+      "Active business entity. When supplied, business DOCUMENTS and CAPITAL ASSETS "
+      "are scoped to it so a user with multiple sole-props doesn't see their entities' "
+      "figures merged. Form B (a per-person return) stays user-scoped by design."
+    ),
+  ),
   db: Session = Depends(get_db),
 ):
-  def _parse_amount(val) -> float:
-    if val is None:
-      return 0.0
-    try:
-      return float(str(val).replace("RM", "").replace(",", "").strip())
-    except (ValueError, TypeError):
-      return 0.0
+  _verify_entity_owned(db, user_id, entity_id)
+  # Use the shared currency parser (utils.parse_amount) rather than a local copy.
+  _parse_amount = parse_amount
 
   def _cap_reliefs(relief_entries: list) -> tuple[float, list, list]:
     """
@@ -1036,37 +1382,42 @@ def get_tax_profile_summary(
     by_category: dict[str, dict] = {}
     for e in relief_entries:
       cat = e.get("category") or "Uncategorised Relief"
-      bucket = by_category.setdefault(cat, {"rawTotal": 0.0, "cap": None, "entries": []})
+      bucket = by_category.setdefault(cat, {"rawTotal": Decimal("0"), "cap": None, "entries": []})
       bucket["rawTotal"] += e["amountNumeric"]
       bucket["entries"].append(e)
       doc_cap = e.get("reliefCapMyr")
       if doc_cap is not None and bucket["cap"] is None:
         bucket["cap"] = _parse_amount(doc_cap)
 
-    capped_total = 0.0
+    capped_total = Decimal("0")
     breakdown = []
     annotated_entries = []
     for cat, bucket in by_category.items():
-      cap = bucket["cap"] if bucket["cap"] is not None else RELIEF_CAPS_FALLBACK_MYR.get(cat)
+      cap = bucket["cap"]
+      if cap is None:
+        fallback = RELIEF_CAPS_FALLBACK_MYR.get(cat)
+        cap = Decimal(fallback) if fallback is not None else None
       capped_amount = min(bucket["rawTotal"], cap) if cap is not None else bucket["rawTotal"]
       was_capped = cap is not None and bucket["rawTotal"] > cap
       capped_total += capped_amount
       breakdown.append({
         "category":     cat,
-        "rawTotal":     round(bucket["rawTotal"], 2),
+        "rawTotal":     money(bucket["rawTotal"]),
         "cap":          cap,
-        "cappedTotal":  round(capped_amount, 2),
+        "cappedTotal":  money(capped_amount),
         "wasCapped":    was_capped,
       })
       for e in bucket["entries"]:
         annotated_entries.append({**e, "categoryCapMyr": cap, "categoryWasCapped": was_capped})
 
-    return round(capped_total, 2), breakdown, annotated_entries
+    return money(capped_total), breakdown, annotated_entries
 
-  def _build_year_summary(docs: list, form_b_record=None) -> dict:
+  def _build_year_summary(docs: list, target_year: int, form_b_record=None) -> dict:
     income_q1, income_q2, deductions_q3 = [], [], []
-    capital_assets, reliefs_q4, non_deductible_q4 = [], [], []
+    reliefs_q4, non_deductible_q4 = [], []
     zakat_entries, mixed_pending, cp500_installments = [], [], []
+    reference_documents = []
+    bank_statement_reviews = []
     total_confidence = 0
 
     for doc in docs:
@@ -1076,23 +1427,31 @@ def get_tax_profile_summary(
       amount     = ed.get("amount")
       confidence = ed.get("confidence", 0) or 0
       total_confidence += confidence
-      is_mixed   = (tax_status == "mixed" or doc.category == "Mixed / Pending Review")
+
+      # Second & third classification dimensions. Fall back to deriving them
+      # for documents processed before these fields existed, so existing rows
+      # behave correctly without requiring a full reclassification pass.
+      document_role     = ed.get("document_role")     or derive_document_role(doc.category or "")
+      aggregation_state = ed.get("aggregation_state")  or derive_aggregation_state(doc.category or "", tax_status)
+      is_pending_review = aggregation_state in ("needs_apportionment", "needs_user_confirmation")
 
       entry = {
-        "documentId":    doc.id,
-        "fileName":      doc.file_name,
-        "documentType":  doc.document_type,
-        "category":      doc.category,
-        "amount":        amount,
-        "amountNumeric": _parse_amount(amount),
-        "currency":      ed.get("currency", "MYR"),
-        "vendor":        ed.get("vendor"),
-        "date":          ed.get("date"),
-        "itaSection":    ed.get("ita_section"),
-        "confidence":    confidence,
-        "ocrQuality":    ed.get("ocr_quality"),
-        "note":          ed.get("note"),
-        "needsReview":   is_mixed,
+        "documentId":        doc.id,
+        "fileName":          doc.file_name,
+        "documentType":      doc.document_type,
+        "category":          doc.category,
+        "amount":            amount,
+        "amountNumeric":     _parse_amount(amount),
+        "currency":          ed.get("currency", "MYR"),
+        "vendor":            ed.get("vendor"),
+        "date":              ed.get("date"),
+        "itaSection":        ed.get("ita_section"),
+        "confidence":        confidence,
+        "ocrQuality":        ed.get("ocr_quality"),
+        "note":              ed.get("note"),
+        "documentRole":      document_role,
+        "aggregationState":  aggregation_state,
+        "needsReview":       is_pending_review,
       }
 
       if ed.get("installment_amount") is not None:
@@ -1103,35 +1462,110 @@ def get_tax_profile_summary(
           "installmentMonth":         ed.get("installment_month"),
         })
 
-      if quadrant == "Q1":
-        income_q1.append(entry)
+      # Bank statements carry per-line matches, not one pending amount — give
+      # them their own review bucket instead of a confusing RM0 entry in the
+      # generic mixed-pending list.
+      if document_role == "ledger_source":
+        line_items = ed.get("line_items", [])
+        bank_statement_reviews.append({
+          **entry,
+          "summary": ed.get("bank_statement_summary"),
+          "unmatchedLines": [
+            li for li in line_items
+            if li.get("matchStatus") in ("unmatched_credit", "unmatched_debit", "unmatched")
+          ],
+        })
+        continue
+
+      # Summary statements (P&L, balance sheet, prior Form B) are derived
+      # aggregates, not independent transactions — including their amount in
+      # totals double-counts income/expenses already captured by the
+      # individual documents that make them up. Route them to a reference
+      # bucket for reconciliation display instead of the totals.
+      if document_role == "summary_statement":
+        reference_documents.append({**entry, "quadrant": quadrant, "lineItems": ed.get("line_items", [])})
+      elif quadrant == "Q1":
+        if aggregation_state == "resolved":
+          income_q1.append(entry)
       elif quadrant == "Q2":
-        income_q2.append({**entry, "formEa": ed.get("form_ea"), "fsiSourceCountry": ed.get("fsi_source_country")})
+        if aggregation_state == "resolved":
+          income_q2.append({**entry, "formEa": ed.get("form_ea"), "fsiSourceCountry": ed.get("fsi_source_country")})
       elif quadrant == "Q3":
-        has_installment = ed.get("installment_amount") is not None
         if tax_status == "capital":
-          capital_assets.append({
-            **entry,
-            "assetClass": ed.get("asset_class"),
-            "iaRatePct":  ed.get("ia_rate_pct"),
-            "aaRatePct":  ed.get("aa_rate_pct"),
-          })
-        elif not has_installment and tax_status != "not_applicable":
-          deductions_q3.append(entry)
+          # Handled via the CapitalAsset registry below, not per-document —
+          # an asset bought in a prior year still generates Annual Allowance
+          # this year even with no document in THIS year's query.
+          pass
+        elif aggregation_state == "resolved":
+          # Apportioned categories (entertainment/gifts/vehicle/HP) are only
+          # partially deductible: sum deductible_pct% of the amount, never the
+          # full value. Non-apportioned expenses deduct in full.
+          _ded_pct = ed.get("deductible_pct")
+          if _ded_pct is not None:
+            _deductible = money(_parse_amount(amount) * Decimal(_ded_pct) / Decimal(100))
+          else:
+            _deductible = _parse_amount(amount)
+          deductions_q3.append({**entry, "deductibleNumeric": _deductible, "deductiblePct": _ded_pct})
       elif quadrant == "Q4":
         if tax_status == "relief":
           relief_entry = {**entry, "reliefCapMyr": ed.get("relief_cap_myr"), "zakatAmount": ed.get("zakat_amount")}
           # Zakat is a REBATE against tax payable (s.6A ITA), not a relief that
           # reduces chargeable income — keep it out of the capped-relief pool.
           if doc.category == "Q4 — Zakat":
-            zakat_entries.append(relief_entry)
-          else:
+            if aggregation_state == "resolved":
+              zakat_entries.append(relief_entry)
+          elif aggregation_state == "resolved":
             reliefs_q4.append(relief_entry)
         else:
           non_deductible_q4.append(entry)
 
-      if is_mixed:
+      if is_pending_review:
         mixed_pending.append({**entry, "reason": ed.get("reason"), "question": ed.get("question"), "source": ed.get("source")})
+
+    # ── Capital allowance (Schedule 3 ITA 1967) ─────────────────────────
+    # Pulled from the persisted CapitalAsset registry, NOT from documents in
+    # this year's query — an asset bought in YA2023 must still generate
+    # Annual Allowance in YA2025 even though no document was uploaded this
+    # year. See capital_allowance.py for the year-by-year schedule logic
+    # (straight-line IA/AA, written-down value, balancing allowance/charge).
+    assets_q = db.query(CapitalAsset).filter(
+      CapitalAsset.acquisition_year <= target_year,
+    ).filter(
+      (CapitalAsset.disposal_year.is_(None)) | (CapitalAsset.disposal_year >= target_year)
+    ).filter(CapitalAsset.user_id == user_id)
+    # entity_id is closed over from the endpoint; scope capital assets to the
+    # active entity so one sole-prop's assets don't inflate another's allowance.
+    if entity_id is not None:
+      assets_q = assets_q.filter(CapitalAsset.entity_id == entity_id)
+
+    capital_assets_annotated = []
+    total_capital_allowance = Decimal("0")
+    for asset in assets_q.all():
+      schedule = compute_capital_allowance_for_year(asset, target_year)
+      total_capital_allowance += (
+        schedule["totalAllowanceThisYearMyr"]
+        + schedule["balancingAllowanceMyr"]
+        - schedule["balancingChargeMyr"]
+      )
+      if schedule["balancingChargeMyr"]:
+        mixed_pending.append({
+          "documentId":       asset.source_document_id,
+          "fileName":         schedule["description"],
+          "documentType":     "Capital Asset — Disposal",
+          "category":         "Q3 — Capital Assets & Equipment",
+          "amount":           str(schedule["balancingChargeMyr"]),
+          "amountNumeric":    schedule["balancingChargeMyr"],
+          "needsReview":      True,
+          "reason":           schedule["note"],
+          "question":         "Confirm the disposal proceeds and whether this was a related-party transfer before filing.",
+        })
+      capital_assets_annotated.append(schedule)
+    total_capital_allowance = money(total_capital_allowance)
+
+    # Amount currently held out of the totals above, pending the user's input
+    # (apportionment split or a direct answer) — surfaced so nothing is
+    # silently dropped from the numbers the user sees.
+    total_pending_review = money(sum(e["amountNumeric"] for e in mixed_pending))
 
     doc_count = len(docs)
     avg_conf  = round(total_confidence / doc_count) if doc_count else 0
@@ -1139,47 +1573,80 @@ def get_tax_profile_summary(
     total_q1    = sum(d["amountNumeric"] for d in income_q1)
     total_q2    = sum(d["amountNumeric"] for d in income_q2)
     total_inc   = total_q1 + total_q2
-    total_q3    = sum(d["amountNumeric"] for d in deductions_q3)
+    total_q3    = sum(d["deductibleNumeric"] for d in deductions_q3)
     total_cp500 = sum(d["installmentAmountNumeric"] for d in cp500_installments)
 
-    # ── Capital allowance (Schedule 3 ITA 1967) ─────────────────────────
-    # Capital assets are NOT directly deductible — they're claimed via
-    # Initial Allowance (one-time, year of purchase) + Annual Allowance
-    # (recurring), both computed off the asset cost using the rates the
-    # LLM extracted per asset. This was previously extracted but never
-    # actually folded into the deduction total.
-    total_capital_allowance = 0.0
-    capital_assets_annotated = []
-    for ca in capital_assets:
-      ia_pct = ca.get("iaRatePct") or 0
-      aa_pct = ca.get("aaRatePct") or 0
-      cost   = ca["amountNumeric"]
-      ia_amount = round(cost * (ia_pct / 100), 2)
-      aa_amount = round(cost * (aa_pct / 100), 2)
-      allowance = ia_amount + aa_amount
-      total_capital_allowance += allowance
-      capital_assets_annotated.append({
-        **ca,
-        "initialAllowanceMyr": ia_amount,
-        "annualAllowanceMyr":  aa_amount,
-        "totalAllowanceMyr":   round(allowance, 2),
+    # ── Reconciliation against reference documents ──────────────────────
+    # A P&L's stated revenue SHOULD roughly equal the sum of the sales/
+    # service invoices the user has actually uploaded (total_q1). If it
+    # doesn't, that's a real signal — missing invoices, or a P&L including
+    # income outside this platform — worth surfacing, not silently ignoring
+    # in either direction.
+    def _find_line_item_amount(line_items: list, keywords: list[str]) -> Optional[float]:
+      for li in (line_items or []):
+        desc = (li.get("desc") or "").lower()
+        if any(kw in desc for kw in keywords):
+          return _parse_amount(li.get("amt"))
+      return None
+
+    revenue_keywords = [
+      "revenue", "sales", "turnover", "gross income",
+      "jualan", "pendapatan", "hasil", "perolehan",  # Malay equivalents
+    ]
+    reconciliation = []
+    for ref in reference_documents:
+      if ref["category"] != "Q1 — Financial Statements (P&L)":
+        continue
+      stated_revenue = _find_line_item_amount(ref["lineItems"], revenue_keywords)
+      if stated_revenue is None:
+        reconciliation.append({
+          "documentId":   ref["documentId"],
+          "fileName":     ref["fileName"],
+          "statedRevenueMyr":     None,
+          "documentedIncomeMyr": money(total_q1),
+          "deltaMyr":     None,
+          "flagged":      False,
+          "note":         "Could not find a clear revenue figure in this P&L's extracted line items — check it manually.",
+        })
+        continue
+      delta = money(stated_revenue - total_q1)
+      flagged = abs(delta) > max(Decimal("100"), stated_revenue * Decimal("0.05"))
+      reconciliation.append({
+        "documentId":          ref["documentId"],
+        "fileName":            ref["fileName"],
+        "statedRevenueMyr":    stated_revenue,
+        "documentedIncomeMyr": money(total_q1),
+        "deltaMyr":            delta,
+        "flagged":             flagged,
+        "note": (
+          f"Your P&L states revenue of RM{stated_revenue:,.2f}, but only "
+          f"RM{total_q1:,.2f} is backed by uploaded income documents — you may be "
+          "missing invoices or other income records."
+          if flagged else
+          "Uploaded income documents are consistent with your P&L's revenue figure."
+        ),
       })
-    total_capital_allowance = round(total_capital_allowance, 2)
 
     # ── Personal reliefs — grouped, capped per statutory limit ──────────
     total_q4_capped, q4_relief_breakdown, reliefs_q4_annotated = _cap_reliefs(reliefs_q4)
 
     # ── Zakat — tracked separately as a rebate, never as a deduction ────
-    total_zakat = round(sum(z["amountNumeric"] for z in zakat_entries), 2)
+    total_zakat = money(sum(z["amountNumeric"] for z in zakat_entries))
 
-    total_deductions = round(total_q3 + total_capital_allowance, 2)
+    total_deductions = money(total_q3 + total_capital_allowance)
 
-    if form_b_record and form_b_record.chargeable_income:
+    fb_income = Decimal("0")
+    fb_deductions = Decimal("0")
+    if form_b_record and (form_b_record.chargeable_income or form_b_record.aggregate_income or form_b_record.tax_payable):
       # A previously filed Form B is ground truth — trust LHDN's own figures
-      # rather than re-deriving them from documents.
+      # rather than re-deriving them from documents. A Form-B-only year has no
+      # itemised receipts to sum, so the income/deduction TOTALS must come from
+      # the filed figures too, otherwise the year shows blank in trend views.
       est_chargeable   = _parse_amount(form_b_record.chargeable_income)
       tax_charged      = _parse_amount(form_b_record.tax_charged) or _parse_amount(form_b_record.tax_payable)
       est_tax          = _parse_amount(form_b_record.tax_payable)
+      fb_income        = _parse_amount(form_b_record.aggregate_income)
+      fb_deductions    = _parse_amount(form_b_record.total_business_deductions)
       individual_relief_applied = None
       low_income_rebate_applied = None
       zakat_rebate_applied      = _parse_amount(form_b_record.zakat_rebate)
@@ -1195,18 +1662,18 @@ def get_tax_profile_summary(
       # 7. Less zakat rebate (s.6A), capped at remaining tax payable
       individual_relief_applied = INDIVIDUAL_SELF_RELIEF_MYR
       est_chargeable = max(
-        0.0,
+        Decimal("0"),
         total_inc - total_deductions - total_q4_capped - individual_relief_applied,
       )
-      tax_charged = _estimate_tax(est_chargeable)
+      tax_charged = _estimate_tax(est_chargeable, target_year)
 
       low_income_rebate_applied = (
-        LOW_INCOME_REBATE_MYR if est_chargeable <= LOW_INCOME_REBATE_THRESHOLD_MYR and tax_charged > 0 else 0.0
+        LOW_INCOME_REBATE_MYR if est_chargeable <= LOW_INCOME_REBATE_THRESHOLD_MYR and tax_charged > 0 else Decimal("0")
       )
-      after_low_income_rebate = max(0.0, tax_charged - low_income_rebate_applied)
+      after_low_income_rebate = max(Decimal("0"), tax_charged - low_income_rebate_applied)
 
-      zakat_rebate_applied = round(min(total_zakat, after_low_income_rebate), 2)
-      est_tax = round(max(0.0, after_low_income_rebate - zakat_rebate_applied), 2)
+      zakat_rebate_applied = money(min(total_zakat, after_low_income_rebate))
+      est_tax = money(max(Decimal("0"), after_low_income_rebate - zakat_rebate_applied))
       source = "document_derived"
 
     return {
@@ -1214,26 +1681,30 @@ def get_tax_profile_summary(
       "averageConfidence":  avg_conf,
       "completenessWarning": len(mixed_pending) > 0,
       "pendingReviewCount": len(mixed_pending),
+      "pendingReviewAmountMyr": total_pending_review,
       "totals": {
-        "q1BusinessIncome":          round(total_q1, 2),
-        "q2PersonalIncome":          round(total_q2, 2),
-        "totalIncome":               round(total_inc, 2),
-        "q3Deductions":              round(total_q3, 2),
+        "q1BusinessIncome":          money(total_q1),
+        "q2PersonalIncome":          money(total_q2),
+        "totalIncome":               money(fb_income if (source == "filed_form_b" and fb_income) else total_inc),
+        "q3Deductions":              money(total_q3),
         "q3CapitalAllowance":        total_capital_allowance,
-        "q3TotalDeductions":         total_deductions,
+        "q3TotalDeductions":         money(fb_deductions if (source == "filed_form_b" and fb_deductions) else total_deductions),
         "q4Reliefs":                 total_q4_capped,
         "q4ReliefsBreakdown":        q4_relief_breakdown,
         "zakatRebate":               zakat_rebate_applied,
         "individualSelfRelief":      individual_relief_applied,
         "lowIncomeRebate":           low_income_rebate_applied,
-        "cp500Paid":                 round(total_cp500, 2),
-        "estimatedChargeableIncome": round(est_chargeable, 2),
-        "taxChargedMyr":             round(tax_charged, 2),
-        "estimatedTaxPayable":       round(est_tax, 2),
-        "balancePayableMyr":         round(est_tax - total_cp500, 2),  # negative = refund due
-        "estimatedTaxSavings":       round(total_deductions * 0.24, 2),
+        "cp500Paid":                 money(total_cp500),
+        "estimatedChargeableIncome": money(est_chargeable),
+        "taxChargedMyr":             money(tax_charged),
+        "estimatedTaxPayable":       money(est_tax),
+        "balancePayableMyr":         money(est_tax - total_cp500),  # negative = refund due
+        "estimatedTaxSavings":       money(
+                                       _estimate_tax(est_chargeable + total_deductions, target_year)
+                                       - _estimate_tax(est_chargeable, target_year)),
         "sourceOfEstimate":          source,
-        **_bracket_headroom(est_chargeable),
+        "taxBracketBasisYa":         _brackets_for_year(target_year)[1],
+        **_bracket_headroom(est_chargeable, target_year),
       },
       "q1BusinessIncome":  income_q1,
       "q2PersonalIncome":  income_q2,
@@ -1243,6 +1714,9 @@ def get_tax_profile_summary(
       "q4NonDeductible":   non_deductible_q4,
       "q4Zakat":           zakat_entries,
       "mixedPendingReview": mixed_pending,
+      "referenceDocuments": reference_documents,
+      "bankStatementReviews": bank_statement_reviews,
+      "reconciliation":     reconciliation,
       "cp500Installments": cp500_installments,
       "formB": {
         "aggregateIncome":           form_b_record.aggregate_income      if form_b_record else None,
@@ -1255,42 +1729,65 @@ def get_tax_profile_summary(
       } if form_b_record else None,
     }
 
+  # Documents AND filed Form B profiles are scoped to the user AND (when
+  # supplied) the active entity, so a multi-entity user's businesses aren't
+  # merged and each entity keeps its own filed Form B for a given year.
+  def _docs_for_year(ya: int):
+    q = db.query(Document).filter(
+      Document.status == "completed",
+      Document.year_of_assessment == ya,
+      Document.user_id == user_id,
+    )
+    if entity_id is not None:
+      q = q.filter(Document.entity_id == entity_id)
+    return q
+
+  def _fb_for_year(ya: int):
+    # A filed Form B now belongs to a specific business entity (FormBProfile
+    # .entity_id), so it's scoped exactly like documents: when an entity is
+    # selected, return THAT entity's filed Form B for the year — this is what
+    # populates the prior-year figures (income / deductions / chargeable income /
+    # tax) in the trend + bar chart. In the all-entities view (entity_id is None)
+    # there's no single person-wide return to surface — each entity has its own —
+    # so fall back to document-derived figures rather than arbitrarily picking
+    # one entity's filing. Returns the record or None.
+    if entity_id is None:
+      return None
+    return db.query(FormBProfile).filter(
+      FormBProfile.year_of_assessment == ya,
+      FormBProfile.user_id == user_id,
+      FormBProfile.entity_id == entity_id,
+    ).first()
+
   # Current year
-  current_docs_q = db.query(Document).filter(Document.status == "completed", Document.year_of_assessment == year)
-  if user_id:
-    current_docs_q = current_docs_q.filter(Document.user_id == user_id)
-  current_fb_q = db.query(FormBProfile).filter(FormBProfile.year_of_assessment == year)
-  if user_id:
-    current_fb_q = current_fb_q.filter(FormBProfile.user_id == user_id)
-  current_year = _build_year_summary(current_docs_q.all(), current_fb_q.first())
+  current_year = _build_year_summary(_docs_for_year(year).all(), year, _fb_for_year(year))
 
   # Prior year
-  prior_docs_q = db.query(Document).filter(Document.status == "completed", Document.year_of_assessment == year - 1)
-  if user_id:
-    prior_docs_q = prior_docs_q.filter(Document.user_id == user_id)
-  prior_fb_q = db.query(FormBProfile).filter(FormBProfile.year_of_assessment == year - 1)
-  if user_id:
-    prior_fb_q = prior_fb_q.filter(FormBProfile.user_id == user_id)
-  prior_docs = prior_docs_q.all()
-  prior_fb   = prior_fb_q.first()
-  prior_year = _build_year_summary(prior_docs, prior_fb) if (prior_docs or prior_fb) else None
+  prior_docs = _docs_for_year(year - 1).all()
+  prior_fb   = _fb_for_year(year - 1)
+  prior_year = _build_year_summary(prior_docs, year - 1, prior_fb) if (prior_docs or prior_fb) else None
 
   # Yearly trend
-  doc_years_q = db.query(Document.year_of_assessment).filter(Document.status == "completed", Document.year_of_assessment.isnot(None))
-  fb_years_q  = db.query(FormBProfile.year_of_assessment)
-  if user_id:
-    doc_years_q = doc_years_q.filter(Document.user_id == user_id)
-    fb_years_q  = fb_years_q.filter(FormBProfile.user_id == user_id)
-  all_years = sorted(set([r[0] for r in doc_years_q.distinct()] + [r[0] for r in fb_years_q.distinct()]))
+  doc_years_q = db.query(Document.year_of_assessment).filter(
+    Document.status == "completed",
+    Document.year_of_assessment.isnot(None),
+    Document.user_id == user_id,
+  )
+  if entity_id is not None:
+    doc_years_q = doc_years_q.filter(Document.entity_id == entity_id)
+  # Form B years contribute to the trend for the SELECTED entity (each entity
+  # has its own filed Form B). In the all-entities view we use document-derived
+  # figures only (see _fb_for_year), so no Form B years are added there.
+  fb_years = []
+  if entity_id is not None:
+    fb_years = [r[0] for r in db.query(FormBProfile.year_of_assessment)
+                .filter(FormBProfile.user_id == user_id,
+                        FormBProfile.entity_id == entity_id).distinct()]
+  all_years = sorted(set([r[0] for r in doc_years_q.distinct()] + fb_years))
 
   yearly_trend = []
   for ya in all_years:
-    ya_docs_q = db.query(Document).filter(Document.status == "completed", Document.year_of_assessment == ya)
-    ya_fb_q   = db.query(FormBProfile).filter(FormBProfile.year_of_assessment == ya)
-    if user_id:
-      ya_docs_q = ya_docs_q.filter(Document.user_id == user_id)
-      ya_fb_q   = ya_fb_q.filter(FormBProfile.user_id == user_id)
-    s = _build_year_summary(ya_docs_q.all(), ya_fb_q.first())
+    s = _build_year_summary(_docs_for_year(ya).all(), ya, _fb_for_year(ya))
     yearly_trend.append({"year": ya, "isCurrentYear": ya == year, "totals": s["totals"],
                           "documentCount": s["documentCount"], "pendingReviewCount": s["pendingReviewCount"],
                           "averageConfidence": s["averageConfidence"]})
@@ -1305,10 +1802,13 @@ def get_tax_profile_summary(
   if year == today.year and 0 < year_progress < 1.0:
     current_income = current_year["totals"]["totalIncome"]
     if current_income > 0 and year_progress > 0.05:
-      proj_inc  = round(current_income / year_progress, 2)
-      proj_ded  = round(current_year["totals"]["q3Deductions"] / year_progress, 2)
-      proj_rel  = round(current_year["totals"]["q4Reliefs"] / year_progress, 2)
-      proj_char = max(0.0, proj_inc - proj_ded - proj_rel)
+      # year_progress is a plain fraction (day-of-year / days-in-year); convert
+      # once to Decimal so the run-rate division stays in Decimal money math.
+      progress = Decimal(str(year_progress))
+      proj_inc  = money(current_income / progress)
+      proj_ded  = money(current_year["totals"]["q3Deductions"] / progress)
+      proj_rel  = money(current_year["totals"]["q4Reliefs"] / progress)
+      proj_char = max(Decimal("0"), proj_inc - proj_ded - proj_rel)
       projection = {
         "basis":                      "run_rate",
         "yearProgressPct":            round(year_progress * 100, 1),
@@ -1316,8 +1816,8 @@ def get_tax_profile_summary(
         "projectedTotalIncome":       proj_inc,
         "projectedQ3Deductions":      proj_ded,
         "projectedQ4Reliefs":         proj_rel,
-        "projectedChargeableIncome":  round(proj_char, 2),
-        "projectedTaxPayable":        _estimate_tax(proj_char),
+        "projectedChargeableIncome":  money(proj_char),
+        "projectedTaxPayable":        _estimate_tax(proj_char, year),
       }
 
   return {
@@ -1332,19 +1832,24 @@ def get_tax_profile_summary(
 
 @app.get("/api/profile/form-b/{year}")
 def get_form_b_profile(
-  year:    int,
-  user_id: Optional[str] = Query(default=None),
+  year:      int,
+  user_id:   str = Query(..., description="Owner of the Form B record."),
+  entity_id: Optional[int] = Query(default=None, description="Business entity the Form B belongs to; omit for the no-entity record."),
   db: Session = Depends(get_db),
 ):
-  q = db.query(FormBProfile).filter(FormBProfile.year_of_assessment == year)
-  if user_id:
-    q = q.filter(FormBProfile.user_id == user_id)
+  q = db.query(FormBProfile).filter(
+    FormBProfile.year_of_assessment == year,
+    FormBProfile.user_id == user_id,
+  )
+  if entity_id is not None:
+    q = q.filter(FormBProfile.entity_id == entity_id)
   record = q.first()
   if not record:
     raise HTTPException(status_code=404, detail=f"No filed Form B found for YA {year}.")
   return {
     "yearOfAssessment":          record.year_of_assessment,
     "userId":                    record.user_id,
+    "entityId":                  record.entity_id,
     "sourceDocumentId":          record.source_document_id,
     "statutoryIncome4a":         record.statutory_income_4a,
     "statutoryIncome4b":         record.statutory_income_4b,

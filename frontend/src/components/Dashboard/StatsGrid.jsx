@@ -34,9 +34,29 @@ const SearchIcon = () => (
   </svg>
 );
 
-// Derive the card's presentational flags from the change string, so the data
-// layer stays free of styling concerns and StatCard stays purely visual.
-function presentationFor(change) {
+const MinusIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="5" y1="12" x2="19" y2="12" />
+  </svg>
+);
+
+function iconForTrend(trend) {
+  if (trend === 'up')   return <ArrowUp />;
+  if (trend === 'down') return <ArrowDown />;
+  return <MinusIcon />; // flat / no prior year to compare against
+}
+
+// Derive the card's presentational flags. When the data layer supplies an
+// explicit YoY `trend` ('up'|'down'|'flat') and `tone`, those win — the arrow
+// reflects the actual direction of movement and the colour reflects whether
+// that movement is favourable for the metric (e.g. tax going UP is a red up
+// arrow, not green). Otherwise fall back to inferring from the change string
+// (used by the entity-figures fallback cards and the opportunities highlight).
+function presentationFor(stat) {
+  if (stat.trend) {
+    return { icon: iconForTrend(stat.trend), changeTone: stat.tone || 'muted', highlight: false };
+  }
+  const change = stat.change || '';
   if (change.startsWith('+RM')) return { icon: <ArrowUp />, changeTone: 'success' };
   if (change.startsWith('-RM')) return { icon: <ArrowDown />, changeTone: 'success' };
   if (change.includes('opportunities')) return { icon: <SearchIcon />, changeTone: 'muted', highlight: true };
@@ -49,7 +69,7 @@ function StatsGrid({ stats, compact = false }) {
     // Always 3-up here since TaxHealthCard occupies the 4th column in the parent grid.
     <section className="grid h-full grid-cols-4 gap-3">
       {stats.map((stat) => {
-        const { icon, changeTone, highlight } = presentationFor(stat.change);
+        const { icon, changeTone, highlight } = presentationFor(stat);
         return (
           // key = stat.label: each label ("YTD Income", …) is unique, so React can
           // match each card to its data across re-renders and reorder/patch in place
