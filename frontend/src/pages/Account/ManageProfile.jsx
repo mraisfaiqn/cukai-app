@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import cukaiLogo from '../../assets/cukai-logo.png';
+import { currentFilingYear, buildFormData, fmtRM, fmtAmt } from '../../data/formB';
 
 /* ---------- Icons ---------- */
 
@@ -522,6 +524,33 @@ const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
 };
 
 /* =========================================================================
+   TAB NAVIGATION — Manage Entities / Generate Forms
+   ========================================================================= */
+
+const ProfileTabNav = ({ active, onChange }) => {
+  const tabs = [
+    { id: 'entities', label: 'Manage Entities' },
+    { id: 'forms',    label: 'Generate Forms' },
+  ];
+  return (
+    <nav className="flex items-center gap-6 border-b border-slate-100 shrink-0">
+      {tabs.map((t) => (
+        <button
+          key={t.id}
+          onClick={() => onChange(t.id)}
+          className={`relative pb-2 pt-0.5 text-sm font-medium transition-all duration-150 select-none ${
+            active === t.id ? 'text-[#0D9488] font-semibold' : 'text-[#64748B] hover:text-[#0F172A]'
+          }`}
+        >
+          {t.label}
+          {active === t.id && <div className="absolute -bottom-px left-0 right-0 h-0.5 bg-[#0F6E56]" />}
+        </button>
+      ))}
+    </nav>
+  );
+};
+
+/* =========================================================================
    ENTITY CARD — dense, 3-up
    ========================================================================= */
 
@@ -913,6 +942,420 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClo
 };
 
 /* =========================================================================
+   GENERATE FORMS — Form B draft for the individual (sole proprietor)
+   --------------------------------------------------------------------------
+   Built entirely from the user's own data: their personal profile plus every
+   business entity they own. Financials are ACCUMULATED across all entities;
+   the main business (highest sales turnover, or the sole entity) supplies the
+   Part N particulars. Nothing re-fetches on entity switch — it's the person's
+   return, not a per-entity view.
+
+   All non-component logic (filing year, formatting, tax + relief computation,
+   buildFormData) lives in ./formB.js so this file stays a clean Fast Refresh
+   boundary. Only React components live here.
+   ========================================================================= */
+
+// ─── Government-form primitives (Form B look) ────────────────────────────────
+const FPart = ({ code, title, children }) => (
+  <div className="mt-3 first:mt-0">
+    <div className="flex items-center gap-2 bg-[#E2E8F0] border border-[#CBD5E1] px-2 py-1">
+      {code && <span className="text-[10px] font-bold text-[#0F172A]">{code}</span>}
+      <span className="text-[10px] font-bold uppercase tracking-wide text-[#0F172A]">{title}</span>
+    </div>
+    <div className="border border-t-0 border-[#CBD5E1] divide-y divide-[#EDF1F5]">{children}</div>
+  </div>
+);
+
+const FRow = ({ code, label, value, sub, strong, highlight }) => (
+  <div className={`flex items-stretch text-[10px] ${highlight ? 'bg-[#F0FDF4]' : ''}`}>
+    <div className="w-9 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">{code || ''}</div>
+    <div className={`flex-1 px-2 py-1 ${sub ? 'pl-4 text-[#64748B]' : 'text-[#334155]'} ${strong ? 'font-semibold text-[#0F172A]' : ''}`}>{label}</div>
+    <div className={`w-36 shrink-0 border-l border-[#EDF1F5] px-2 py-1 text-right tabular-nums ${strong ? 'font-bold text-[#0F172A]' : (highlight ? 'text-[#0F6E56] font-semibold' : 'text-[#0F172A]')}`}>{value}</div>
+  </div>
+);
+
+// A pair of "code | label | value" columns side by side (used by Part N's
+// profit-and-loss / balance-sheet two-column layout).
+const FCol = ({ children }) => <div className="flex-1 border border-[#CBD5E1] divide-y divide-[#EDF1F5]">{children}</div>;
+
+// ─── The full Form B document (Basic Particulars → Part P) ───────────────────
+// Faithful to the LHDN Form B (CP4A) skeleton: every part is present and
+// numbered; values are filled from the user's data where available and left
+// blank (as on the real form) where the app doesn't hold that figure.
+const FormBDocument = ({ fd, filingYear }) => {
+  const t = fd.totals;
+  const netProfit = t.netProfit !== 0 ? t.netProfit : t.turnover - t.expenditure;
+  const blank = '';
+  return (
+    <div className="bg-white text-[#0F172A]" style={{ width: 620 }}>
+      {/* Masthead */}
+      <div className="flex items-start gap-3 px-5 pt-5 pb-3 border-b-2 border-[#0F172A]">
+        <img src={cukaiLogo} alt="" className="h-9 w-9 shrink-0" />
+        <div className="min-w-0 flex-1 text-center">
+          <p className="text-[11px] font-bold leading-tight">LEMBAGA HASIL DALAM NEGERI MALAYSIA</p>
+          <p className="text-[10px] font-bold leading-tight">RETURN FORM OF AN INDIVIDUAL (RESIDENT WHO CARRIES ON BUSINESS)</p>
+          <p className="text-[8px] leading-tight text-[#475569]">UNDER SECTION 77 OF THE INCOME TAX ACT 1967</p>
+        </div>
+        <div className="shrink-0 text-right">
+          <p className="text-[8px] uppercase tracking-wide text-[#94A3B8]">Form</p>
+          <p className="text-2xl font-black leading-none text-[#0F172A]">B</p>
+          <p className="text-[9px] font-bold text-[#0F6E56]">YA {filingYear}</p>
+        </div>
+      </div>
+
+      <div className="px-5 py-3">
+        <FPart title="Basic Particulars">
+          <FRow code="1" label="Name (as per identification document)" value={fd.name} />
+          <FRow code="2" label="Tax Identification No. (TIN)" value={fd.tin} />
+          <FRow code="3" label="Identification no." value={fd.idNo} />
+          <FRow code="4" label="Current passport no." value={blank} />
+          <FRow code="5" label="Passport no. registered with LHDNM" value={blank} />
+        </FPart>
+
+        <FPart code="A" title="Particulars of Individual">
+          <FRow code="A1" label="Citizen (country code)" value={fd.citizen} />
+          <FRow code="A2" label="Gender" value={fd.gender} />
+          <FRow code="A3" label="Date of birth" value={fd.dob} />
+          <FRow code="A4" label={`Status as at 31-12-${filingYear}`} value={fd.marital} />
+          <FRow code="A5" label="Date of marriage / divorce / demise" value={fd.maritalEventDate} />
+          <FRow code="A6" label="Record-keeping" value={fd.recordKeeping} />
+          <FRow code="A7" label="Type of assessment" value={fd.assessment} />
+        </FPart>
+
+        <FPart code="B" title="Computation of Income Tax" >
+          <FRow code="B1" label="Statutory income from businesses in Malaysia" value={fmtAmt(fd.totalIncome)} />
+          <FRow code="B2" label="Statutory income from partnerships in Malaysia" value={fmtAmt(0)} />
+          <FRow code="B4" label="Aggregate statutory income from businesses (B1+B2+B3)" value={fmtAmt(fd.totalIncome)} />
+          <FRow code="B6" label="TOTAL (B4 − B5)" value={fmtAmt(fd.totalIncome)} />
+          <FRow code="B7" label="Statutory income from employment" value={fmtAmt(0)} />
+          <FRow code="B8" label="Statutory income from rents" value={fmtAmt(0)} />
+          <FRow code="B11" label="AGGREGATE INCOME (B6+B7+B8+B9+B10)" value={fmtAmt(fd.totalIncome)} strong />
+          <FRow code="B17" label="LESS: Approved donations / gifts (from G8)" value={fmtAmt(0)} />
+          <FRow code="B20" label="TOTAL INCOME [SELF] (B18 + B19)" value={fmtAmt(fd.totalIncome)} strong />
+          <FRow code="B22" label="AGGREGATE OF TOTAL INCOME (B20 + B21)" value={fmtAmt(fd.totalIncome)} />
+          <FRow code="B23" label="Total relief (from H22)" value={fmtAmt(fd.reliefTotal)} />
+          <FRow code="B24" label="CHARGEABLE INCOME (B20 − B23) or (B22 − B23)" value={fmtAmt(fd.chargeableIncome)} strong highlight />
+          <FRow code="B26" label="TOTAL INCOME TAX (B25a + B25b)" value={fmtAmt(fd.taxCharged)} />
+          <FRow code="B27" label="LESS: Total rebate — self" value={fmtAmt(fd.rebate)} />
+          <FRow code="B28" label="TOTAL TAX CHARGED (B26 − B27)" value={fmtAmt(fd.taxCharged280)} strong />
+          <FRow code="B33" label="Payment made — MTD / CP500 instalments" value={fmtAmt(fd.lessInstalment)} />
+          <FRow code="B34" label="Balance of tax payable (B31 − B33)" value={fmtAmt(fd.taxPayable)} strong highlight />
+        </FPart>
+
+        <FPart code="C" title="Particulars of Husband / Wife">
+          <FRow code="C1" label="Name of husband / wife" value={fd.spouseName} />
+          <FRow code="C2" label="Identification no." value={fd.spouseIdNo} />
+          <FRow code="C3" label="Date of birth" value={fd.spouseDob} />
+          <FRow code="C4" label="Passport no." value={blank} />
+        </FPart>
+
+        <FPart code="D" title="Other Particulars">
+          <FRow code="D1" label="Telephone no." value={fd.phone} />
+          <FRow code="D2" label="E-mail" value={fd.email} />
+          <FRow code="D5" label="Financial account(s) outside Malaysia" value={fd.hasForeignAccounts} />
+          <FRow code="D7" label="Address of business premise" value={fd.businessAddress} />
+          <FRow code="D8" label="Correspondence address" value={fd.correspondenceAddress} />
+          <FRow code="D9" label="Method of payment for tax refund" value={fd.refundMethod} />
+          <FRow code="D10a" label="Name of bank" value={fd.bankName} />
+          <FRow code="D10b" label="Bank account no." value={fd.bankAccountNo} />
+          <FRow code="D12a" label="Disposal of asset under RPGT Act 1976" value={fd.rpgtDisposal} />
+        </FPart>
+
+        <FPart code="E" title="Statutory Income — Business / Partnership Outside Malaysia">
+          <FRow code="E1" label="Business 1" value={blank} />
+          <FRow code="E2" label="Partnership 1" value={blank} />
+          <FRow code="E4" label="TOTAL (transfer to B3)" value={fmtAmt(0)} />
+        </FPart>
+
+        <FPart code="F" title="Other Statutory Income From Outside Malaysia">
+          <FRow code="F1" label="Income received in Malaysia" value={blank} />
+          <FRow code="F4" label="TOTAL (transfer to B10)" value={fmtAmt(0)} />
+        </FPart>
+
+        <FPart code="G" title="Donations / Gifts / Contributions">
+          <FRow code="G1" label="Gift of money to Government / local authority" value={fmtAmt(0)} />
+          <FRow code="G2" label="Gift of money to approved institutions / funds" value={fmtAmt(0)} />
+          <FRow code="G8" label="Total approved donations (transfer to B17)" value={fmtAmt(0)} strong />
+        </FPart>
+
+        <FPart code="H" title="Relief">
+          {fd.reliefItems.map(([code, label, amount]) => (
+            <FRow key={code} code={code} label={label} value={fmtAmt(amount)} />
+          ))}
+          <FRow code="H22" label="TOTAL RELIEF [H1 to H21] (transfer to B23)" value={fmtAmt(fd.reliefTotal)} strong highlight />
+        </FPart>
+
+        <FPart code="J" title="Incentive Claim">
+          <FRow code="J1" label="Special / further / double deductions under s.127(3)(b)" value={blank} />
+          <FRow code="J2" label="Incentive(s) under subsection 127(3A)" value={blank} />
+        </FPart>
+
+        <FPart code="K" title="Non-Employment Income of Preceding Years Not Declared">
+          <FRow code="K1" label="Type of income / year of assessment" value={blank} />
+        </FPart>
+
+        <FPart code="L" title="Tax Exempt Income From Outside Malaysia Received in Malaysia">
+          <FRow code="L5" label="TOTAL" value={fmtAmt(0)} />
+        </FPart>
+
+        <FPart code="M" title="Particulars of Business Income (Losses)">
+          <FRow code="M2" label="Business capital allowances carried forward" value={fmtAmt(0)} />
+          <FRow code="M3" label="Partnership capital allowances carried forward" value={fmtAmt(0)} />
+        </FPart>
+
+        {/* Part N — two-column P&L / balance sheet */}
+        <div className="mt-3">
+          <div className="flex items-center gap-2 bg-[#E2E8F0] border border-[#CBD5E1] px-2 py-1">
+            <span className="text-[10px] font-bold">N</span>
+            <span className="text-[10px] font-bold uppercase tracking-wide">
+              Financial Particulars of Individual (Main Business Only){fd.entityCount > 1 ? ` — combined across ${fd.entityCount} entities` : ''}
+            </span>
+          </div>
+          <div className="border border-t-0 border-[#CBD5E1] divide-y divide-[#EDF1F5]">
+            <FRow code="N1" label="Name of business" value={fd.businessName} />
+            <FRow code="N1a" label="Registration no." value={fd.businessRegNo} />
+            <FRow code="N2" label="Business code" value={fd.businessCode} />
+            <FRow code="N2a" label="Type of business activity" value={fd.businessActivity} />
+          </div>
+          <div className="flex mt-1 gap-1">
+            <FCol>
+              <div className="bg-[#F1F5F9] px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-[#475569]">Statement of Profit or Loss</div>
+              <FRow code="N3" label="Sales / turnover" value={fmtAmt(t.turnover)} />
+              <FRow code="N8" label="Gross profit / loss (N3 − N7)" value={fmtAmt(t.turnover - t.expenditure)} />
+              <FRow code="N25" label="TOTAL EXPENDITURE (N15 to N24)" value={fmtAmt(t.expenditure)} strong />
+              <FRow code="N26" label="NET PROFIT / LOSS" value={fmtAmt(netProfit)} strong highlight />
+            </FCol>
+            <FCol>
+              <div className="bg-[#F1F5F9] px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-[#475569]">Statement of Financial Position</div>
+              <FRow code="N41" label="TOTAL ASSETS (N32 + N33 + N40)" value={fmtAmt(t.assets)} />
+              <FRow code="N45" label="TOTAL LIABILITIES (N42 to N44)" value={fmtAmt(t.liabilities)} strong />
+              <FRow code="N46" label="Capital account" value={fmtAmt(t.assets - t.liabilities)} />
+              <FRow code="N50" label="Current account balance carried forward" value={blank} />
+            </FCol>
+          </div>
+        </div>
+
+        <FPart code="P" title="Particulars of Tax Agent Who Completes This Return Form">
+          <FRow code="P1" label="Name of tax agent" value={blank} />
+          <FRow code="P2" label="Tax agent's approval no." value={blank} />
+          <FRow code="P3" label="Name of firm" value={blank} />
+          <FRow code="P9" label="Date of signature" value={blank} />
+        </FPart>
+
+        <div className="mt-3 border border-[#CBD5E1]">
+          <div className="bg-[#E2E8F0] px-2 py-1 text-[10px] font-bold uppercase tracking-wide">Declaration</div>
+          <p className="px-2 py-2 text-[9px] leading-relaxed text-[#475569]">
+            I, <span className="font-semibold text-[#0F172A]">{fd.name}</span> (Identification no. {fd.idNo}), hereby declare that the information regarding the income and claim for deductions and reliefs given by me in this return form and in any document attached is true, correct and complete.
+          </p>
+        </div>
+
+        <p className="mt-3 text-[8px] text-[#94A3B8] text-center leading-relaxed">
+          cukai.ai pre-filled draft — for reference only. Figures are accumulated from your entities and profile; reliefs are estimated at statutory caps. Verify every value and file at mytax.hasil.gov.my. Prescribed under s.152 ITA 1967 (CP4A — Pin. {filingYear}).
+        </p>
+      </div>
+    </div>
+  );
+};
+
+// ─── Preview slide-over (with functional "Download PDF") ─────────────────────
+function FormBPreview({ fd, filingYear, onClose }) {
+  const [zoom, setZoom] = useState(100);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => { requestAnimationFrame(() => setVisible(true)); }, []);
+  const handleClose = () => { setVisible(false); setTimeout(onClose, 300); };
+
+  // Functional download: the print stylesheet below isolates #formb-printable
+  // and resets the zoom transform, so the browser's print dialog produces a
+  // clean PDF that matches the on-screen form exactly. Setting document.title
+  // makes the browser suggest "Form_B_YA<year>.pdf" as the filename.
+  const handleDownload = () => {
+    const prev = document.title;
+    document.title = `Form_B_YA${filingYear}`;
+    window.print();
+    setTimeout(() => { document.title = prev; }, 600);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex" onClick={handleClose}>
+      <style>{`
+        @media print {
+          body * { visibility: hidden !important; }
+          #formb-printable, #formb-printable * { visibility: visible !important; }
+          #formb-zoomwrap { transform: none !important; }
+          #formb-printable {
+            position: absolute !important; left: 0 !important; top: 0 !important;
+            width: 100% !important; box-shadow: none !important; border-radius: 0 !important;
+          }
+          @page { size: A4 portrait; margin: 12mm; }
+        }
+      `}</style>
+
+      <div className={`no-print flex-1 bg-black/40 transition-opacity duration-300 ${visible ? 'opacity-100' : 'opacity-0'}`} />
+
+      <div
+        className={`relative flex h-full w-[720px] max-w-full flex-col bg-white shadow-2xl transition-transform duration-300 ease-out ${visible ? 'translate-x-0' : 'translate-x-full'}`}
+        onClick={(e) => e.stopPropagation()}>
+        <div className="no-print flex items-center justify-between border-b border-[#E2E8F0] px-5 py-3 bg-[#F8FAFC] shrink-0">
+          <div>
+            <p className="text-sm font-bold text-[#0F172A]">Form B Preview — YA {filingYear}</p>
+            <p className="text-[10px] text-[#64748B] mt-0.5">Pre-filled draft. Verify all values before submitting to LHDN.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 rounded-lg border border-[#E2E8F0] bg-white px-2 py-1">
+              <button onClick={() => setZoom((z) => Math.max(60, z - 10))} className="text-[#64748B] hover:text-[#0F172A] px-1 text-sm font-bold">−</button>
+              <span className="text-[10px] text-[#64748B] w-8 text-center">{zoom}%</span>
+              <button onClick={() => setZoom((z) => Math.min(150, z + 10))} className="text-[#64748B] hover:text-[#0F172A] px-1 text-sm font-bold">+</button>
+            </div>
+            <button onClick={handleDownload}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#0D9488] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0f766e] transition-colors duration-150">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download
+            </button>
+            <button onClick={handleClose} className="text-[#94A3B8] hover:text-[#0F172A] transition-colors ml-1">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto bg-[#E8EBEF] p-6">
+          <div id="formb-zoomwrap" style={{ transform: `scale(${zoom / 100})`, transformOrigin: 'top center', transition: 'transform 0.2s' }}>
+            <div id="formb-printable" className="mx-auto shadow-xl rounded-lg overflow-hidden">
+              <FormBDocument fd={fd} filingYear={filingYear} />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Compact on-screen summary primitives ────────────────────────────────────
+function InlineSummary({ title, children }) {
+  return (
+    <div>
+      <p className="mb-1.5 text-[9px] font-bold uppercase tracking-widest text-[#94A3B8]">{title}</p>
+      <div className="rounded-lg border border-[#F1F5F9] divide-y divide-[#F1F5F9] overflow-hidden">{children}</div>
+    </div>
+  );
+}
+function SRow({ label, value, bold, highlight }) {
+  return (
+    <div className={`flex items-center justify-between px-3 py-1.5 ${highlight ? 'bg-[#F0FDF4]' : ''}`}>
+      <span className={`text-[10px] ${bold ? 'font-semibold text-[#0F172A]' : 'text-[#64748B]'}`}>{label}</span>
+      <span className={`text-[10px] ml-6 text-right ${bold ? 'font-bold' : 'font-medium'} ${highlight ? 'text-[#0F6E56]' : 'text-[#0F172A]'}`}>{value}</span>
+    </div>
+  );
+}
+
+// ─── Generate Forms panel (the tab body) ──────────────────────────────────────
+const GenerateFormsPanel = ({ profile, entities }) => {
+  const [showPreview, setShowPreview] = useState(false);
+  const filingYear = currentFilingYear();
+  const owned = entities || [];
+  const fd = buildFormData(profile || BLANK_PERSONAL_PROFILE, owned);
+  const { totals, totalIncome, reliefItems, reliefTotal, chargeableIncome, taxCharged, rebate, taxPayable, entityCount } = fd;
+  const netProfit = totals.netProfit !== 0 ? totals.netProfit : totals.turnover - totals.expenditure;
+
+  if (owned.length === 0) {
+    return (
+      <div className="flex-1 min-h-0 flex items-center justify-center">
+        <div className="max-w-sm text-center px-6">
+          <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-[#f0fdf9] border border-slate-100 text-[#0D9488]">
+            <BuildingIcon />
+          </div>
+          <p className="text-sm font-bold text-[#0F172A]">No business entities yet</p>
+          <p className="text-[11px] text-[#64748B] mt-1 leading-relaxed">
+            Your Form B draft is built from the entities you own. Add a business under <span className="font-semibold">Manage Entities</span> to generate the return.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col gap-2">
+      {showPreview && (
+        <FormBPreview fd={fd} filingYear={filingYear} onClose={() => setShowPreview(false)} />
+      )}
+
+      {/* Header — title / description / actions (mirrors the Manage Entities tab) */}
+      <div className="flex items-center justify-between shrink-0">
+        <div>
+          <h2 className="text-sm font-bold text-[#0F172A]">Form B — Personal Return YA {filingYear}</h2>
+          <p className="text-[11px] text-[#64748B] mt-0.5">
+            {entityCount > 1
+              ? `Combined across ${entityCount} entities · Main business: ${fd.businessName}`
+              : `Based on ${fd.businessName}`} · Verify before submitting to LHDN
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setShowPreview(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[#0D9488] bg-white px-3 py-1.5 text-xs font-semibold text-[#0D9488] hover:bg-[#f0fdf9] transition-colors duration-150"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+            </svg>
+            Preview
+          </button>
+          <button
+            onClick={() => setShowPreview(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[#0D9488] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0f766e] transition-colors duration-150"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Export PDF
+          </button>
+        </div>
+      </div>
+
+      {/* At-a-glance summary — full form lives in the Preview */}
+      <div className="flex-1 min-h-0 overflow-y-auto pr-0.5">
+        <div className="rounded-xl border border-[#E2E8F0] bg-white overflow-hidden">
+          <div className="px-5 py-4 space-y-4">
+            <InlineSummary title="Part B — Income Computation">
+              <SRow label="B1  Statutory business income (all entities)" value={fmtRM(totalIncome)} />
+              <SRow label="B11 Aggregate income" value={fmtRM(totalIncome)} bold />
+              <SRow label="B23 Total relief" value={fmtRM(reliefTotal)} />
+              <SRow label="B24 Chargeable income" value={fmtRM(chargeableIncome)} bold highlight />
+              <SRow label="B26 Total income tax" value={fmtRM(taxCharged)} />
+              <SRow label={`B28 Tax charged (after rebate ${fmtRM(rebate)})`} value={fmtRM(Math.max(0, taxCharged - rebate))} bold />
+              <SRow label="B34 Balance tax payable" value={fmtRM(taxPayable)} bold highlight />
+            </InlineSummary>
+
+            <InlineSummary title="Part H — Relief Breakdown (estimated at statutory caps)">
+              {reliefItems.map(([code, label, amount]) => (
+                <SRow key={code} label={`${code}  ${label}`} value={fmtRM(amount)} />
+              ))}
+              <SRow label="H22 TOTAL RELIEF" value={fmtRM(reliefTotal)} bold highlight />
+            </InlineSummary>
+
+            <InlineSummary title={entityCount > 1 ? `Part N — Business Particulars (combined, ${entityCount} entities)` : 'Part N — Business Financial Particulars'}>
+              <SRow label="N1  Main business" value={fd.businessName} />
+              <SRow label="N2  Business code (MSIC)" value={fd.businessCode} />
+              <SRow label="N3  Sales / turnover" value={fmtRM(totals.turnover)} />
+              <SRow label="N25 Total expenditure" value={fmtRM(totals.expenditure)} bold />
+              <SRow label="N26 Net profit / loss" value={fmtRM(netProfit)} bold highlight />
+              <SRow label="N41 Total assets" value={fmtRM(totals.assets)} />
+              <SRow label="N45 Total liabilities" value={fmtRM(totals.liabilities)} />
+            </InlineSummary>
+
+            <p className="text-[9px] text-[#94A3B8] leading-relaxed">
+              Reliefs are estimated at their statutory maximums from the toggles on your personal profile — confirm the actual amounts before filing. Employment, rental and other non-business income are not included in this draft. Open <span className="font-semibold">Preview</span> to see and download the full Form B.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* =========================================================================
    CREATE ENTITY MODAL
    ========================================================================= */
 
@@ -1148,6 +1591,9 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
   const [previewIndex, setPreviewIndex] = useState(null);
   const [showPersonalPanel, setShowPersonalPanel] = useState(false);
   const [newEntityDraft, setNewEntityDraft] = useState(null);
+  // Tabs sit below the always-visible personal summary and govern only the
+  // business-profiles area: entity management vs the generated Form B draft.
+  const [tab, setTab] = useState('entities');
   
   // Add these two states right below them to track network status:
   const [error, setError] = useState(null);
@@ -1248,11 +1694,14 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
         <PersonalProfileSummary profile={personalProfile} onOpen={() => setShowPersonalPanel(true)} />
       </div>
 
-      {/* Entities — flex-1 so this section fills remaining height */}
+      <ProfileTabNav active={tab} onChange={setTab} />
+
+      {/* Business profiles — tabbed: Manage Entities / Generate Forms */}
+      {tab === 'entities' && (
       <div className="flex-1 min-h-0 flex flex-col gap-2">
         <div className="flex items-center justify-between shrink-0">
           <div>
-            <h2 className="text-sm font-bold text-[#0F172A]">Business & Partnership Profiles</h2>
+            <h2 className="text-sm font-bold text-[#0F172A]">Business Profiles</h2>
             <p className="text-[11px] text-[#64748B] mt-0.5">Maintain the registered details LHDN requires for each entity you file on behalf of.</p>
           </div>
           <button
@@ -1279,6 +1728,11 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
           </div>
         </div>
       </div>
+      )}
+
+      {tab === 'forms' && (
+        <GenerateFormsPanel profile={personalProfile} entities={entities} />
+      )}
 
       {showPersonalPanel && (
         <PersonalProfilePanel

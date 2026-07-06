@@ -157,15 +157,73 @@ class Document(Base):
     )
 
 
+class CapitalAsset(Base):
+    """
+    Registry of capital assets qualifying for Schedule 3 capital allowance
+    (Initial Allowance + Annual Allowance). One row is created once, at the
+    time the qualifying asset-purchase / renovation document is classified.
+
+    This exists because capital allowance is inherently multi-year: an asset
+    bought in YA2023 keeps generating Annual Allowance in YA2024, YA2025, etc.,
+    with no new document uploaded in those later years. Re-deriving the
+    allowance purely from documents present in a given year's query (the old
+    approach) silently loses AA in every year after acquisition. The actual
+    year-by-year schedule (IA, AA, written-down value, balancing
+    allowance/charge on disposal) is computed deterministically from this
+    record by compute_capital_allowance_for_year() in capital_allowance.py —
+    nothing about the schedule itself is persisted here, only the facts an
+    LLM extracted once from the source document.
+    """
+    __tablename__ = "capital_assets"
+
+    id        = Column(Integer, primary_key=True, index=True)
+    user_id   = Column(String(128), nullable=True, index=True)
+    entity_id = Column(Integer, ForeignKey("entities.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    # One asset per source document — re-processing the same document (e.g. a
+    # retry) upserts this row rather than creating a duplicate asset.
+    source_document_id = Column(Integer, ForeignKey("documents.id", ondelete="SET NULL"), nullable=True, unique=True)
+
+    asset_class      = Column(String(100), nullable=False)
+    description      = Column(String(255), nullable=True)
+    cost             = Column(Numeric,      nullable=False)
+    acquisition_date = Column(Date,         nullable=True)
+    acquisition_year = Column(Integer,      nullable=False, index=True)  # YA the asset was bought in
+    ia_rate_pct      = Column(Integer,      nullable=False, default=0)
+    aa_rate_pct      = Column(Integer,      nullable=False, default=0)
+
+    # Populated only once the asset is sold / scrapped / disposed of.
+    disposal_date     = Column(Date,    nullable=True)
+    disposal_year     = Column(Integer, nullable=True, index=True)
+    disposal_proceeds = Column(Numeric, nullable=True)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint("cost >= 0", name="ck_capital_asset_cost_nonneg"),
+        CheckConstraint(
+            "acquisition_year >= 2000 AND acquisition_year <= 2100",
+            name="ck_capital_asset_year_range",
+        ),
+        Index("ix_capital_asset_user_entity", "user_id", "entity_id"),
+    )
+
+
 class FormBProfile(Base):
     """
     Structured data extracted from a previously filed Form B.
-    One record per (user_id, year_of_assessment).
+    One record per (user_id, entity_id, year_of_assessment) — each business
+    entity keeps its own filed Form B for a given year, so a user with two
+    entities can upload a Form B for the same year under each without one
+    overwriting the other.
     """
     __tablename__ = "form_b_profiles"
 
     id                 = Column(Integer, primary_key=True, index=True)
     user_id            = Column(String(128), nullable=True, index=True)
+    # Which business entity this filed Form B belongs to. Nullable so pre-entity
+    # rows and Form Bs uploaded without an active entity are still valid.
+    entity_id          = Column(Integer, ForeignKey("entities.id", ondelete="SET NULL"), nullable=True, index=True)
     year_of_assessment = Column(Integer, nullable=False)
     source_document_id = Column(Integer, nullable=True)
 
@@ -200,5 +258,9 @@ class FormBProfile(Base):
     created_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
-        Index("ix_formb_user_ya", "user_id", "year_of_assessment", unique=True),
+        # Uniqueness is per (user, entity, year) so each entity can hold its own
+        # filed Form B for a given YA. (Postgres treats NULL entity_id values as
+        # distinct, so the app-level upsert in pipeline.py is what dedupes the
+        # no-entity case.)
+        Index("ix_formb_user_entity_ya", "user_id", "entity_id", "year_of_assessment", unique=True),
     )
