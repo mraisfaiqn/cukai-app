@@ -261,6 +261,45 @@ export const getTaxProfileSummary = async (year, userId = null, entityId = null)
   return data;
 };
 
+// ── AI Insights ───────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the AI Insights feed for a user (optionally scoped to an entity).
+ * Returns a WRAPPED payload: { insights: [...], lastRun: {...}|null } —
+ * consumers must read `.insights`, not map the response directly.
+ */
+export const getInsights = async (userId, entityId = null) => {
+  const params = { user_id: userId };
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.get('/api/insights', { params });
+  return data;
+};
+
+/**
+ * Transition an insight's lifecycle state.
+ * `payload` is { state: 'new'|'read'|'dismissed'|'actioned', dismissReason?,
+ * snoozeUntil? (YYYY-MM-DD), resolvedNote? }. Dismiss reasons containing
+ * "snooze" auto-snooze for 2 weeks; "Not relevant this year" hides the card
+ * until 1 Jan after its assessment year. Returns the updated insight.
+ */
+export const updateInsightState = async (insightId, payload, userId) => {
+  const { data } = await api.patch(`/api/insights/${insightId}/state`, payload, {
+    params: { user_id: userId },
+  });
+  return data;
+};
+
+/**
+ * Queue a manual re-run of the insight engine (fire-and-forget, 202).
+ * The refreshed feed lands on the next getInsights() call.
+ */
+export const runInsightEngine = async (userId, entityId = null) => {
+  const params = { user_id: userId };
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.post('/api/insights/run', {}, { params });
+  return data;
+};
+
 /**
  * Fetch the structured Form B data extracted from a previously filed return.
  * Pass entityId to scope to a specific business entity (each entity keeps its
