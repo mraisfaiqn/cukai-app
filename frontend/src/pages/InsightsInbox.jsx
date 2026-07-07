@@ -1,13 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getAllEntities } from '../services/api';
+import { getAllEntities, getInsights, updateInsightState } from '../services/api';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// AI INSIGHTS INBOX — frontend-first demo of the insight engine workflow.
+// AI INSIGHTS INBOX — live view over the backend insight engine.
 //
-// Every mock insight below is shaped EXACTLY like a row from the future
-// `insights` table, so swapping to `await API.getInsights(userId, entityId)`
-// is a data-source change, not a rewrite:
+// Data source: GET /api/insights?user_id&entity_id which returns a WRAPPED
+// payload { insights: [...], lastRun: {...}|null }. Each insight row carries:
 //
 //   insightType   deadline | review_pending | relief_headroom | doc_gap
 //                 | provision | formb_missing | digest
@@ -18,7 +17,11 @@ import { getAllEntities } from '../services/api';
 //   generatedBy   'rule_template' (deterministic) | 'llm' (AI-phrased → AI chip)
 //   action        deep-link descriptor — every card ends in a next step
 //   state         new | read | dismissed | actioned  (+ dismissReason)
-//   dedupeKey     what the backend will upsert on — shown in the meta row
+//   dedupeKey     what the backend upserts on — shown in the meta row
+//   assessmentYear the tax Year of Assessment the insight belongs to
+//
+// Lifecycle transitions PATCH /api/insights/{id}/state; the UI updates
+// optimistically and the server write is fire-and-forget.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -78,14 +81,18 @@ const EyeIcon = ({ className = 'h-3.5 w-3.5' }) => (
   </svg>
 );
 
+const LockIcon = ({ className = 'h-2.5 w-2.5' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </svg>
+);
+
+// Tooltip text for actions blocked by the Tax Amendment Lock (isLocked cards)
+const LOCKED_TOOLTIP = 'This Assessment Year has been filed and locked.';
+
 // ── Date helpers ──────────────────────────────────────────────────────────────
-// Mock timestamps/deadlines are seeded RELATIVE to "now" so the demo always
-// looks alive (countdowns tick down, "2 hours ago" stays fresh) regardless of
-// when it's opened.
 
 const DAY_MS = 86400000;
-const daysFromNow = (n) => new Date(Date.now() + n * DAY_MS).toISOString();
-const hoursAgo = (n) => new Date(Date.now() - n * 3600000).toISOString();
 
 function daysUntil(iso) {
   if (!iso) return null;
@@ -129,246 +136,6 @@ const GROUP_OF = {
   digest: 'Advisory',
 };
 
-// ── Mock insight feed ─────────────────────────────────────────────────────────
-// One coherent demo scenario ("Meridian Print Studio", YA 2026 in progress):
-// projected tax RM8,400 · CP500 RM1,500 × 3 paid (RM4,500) · income tracking
-// +12% vs last year · one stuck entertainment review worth RM240.
-//
-// TODO(backend): replace buildDemoInsights() with
-// `await API.getInsights(userId, entityId)` in the same useEffect that
-// re-runs on activeEntity?.id below — the card shape is already API-shaped.
-
-function buildDemoInsights() {
-  return [
-    {
-      id: 101,
-      insightType: 'digest',
-      severity: 'info',
-      generatedBy: 'llm',
-      state: 'new',
-      dedupeKey: 'digest:2026-07',
-      createdAt: hoursAgo(2),
-      title: 'Your July tax brief',
-      body: 'Income is tracking 12% ahead of last year — on pace for a bigger tax bill, so the RM3,000 of unclaimed PRS relief matters more than usual. Your single biggest unlock right now: one unanswered review question is holding back RM240 in deductions, and your CP500 installment lands in 11 days.',
-      rmImpact: null,
-      deadlineDate: null,
-      citation: null,
-      signals: [
-        { label: 'Income YTD', value: 'RM 142,300 (+12% vs YA2025 same period)' },
-        { label: 'Pending review questions', value: '1 — worth ~RM 240' },
-        { label: 'Unclaimed relief headroom', value: 'RM 3,000 (PRS)' },
-        { label: 'Next deadline', value: 'CP500 installment #4' },
-      ],
-      sourceDocumentIds: [],
-      action: { label: 'Ask CukaiBot about this', to: '/cukaibot' },
-    },
-    {
-      id: 102,
-      insightType: 'deadline',
-      severity: 'deadline',
-      generatedBy: 'rule_template',
-      state: 'new',
-      dedupeKey: 'cp500_due:2026-07',
-      createdAt: hoursAgo(2),
-      title: 'CP500 installment #4 — RM 1,500 due soon',
-      body: 'Your fourth bimonthly tax installment of RM 1,500 is coming up. You have paid 3 of 6 installments (RM 4,500) for YA 2026 so far. Missing an installment attracts a 10% late-payment penalty on the amount due.',
-      rmImpact: 1500,
-      deadlineDate: daysFromNow(11),
-      citation: 'ITA 1967 s.107B',
-      signals: [
-        { label: 'Installments paid', value: 'Jan, Mar, May — RM 1,500 each' },
-        { label: 'Total paid YA2026', value: 'RM 4,500 of RM 9,000' },
-        { label: 'Next installment', value: `#4 — due ${fmtDate(daysFromNow(11))}` },
-        { label: 'Detected from', value: '3 CP500 receipts in your vault' },
-      ],
-      sourceDocumentIds: [31, 35, 39],
-      action: { label: 'View installment history', to: '/account' },
-    },
-    {
-      id: 103,
-      insightType: 'review_pending',
-      severity: 'action_required',
-      generatedBy: 'rule_template',
-      state: 'new',
-      dedupeKey: 'review_pending:doc-42',
-      createdAt: hoursAgo(26),
-      title: 'One answer is blocking RM 240 in deductions',
-      body: 'The AI could not finish classifying your RM 480 receipt from Rustic Table Bistro. It needs to know: was this meal with business clients, or exclusively for your own staff? Client entertainment is 50% deductible; staff-only meals are 100% deductible.',
-      rmImpact: 240,
-      deadlineDate: null,
-      citation: 'ITA 1967 s.39(1)(l) · LHDN PR No. 3/2020',
-      signals: [
-        { label: 'Document', value: 'Rustic Table Bistro — RM 480.00' },
-        { label: 'AI confidence', value: '58% — flagged for review' },
-        { label: 'If clients attended', value: '50% deductible → RM 240' },
-        { label: 'If staff only', value: '100% deductible → RM 480' },
-      ],
-      sourceDocumentIds: [42],
-      action: { label: 'Answer now', to: '/account' },
-    },
-    {
-      id: 104,
-      insightType: 'relief_headroom',
-      severity: 'suggested',
-      generatedBy: 'rule_template',
-      state: 'new',
-      dedupeKey: 'relief_headroom:prs:2026',
-      createdAt: hoursAgo(26),
-      title: 'RM 3,000 of PRS relief still unclaimed',
-      body: 'You have not claimed any Private Retirement Scheme relief this year. Contributing before 31 December could save you up to RM 630 in tax at your current 21% marginal rate.',
-      rmImpact: 630,
-      deadlineDate: '2026-12-31T00:00:00',
-      citation: 'Schedule 9, ITA 1967',
-      signals: [
-        { label: 'Claimed so far', value: 'RM 0 of RM 3,000 cap' },
-        { label: 'Your marginal tax rate', value: '21%' },
-        { label: 'Potential tax saving', value: 'RM 3,000 × 21% = RM 630' },
-        { label: 'Window closes', value: '31 Dec 2026' },
-      ],
-      sourceDocumentIds: [],
-      action: { label: 'How to claim this', to: '/cukaibot' },
-    },
-    {
-      id: 105,
-      insightType: 'doc_gap',
-      severity: 'action_required',
-      generatedBy: 'rule_template',
-      state: 'read',
-      dedupeKey: 'doc_gap:tnb:2026-05',
-      createdAt: hoursAgo(50),
-      title: 'Utility bills stopped arriving in May',
-      body: 'TNB bills for your shop lot were uploaded every month from January to April (about RM 380/month), but May and June are missing. That is roughly RM 760 in business deductions currently unclaimed.',
-      rmImpact: 760,
-      deadlineDate: null,
-      citation: 'ITA 1967 s.33(1)',
-      signals: [
-        { label: 'Pattern detected', value: 'TNB · monthly · Jan–Apr 2026' },
-        { label: 'Average bill', value: 'RM 380 / month' },
-        { label: 'Missing months', value: 'May, June' },
-        { label: 'Estimated unclaimed', value: '2 × RM 380 ≈ RM 760' },
-      ],
-      sourceDocumentIds: [12, 18, 24, 29],
-      action: { label: 'Upload the missing bills', to: '/account' },
-    },
-    {
-      id: 106,
-      insightType: 'provision',
-      severity: 'info',
-      generatedBy: 'rule_template',
-      state: 'read',
-      dedupeKey: 'provision:2026',
-      createdAt: hoursAgo(50),
-      title: 'Set aside ~RM 650/month for your YA 2026 tax bill',
-      body: 'Based on your income so far, your projected tax for YA 2026 is about RM 8,400. After the RM 4,500 in CP500 installments already paid, setting aside RM 650 a month covers the remaining balance comfortably by filing time.',
-      rmImpact: null,
-      deadlineDate: null,
-      citation: 'Run-rate estimate — not a final tax computation',
-      signals: [
-        { label: 'Projected tax (run-rate)', value: 'RM 8,400' },
-        { label: 'CP500 already paid', value: 'RM 4,500' },
-        { label: 'Remaining to cover', value: 'RM 3,900' },
-        { label: 'Suggested monthly set-aside', value: 'RM 3,900 ÷ 6 months ≈ RM 650' },
-      ],
-      sourceDocumentIds: [],
-      action: { label: 'See full breakdown', to: '/overview' },
-    },
-    {
-      id: 107,
-      insightType: 'formb_missing',
-      severity: 'suggested',
-      generatedBy: 'rule_template',
-      state: 'read',
-      dedupeKey: 'formb_missing:2025',
-      createdAt: hoursAgo(96),
-      title: 'Upload last year’s Form B to unlock smarter insights',
-      body: 'We do not have your filed YA 2025 Form B. Uploading it gives the AI your official prior-year baseline — enabling carry-forward tracking, year-on-year comparisons, and more accurate relief suggestions.',
-      rmImpact: null,
-      deadlineDate: null,
-      citation: null,
-      signals: [
-        { label: 'Prior-year Form B on file', value: 'None found for YA 2025' },
-        { label: 'Unlocks', value: 'Carry-forward losses · YoY gaps · relief history' },
-      ],
-      sourceDocumentIds: [],
-      action: { label: 'Upload Form B', to: '/account' },
-    },
-    // ── Lifecycle demo: already-resolved & dismissed cards ────────────────────
-    {
-      id: 108,
-      insightType: 'review_pending',
-      severity: 'action_required',
-      generatedBy: 'rule_template',
-      state: 'actioned',
-      resolvedNote: 'You reclassified the document — deduction confirmed automatically.',
-      dedupeKey: 'review_pending:doc-38',
-      createdAt: hoursAgo(120),
-      title: 'Mixed-use vehicle claim needed a logbook percentage',
-      body: 'You confirmed 70% business use for your vehicle expenses. RM 1,890 of RM 2,700 is now claimed as deductible.',
-      rmImpact: 1890,
-      deadlineDate: null,
-      citation: 'ITA 1967 s.33(1) · LHDN PR No. 1/2014',
-      signals: [
-        { label: 'Your answer', value: '70% business use (logbook kept)' },
-        { label: 'Outcome', value: 'RM 2,700 × 70% = RM 1,890 deductible' },
-      ],
-      sourceDocumentIds: [38],
-      action: null,
-    },
-    {
-      id: 109,
-      insightType: 'relief_headroom',
-      severity: 'suggested',
-      generatedBy: 'rule_template',
-      state: 'dismissed',
-      dismissReason: 'Not relevant this year',
-      dedupeKey: 'relief_headroom:tourism:2026',
-      createdAt: hoursAgo(140),
-      title: 'RM 1,000 domestic tourism relief unclaimed',
-      body: 'No qualifying local hotel or tour-package receipts found this year. Stays at registered Malaysian accommodation qualify for up to RM 1,000 in relief.',
-      rmImpact: 210,
-      deadlineDate: '2026-12-31T00:00:00',
-      citation: 'Schedule 9, ITA 1967',
-      signals: [
-        { label: 'Claimed so far', value: 'RM 0 of RM 1,000 cap' },
-      ],
-      sourceDocumentIds: [],
-      action: { label: 'How to claim this', to: '/cukaibot' },
-    },
-  ];
-}
-
-// Per-entity mock feed — keyed by entity ID so switching entities swaps the
-// insight list, the same way a real per-entity endpoint will. Stored as
-// factories (not pre-built arrays) so the relative timestamps inside
-// buildDemoInsights() stay fresh on every switch rather than freezing at import.
-//
-// NOTE: the showcase feed is mapped to entity id 1 to match CukaiBot's
-// MOCK_MESSAGES_BY_ENTITY convention. Point this at your actual demo entity's
-// id if it isn't 1 (or add more keys to give each entity its own feed). Any
-// unmapped entity falls through to an empty inbox — the honest state a real
-// fetch returns for a brand-new entity with nothing detected yet.
-//
-// TODO(backend): replace getInitialInsightsForEntity() with
-// `await getInsights(userId, entityId)` in the useEffect that re-runs on
-// activeEntity?.id below — the card shape is already API-shaped.
-const MOCK_INSIGHTS_BY_ENTITY = {
-  1: () => buildDemoInsights(),
-};
-
-function getInitialInsightsForEntity(entityId) {
-  const build = MOCK_INSIGHTS_BY_ENTITY[entityId];
-  return build ? build() : [];
-}
-
-// Mirrors the future `insight_runs` row — surfaces WHEN the brain last looked
-// so the inbox feels like a living system rather than a static list.
-const DEMO_LAST_RUN = {
-  ranAt: hoursAgo(2),
-  trigger: 'document classified',
-  documentsAnalysed: 27,
-  signalsFound: 9,
-};
-
 // ── Small building blocks ─────────────────────────────────────────────────────
 
 /** Pill-shaped AI chip (design system: amber highlight + sparkle) — marks AI-phrased content. */
@@ -405,13 +172,15 @@ function DeadlineChip({ deadlineDate }) {
 
 /** "Why am I seeing this?" — renders the raw signals so every card is auditable. */
 function SignalList({ insight }) {
+  const signals = insight.signals || [];
+  const sourceCount = (insight.sourceDocumentIds || []).length;
   return (
     <div className="rounded-xl border border-border bg-background px-4 py-3">
       <p className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted">
         <EyeIcon /> Why am I seeing this?
       </p>
       <div className="space-y-1.5">
-        {insight.signals.map((s, i) => (
+        {signals.map((s, i) => (
           <div key={i} className="flex items-baseline justify-between gap-4 text-xs">
             <span className="text-muted">{s.label}</span>
             <span className="text-right font-medium text-headings">{s.value}</span>
@@ -420,7 +189,8 @@ function SignalList({ insight }) {
       </div>
       <p className="mt-2.5 border-t border-border pt-2 text-[10px] text-muted">
         {insight.generatedBy === 'llm' ? 'Numbers computed by the rule engine · wording by AI' : 'Computed by the rule engine — no AI involved'}
-        {insight.sourceDocumentIds.length > 0 && ` · from ${insight.sourceDocumentIds.length} document${insight.sourceDocumentIds.length === 1 ? '' : 's'} in your vault`}
+        {sourceCount > 0 && ` · from ${sourceCount} document${sourceCount === 1 ? '' : 's'} in your vault`}
+        {insight.assessmentYear && ` · YA ${insight.assessmentYear}`}
       </p>
     </div>
   );
@@ -457,6 +227,9 @@ function InsightCard({ insight, expanded, onToggle, onAction, onDismiss, onMarkD
   const isDigest = insight.insightType === 'digest';
   const isActive = insight.state === 'new' || insight.state === 'read';
   const unread = insight.state === 'new';
+  // Tax Amendment Lock: this card's assessment year has a filed Form B on
+  // record — lifecycle actions are disabled here AND rejected server-side.
+  const locked = !!insight.isLocked;
 
   return (
     <div
@@ -472,6 +245,20 @@ function InsightCard({ insight, expanded, onToggle, onAction, onDismiss, onMarkD
         <div className="mb-1.5 flex flex-wrap items-center gap-2">
           {isDigest ? <AiChip /> : <SeverityBadge severity={insight.severity} />}
           {isDigest && <span className="text-[10px] font-semibold uppercase tracking-wider text-warning">Monthly digest</span>}
+          {locked && (
+            <span
+              title={LOCKED_TOOLTIP}
+              className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-semibold text-muted">
+              <LockIcon /> YA {insight.assessmentYear} filed
+            </span>
+          )}
+          {insight.isStale && isActive && (
+            <span
+              title="Tax rules changed since this was computed — figures are being re-checked."
+              className="inline-flex items-center gap-1 rounded-full bg-warning-bg px-2 py-0.5 text-[10px] font-semibold text-warning">
+              <RotateIcon className="h-2.5 w-2.5" /> Re-checking figures
+            </span>
+          )}
           {insight.deadlineDate && isActive && <DeadlineChip deadlineDate={insight.deadlineDate} />}
           {insight.rmImpact != null && isActive && (
             <span className="inline-flex rounded-full bg-primary-tint px-2 py-0.5 text-[10px] font-bold text-primary">
@@ -492,14 +279,18 @@ function InsightCard({ insight, expanded, onToggle, onAction, onDismiss, onMarkD
           <span className="ml-auto flex items-center gap-1 text-[10px] text-muted">
             {timeAgo(insight.createdAt)}
             {isActive && (
-              <span className="relative" onClick={e => e.stopPropagation()}>
+              <span
+                className="relative"
+                onClick={e => e.stopPropagation()}
+                title={locked ? LOCKED_TOOLTIP : undefined}>
                 <button
-                  onClick={() => setMenuOpen(v => !v)}
-                  title="Dismiss"
-                  className="rounded-lg p-1 text-muted transition-colors hover:bg-background hover:text-headings">
+                  onClick={() => !locked && setMenuOpen(v => !v)}
+                  disabled={locked}
+                  title={locked ? undefined : 'Dismiss'}
+                  className={`rounded-lg p-1 text-muted transition-colors ${locked ? 'pointer-events-none opacity-40' : 'hover:bg-background hover:text-headings'}`}>
                   <XIcon className="h-3.5 w-3.5" />
                 </button>
-                {menuOpen && (
+                {menuOpen && !locked && (
                   <DismissMenu
                     onClose={() => setMenuOpen(false)}
                     onDismiss={(reason) => { setMenuOpen(false); onDismiss(insight.id, reason); }}
@@ -543,18 +334,24 @@ function InsightCard({ insight, expanded, onToggle, onAction, onDismiss, onMarkD
                 </button>
               )}
               {isActive && !isDigest && (
-                <button
-                  onClick={() => onMarkDone(insight.id)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-4 py-2 text-xs font-semibold text-muted transition-colors hover:border-primary hover:text-primary">
-                  <CheckIcon className="h-3 w-3" /> Mark as done
-                </button>
+                <span title={locked ? LOCKED_TOOLTIP : undefined}>
+                  <button
+                    onClick={() => !locked && onMarkDone(insight.id)}
+                    disabled={locked}
+                    className={`inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-4 py-2 text-xs font-semibold text-muted transition-colors ${locked ? 'pointer-events-none opacity-40' : 'hover:border-primary hover:text-primary'}`}>
+                    <CheckIcon className="h-3 w-3" /> Mark as done
+                  </button>
+                </span>
               )}
               {!isActive && (
-                <button
-                  onClick={() => onRestore(insight.id)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-4 py-2 text-xs font-semibold text-muted transition-colors hover:border-primary hover:text-primary">
-                  <RotateIcon /> Restore to inbox
-                </button>
+                <span title={locked ? LOCKED_TOOLTIP : undefined}>
+                  <button
+                    onClick={() => !locked && onRestore(insight.id)}
+                    disabled={locked}
+                    className={`inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-4 py-2 text-xs font-semibold text-muted transition-colors ${locked ? 'pointer-events-none opacity-40' : 'hover:border-primary hover:text-primary'}`}>
+                    <RotateIcon /> Restore to inbox
+                  </button>
+                </span>
               )}
               <span className="ml-auto font-mono text-[10px] text-muted/60">{insight.dedupeKey}</span>
             </div>
@@ -588,7 +385,7 @@ function InsightsInbox() {
         }
         setActiveEntity(entity || null);
       } catch {
-        // Entity resolution is non-fatal — the demo feed renders without it.
+        // Entity resolution is non-fatal — the feed still loads user-scoped.
       }
     };
     loadEntity();
@@ -596,52 +393,69 @@ function InsightsInbox() {
     return () => window.removeEventListener('entitySwitch', loadEntity);
   }, []);
 
-  // Start empty and let the entity-resolution effect below populate the feed
-  // once activeEntity resolves — avoids a flash of the no-entity result.
   const [insights, setInsights] = useState([]);
+  const [lastRun, setLastRun] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('active');          // active | resolved | dismissed
   const [activeGroup, setActiveGroup] = useState('All');
   const [expandedId, setExpandedId] = useState(null);
   const [toast, setToast] = useState('');
 
-  // Reload the feed whenever the entity changes, so switching entities swaps
-  // the insight list (and resets read/dismissed state) instead of carrying the
-  // previous entity's cards over. Mock today; swap for the real per-entity
-  // fetch once the backend exists — the effect shape stays the same.
-  useEffect(() => {
-    setInsights(getInitialInsightsForEntity(activeEntity?.id));
-    setExpandedId(null);
-
-    // ── Backend version (uncomment once GET /api/insights exists) ──
-    // Add getInsights to the import at the top of this file. The `cancelled`
-    // guard drops out-of-order responses: when you switch entities quickly, a
-    // slow fetch for the OLD entity can resolve after the new one and overwrite
-    // the correct list — this prevents that.
-    //
-    // let cancelled = false;
-    // const userId = localStorage.getItem('userId');
-    // (async () => {
-    //   const rows = await getInsights(userId, activeEntity?.id).catch(() => []);
-    //   if (!cancelled) { setInsights(rows); setExpandedId(null); }
-    // })();
-    // return () => { cancelled = true; };
+  // Load the real feed whenever the entity changes. The endpoint returns a
+  // WRAPPED payload { insights, lastRun } — never map the response directly.
+  const refreshInsights = useCallback(async () => {
+    const userId = localStorage.getItem('userId');
+    if (!userId) {
+      setInsights([]);
+      setLastRun(null);
+      setLoading(false);
+      return;
+    }
+    try {
+      const data = await getInsights(userId, activeEntity?.id ?? null);
+      setInsights(data.insights || []);
+      setLastRun(data.lastRun || null);
+    } catch {
+      setInsights([]);
+      setLastRun(null);
+    } finally {
+      setLoading(false);
+    }
   }, [activeEntity?.id]);
+
+  useEffect(() => {
+    setLoading(true);
+    setExpandedId(null);
+    refreshInsights();
+  }, [refreshInsights]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2600); };
 
-  // ── Lifecycle transitions (these become PATCH /api/insights/{id}/state) ────
+  // Fire-and-forget server write behind every optimistic local transition.
+  const patchState = (id, payload) => {
+    const userId = localStorage.getItem('userId');
+    if (!userId) return;
+    updateInsightState(id, payload, userId).catch(() => {
+      // Non-fatal: the optimistic UI stays; the server reconciles on next load.
+    });
+  };
+
+  // ── Lifecycle transitions (PATCH /api/insights/{id}/state) ────────────────
   const dismissInsight = (id, reason) => {
     setInsights(p => p.map(i => i.id === id ? { ...i, state: 'dismissed', dismissReason: reason } : i));
     if (expandedId === id) setExpandedId(null);
+    patchState(id, { state: 'dismissed', dismissReason: reason });
     showToast(reason === 'Snoozed for 2 weeks' ? 'Snoozed — it will come back in 2 weeks' : 'Dismissed for this year');
   };
   const markDone = (id) => {
     setInsights(p => p.map(i => i.id === id ? { ...i, state: 'actioned', resolvedNote: 'Marked as done by you.' } : i));
     if (expandedId === id) setExpandedId(null);
+    patchState(id, { state: 'actioned' });
     showToast('Moved to Resolved');
   };
   const restoreInsight = (id) => {
     setInsights(p => p.map(i => i.id === id ? { ...i, state: 'read', dismissReason: undefined, resolvedNote: undefined } : i));
+    patchState(id, { state: 'read' });
     showToast('Restored to inbox');
     setTab('active');
   };
@@ -650,6 +464,7 @@ function InsightsInbox() {
     setExpandedId(opening ? insight.id : null);
     if (opening && insight.state === 'new') {
       setInsights(p => p.map(i => i.id === insight.id ? { ...i, state: 'read' } : i));
+      patchState(insight.id, { state: 'read' });
     }
   };
   // Deep-link: every card's primary action lands the user where the fix happens.
@@ -674,7 +489,7 @@ function InsightsInbox() {
       // Digest pinned first, then severity, then closest deadline, then RM impact
       if (a.insightType === 'digest') return -1;
       if (b.insightType === 'digest') return 1;
-      const sev = SEVERITY_META[a.severity].rank - SEVERITY_META[b.severity].rank;
+      const sev = (SEVERITY_META[a.severity] || SEVERITY_META.info).rank - (SEVERITY_META[b.severity] || SEVERITY_META.info).rank;
       if (sev !== 0) return sev;
       const da = daysUntil(a.deadlineDate) ?? Infinity;
       const db = daysUntil(b.deadlineDate) ?? Infinity;
@@ -708,11 +523,18 @@ function InsightsInbox() {
             <p className="mt-1 text-xs text-muted">
               {activeEntity ? `Watching ${activeEntity.name}'s tax position` : 'Your tax position, watched continuously'} — insights appear when something needs you.
             </p>
-            {/* Engine heartbeat — mirrors the future insight_runs record */}
-            <p className="mt-1.5 flex items-center gap-1.5 text-[10px] text-muted">
-              <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
-              Last analysed {timeAgo(DEMO_LAST_RUN.ranAt)} · trigger: {DEMO_LAST_RUN.trigger} · {DEMO_LAST_RUN.documentsAnalysed} documents → {DEMO_LAST_RUN.signalsFound} signals
-            </p>
+            {/* Engine heartbeat — the latest insight_runs record */}
+            {lastRun ? (
+              <p className="mt-1.5 flex items-center gap-1.5 text-[10px] text-muted">
+                <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
+                Last analysed {timeAgo(lastRun.ranAt)} · trigger: {(lastRun.trigger || '').replace(/_/g, ' ')} · {lastRun.documentsAnalysed} documents → {lastRun.signalsFound} signals
+              </p>
+            ) : (
+              <p className="mt-1.5 flex items-center gap-1.5 text-[10px] text-muted">
+                <span className="h-1.5 w-1.5 rounded-full bg-muted" />
+                No analysis run yet — upload a document and the tax brain wakes up.
+              </p>
+            )}
           </div>
 
           {/* Stat strip */}
@@ -758,7 +580,14 @@ function InsightsInbox() {
         {/* ── Insight feed ── */}
         <div className="flex-1 overflow-y-auto min-h-0">
           <div className="space-y-2.5 pb-2">
-            {visible.length === 0 ? (
+            {loading ? (
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface py-16 text-center">
+                <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-background">
+                  <SparkleIcon className="h-5 w-5 text-muted" />
+                </div>
+                <p className="text-sm font-semibold text-headings">Loading your insights…</p>
+              </div>
+            ) : visible.length === 0 ? (
               <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface py-16 text-center">
                 <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-success-bg">
                   {tab === 'active' ? <CheckIcon className="h-5 w-5 text-success" /> : <InboxIcon className="h-5 w-5 text-muted" />}
