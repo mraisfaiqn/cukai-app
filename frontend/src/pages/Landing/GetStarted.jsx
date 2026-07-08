@@ -23,18 +23,21 @@ const MSIC_CODES = [
 
 // ── Shared UI primitives ────────────────────────────────────────────────────────
 
-const ProgressBar = ({ current, total, steps }) => (
+const ProgressBar = ({ current, total, title, description }) => (
   <div className="mb-3">
-    <div className="flex justify-between items-center mb-1.5">
-      <span className="text-xs text-[#64748B] font-medium">Step {current + 1} of {total}</span>
-      <span className="text-xs font-semibold text-[#0F172A]">{steps[current]?.label}</span>
+    <div className="flex items-start justify-between gap-3 mb-3">
+      <div>
+        <h2 className="text-sm font-bold text-headings mb-0.5">{title}</h2>
+        <p className="text-xs text-muted">{description}</p>
+      </div>
+      <span className="text-sm font-bold text-headings shrink-0">{current + 1}/{total}</span>
     </div>
     <div className="flex gap-1">
       {Array.from({ length: total }).map((_, i) => (
         <div
           key={i}
           className={`h-1 flex-1 rounded-full transition-all duration-500 ${
-            i <= current ? "bg-[#10B981]" : "bg-[#E2E8F0]"
+            i <= current ? "bg-primary" : "bg-border"
           }`}
         />
       ))}
@@ -49,19 +52,19 @@ const Card = ({ children }) => (
 );
 
 const NavButtons = ({ onBack, onNext, nextLabel = "Next", nextDisabled = false, showBack = true }) => (
-  <div className="flex justify-between items-center mt-4 pt-3 border-t border-[#F1F5F9]">
+  <div className="flex justify-between items-center mt-4 pt-3 border-t border-border">
     {showBack ? (
-      <button onClick={onBack} className="text-[#64748B] font-medium text-xs hover:text-[#0F172A] transition-colors px-2 py-1">
+      <button onClick={onBack} className="text-muted font-semibold text-xs hover:text-headings transition-colors px-2 py-3.5">
         Back
       </button>
     ) : <div />}
     <button
       onClick={onNext}
       disabled={nextDisabled}
-      className={`px-5 py-2 rounded-xl font-semibold text-xs transition-all duration-200 ${
+      className={`px-5 py-3.5 rounded-xl font-semibold text-xs transition-all duration-200 ${
         nextDisabled
-          ? "bg-[#D1FAE5] text-[#6EE7B7] cursor-not-allowed"
-          : "bg-[#10B981] hover:bg-[#0D9488] text-white shadow-sm hover:shadow-md"
+          ? "bg-primary-tint text-[#6EE7B7] cursor-not-allowed"
+          : "bg-primary hover:bg-primary-hover text-white shadow-sm hover:shadow-md"
       }`}
     >
       {nextLabel}
@@ -70,17 +73,17 @@ const NavButtons = ({ onBack, onNext, nextLabel = "Next", nextDisabled = false, 
 );
 
 const SectionLabel = ({ children }) => (
-  <p className="text-[9px] font-bold tracking-widest text-[#94A3B8] uppercase mb-2 mt-3 first:mt-0">{children}</p>
+  <p className="text-xs font-semibold tracking-[0.06em] text-muted mb-2 mt-3 first:mt-0">{children}</p>
 );
 
 const CheckItem = ({ label, sublabel, checked, onChange }) => (
   <label
     onClick={(e) => { e.preventDefault(); onChange(); }}
-    className="flex items-start gap-3 cursor-pointer py-1.5 group select-none"
+    className="flex items-center gap-3 cursor-pointer py-1.5 group select-none"
   >
     <div
-      className={`mt-0.5 w-4 h-4 rounded border-2 flex-shrink-0 flex items-center justify-center transition-all duration-150 ${
-        checked ? "bg-[#10B981] border-[#10B981]" : "border-[#CBD5E1] group-hover:border-[#10B981]"
+      className={`w-4 h-4 rounded border-2 flex-shrink-0 flex items-center justify-center transition-all duration-150 ${
+        checked ? "bg-primary border-primary" : "border-[#CBD5E1] group-hover:border-primary"
       }`}
     >
       {checked && (
@@ -90,21 +93,21 @@ const CheckItem = ({ label, sublabel, checked, onChange }) => (
       )}
     </div>
     <div>
-      <span className="text-xs font-medium text-[#0F172A]">{label}</span>
-      {sublabel && <p className="text-[10px] text-[#94A3B8] mt-0.5">{sublabel}</p>}
+      <span className="text-sm font-normal text-headings">{label}</span>
+      {sublabel && <p className="text-xs text-muted mt-0.5">{sublabel}</p>}
     </div>
   </label>
 );
 
 const Toggle = ({ label, value, onChange }) => (
-  <div className="flex items-center justify-between p-3 rounded-xl border border-[#E2E8F0] bg-[#F8FAFC]">
-    <span className="text-xs font-medium text-[#0F172A]">{label}</span>
+  <div className="flex items-center justify-between p-3 rounded-xl border border-border bg-[#F8FAFC]">
+    <span className="text-sm font-normal text-headings">{label}</span>
     <button
       onClick={() => onChange(!value)}
-      className={`relative w-9 h-5 rounded-full transition-all duration-200 ${value ? "bg-[#10B981]" : "bg-[#CBD5E1]"}`}
+      className={`relative w-9 h-5 rounded-full transition-all duration-200 ${value ? "bg-primary" : "bg-[#CBD5E1]"}`}
     >
       <span
-        className="absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all duration-200"
+        className="absolute top-0.5 w-4 h-4 bg-surface rounded-full shadow transition-all duration-200"
         style={{ left: value ? "calc(100% - 18px)" : "2px" }}
       />
     </button>
@@ -124,7 +127,7 @@ const getStrength = (pw) => {
   return score;
 };
 const strengthLabel = ["", "Weak", "Fair", "Good", "Strong"];
-const strengthColor = ["", "#EF4444", "#F59E0B", "#3B82F6", "#10B981"];
+const strengthColor = ["", "#DC2626", "#F59E0B", "#3B82F6", "#0D9488"];
 
 // ── Step components ─────────────────────────────────────────────────────────────
 
@@ -135,44 +138,42 @@ function Step0_Account({ data, setData, onNext }) {
 
   return (
     <Card>
-      <h2 className="text-base font-bold text-[#0F172A] mb-0.5">Create your account</h2>
-      <p className="text-xs text-[#64748B] mb-3">Your details are safe with us — 256-bit encrypted.</p>
 
       <div className="space-y-3">
         <div>
-          <label className="block text-[10px] font-semibold text-[#64748B] uppercase tracking-wide mb-1">Full Name</label>
+          <label className="block text-xs font-semibold tracking-[0.06em] text-muted mb-2">Full Name</label>
           <input
             type="text"
             placeholder="e.g. Amirul Hakim"
             value={data.fullName || ""}
             onChange={e => setData({ ...data, fullName: e.target.value })}
-            className="w-full px-3 py-2 rounded-xl border border-[#E2E8F0] text-xs text-[#0F172A] placeholder-[#CBD5E1] focus:outline-none focus:ring-2 focus:ring-[#10B981] focus:border-transparent transition"
+            className="w-full px-4 py-3 rounded-xl border-[1.5px] border-border text-[13.5px] text-headings placeholder-[#CBD5E1] focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition"
           />
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-[#64748B] uppercase tracking-wide mb-1">Email Address</label>
+          <label className="block text-xs font-semibold tracking-[0.06em] text-muted mb-2">Email Address</label>
           <input
             type="email"
             placeholder="you@example.com"
             value={data.email || ""}
             onChange={e => setData({ ...data, email: e.target.value })}
-            className="w-full px-3 py-2 rounded-xl border border-[#E2E8F0] text-xs text-[#0F172A] placeholder-[#CBD5E1] focus:outline-none focus:ring-2 focus:ring-[#10B981] focus:border-transparent transition"
+            className="w-full px-4 py-3 rounded-xl border-[1.5px] border-border text-[13.5px] text-headings placeholder-[#CBD5E1] focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition"
           />
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-[#64748B] uppercase tracking-wide mb-1">Password</label>
+          <label className="block text-xs font-semibold tracking-[0.06em] text-muted mb-2">Password</label>
           <div className="relative">
             <input
               type={showPw ? "text" : "password"}
               placeholder="Min. 8 characters"
               value={data.password || ""}
               onChange={e => setData({ ...data, password: e.target.value })}
-              className="w-full px-3 py-2 pr-10 rounded-xl border border-[#E2E8F0] text-xs text-[#0F172A] placeholder-[#CBD5E1] focus:outline-none focus:ring-2 focus:ring-[#10B981] focus:border-transparent transition"
+              className="w-full px-4 py-3 pr-10 rounded-xl border-[1.5px] border-border text-[13.5px] text-headings placeholder-[#CBD5E1] focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition"
             />
             <button
               type="button"
               onClick={() => setShowPw(!showPw)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-[#94A3B8] hover:text-[#64748B] text-[10px]"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-[#94A3B8] hover:text-muted text-[10px]"
             >
               {showPw ? "Hide" : "Show"}
             </button>
@@ -193,15 +194,15 @@ function Step0_Account({ data, setData, onNext }) {
           )}
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-[#64748B] uppercase tracking-wide mb-1">
-            Phone Number <span className="normal-case font-normal text-[#94A3B8]">(optional)</span>
+          <label className="block text-xs font-semibold tracking-[0.06em] text-muted mb-2">
+            Phone Number <span className="font-normal text-[#94A3B8]">(optional)</span>
           </label>
           <input
             type="tel"
             placeholder="+60 12-345 6789"
             value={data.phone || ""}
             onChange={e => setData({ ...data, phone: e.target.value })}
-            className="w-full px-3 py-2 rounded-xl border border-[#E2E8F0] text-xs text-[#0F172A] placeholder-[#CBD5E1] focus:outline-none focus:ring-2 focus:ring-[#10B981] focus:border-transparent transition"
+            className="w-full px-4 py-3 rounded-xl border-[1.5px] border-border text-[13.5px] text-headings placeholder-[#CBD5E1] focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition"
           />
         </div>
       </div>
@@ -209,11 +210,11 @@ function Step0_Account({ data, setData, onNext }) {
       <NavButtons showBack={false} onNext={onNext} nextDisabled={!valid} />
 
       {/* Log in link — shown only when showBack is false (first step) */}
-      <p className="mt-3 text-center text-[11px] text-[#94A3B8]">
+      <p className="mt-3 text-center text-[12px] text-[#94A3B8]">
         Already have an account?{" "}
         <NavLink
           to="/login"
-          className="text-[#94A3B8] underline underline-offset-2 hover:text-[#64748B] transition-colors"
+          className="text-[#94A3B8] underline underline-offset-2 hover:text-muted transition-colors"
         >
           Log in
         </NavLink>
@@ -227,16 +228,14 @@ function Step2_Income({ data, setData, onBack, onNext }) {
 
   return (
     <Card>
-      <h2 className="text-base font-bold text-[#0F172A] mb-0.5">What's your business income?</h2>
-      <p className="text-xs text-[#64748B] mb-3">Enter your gross income before deductions.</p>
 
-      <div className="flex bg-[#F1F5F9] rounded-xl p-1 mb-3 w-fit">
+      <div className="flex bg-border rounded-xl p-1 mb-3 w-fit">
         {["monthly", "annual"].map(m => (
           <button
             key={m}
             onClick={() => setMode(m)}
             className={`px-4 py-1 rounded-lg text-xs font-medium transition-all duration-150 capitalize ${
-              mode === m ? "bg-white text-[#0F172A] shadow-sm" : "text-[#64748B] hover:text-[#0F172A]"
+              mode === m ? "bg-surface text-headings shadow-sm" : "text-muted hover:text-headings"
             }`}
           >
             {m.charAt(0).toUpperCase() + m.slice(1)}
@@ -245,16 +244,16 @@ function Step2_Income({ data, setData, onBack, onNext }) {
       </div>
 
       <div>
-        <label className="block text-[9px] font-bold tracking-widest text-[#94A3B8] uppercase mb-1">
+        <label className="block text-xs font-semibold tracking-[0.06em] text-muted mb-1">
           {mode === "monthly" ? "Monthly" : "Annual"} Business Income
         </label>
-        <div className="flex items-center border border-[#E2E8F0] rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-[#10B981]">
-          <span className="px-3 py-2 text-xs font-semibold text-[#64748B] bg-[#F8FAFC] border-r border-[#E2E8F0]">RM</span>
+        <div className="flex items-center border-[1.5px] border-border rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-primary">
+          <span className="px-4 py-3 text-[13.5px] font-semibold text-muted bg-[#F8FAFC] border-r border-border">RM</span>
           <input
             type="number" min="0" step="0.01" placeholder="0.00"
             value={data.businessIncome || ""}
             onChange={e => setData({ ...data, businessIncome: e.target.value })}
-            className="flex-1 px-3 py-2 text-xs text-[#0F172A] focus:outline-none"
+            className="flex-1 px-4 py-3 text-[13.5px] text-headings focus:outline-none"
           />
         </div>
       </div>
@@ -267,16 +266,14 @@ function Step2_Income({ data, setData, onBack, onNext }) {
 function Step3_Personal({ data, setData, onBack, onNext }) {
   return (
     <Card>
-      <h2 className="text-base font-bold text-[#0F172A] mb-0.5">Personal & Family</h2>
-      <p className="text-xs text-[#64748B] mb-3">Marital status, children, and dependents for tax relief.</p>
 
       <div className="space-y-3">
         <div>
-          <SectionLabel>Marital Status</SectionLabel>
+          <label className="block text-xs font-semibold tracking-[0.06em] text-muted mb-2">Marital Status</label>
           <select
             value={data.marital || ""}
             onChange={e => setData({ ...data, marital: e.target.value })}
-            className="w-full px-3 py-2 rounded-xl border border-[#E2E8F0] text-xs text-[#0F172A] bg-white focus:outline-none focus:ring-2 focus:ring-[#10B981] appearance-none"
+            className="w-full px-4 py-3 rounded-xl border-[1.5px] border-border text-[13.5px] text-headings bg-surface focus:outline-none focus:ring-2 focus:ring-primary appearance-none"
             style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2364748B' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 16px center" }}
           >
             <option value="">Select status</option>
@@ -286,7 +283,7 @@ function Step3_Personal({ data, setData, onBack, onNext }) {
           </select>
         </div>
 
-        <div className="border-t border-[#F1F5F9] pt-3">
+        <div className="border-t border-border pt-3">
           <CheckItem
             label="I have a disability"
             sublabel="OKU card holder (up to RM6,000 additional relief)"
@@ -295,7 +292,7 @@ function Step3_Personal({ data, setData, onBack, onNext }) {
           />
         </div>
 
-        <div className="border-t border-[#F1F5F9] pt-3">
+        <div className="border-t border-border pt-3">
           <Toggle
             label="Do you have children?"
             value={!!data.hasChildren}
@@ -303,12 +300,12 @@ function Step3_Personal({ data, setData, onBack, onNext }) {
           />
           {data.hasChildren && (
             <div className="mt-2">
-              <label className="block text-[9px] font-bold tracking-widest text-[#94A3B8] uppercase mb-1">Number of Children</label>
+              <label className="block text-xs font-semibold tracking-[0.06em] text-muted mb-1">Number of Children</label>
               <input
                 type="number" min="1" max="20" placeholder="e.g. 2"
                 value={data.numChildren || ""}
                 onChange={e => setData({ ...data, numChildren: e.target.value })}
-                className="w-24 px-3 py-2 rounded-xl border border-[#E2E8F0] text-xs focus:outline-none focus:ring-2 focus:ring-[#10B981]"
+                className="w-24 px-4 py-3 rounded-xl border-[1.5px] border-border text-[13.5px] focus:outline-none focus:ring-2 focus:ring-primary"
               />
               <CheckItem
                 label="Child(ren) with disability"
@@ -319,7 +316,7 @@ function Step3_Personal({ data, setData, onBack, onNext }) {
           )}
         </div>
 
-        <div className="border-t border-[#F1F5F9] pt-3">
+        <div className="border-t border-border pt-3">
           <CheckItem
             label="Supporting parents or grandparents"
             sublabel="Medical expenses, special needs, or examination costs"
@@ -339,10 +336,8 @@ function Step4_Savings({ data, setData, onBack, onNext }) {
 
   return (
     <Card>
-      <h2 className="text-base font-bold text-[#0F172A] mb-0.5">Savings & Insurance</h2>
-      <p className="text-xs text-[#64748B] mb-3">Select the savings and insurance contributions you have.</p>
 
-      <div className="divide-y divide-[#F1F5F9]">
+      <div className="divide-y divide-border">
         <div className="pb-2">
           <SectionLabel>EPF, Retirement &amp; Life Insurance</SectionLabel>
           {/* Each item has its own key — all three feed into one DB flag (hasEpfLifeInsurance) */}
@@ -382,36 +377,34 @@ function Step5_BusinessProfile({ data, setData, onBack, onNext }) {
 
   return (
     <Card>
-      <h2 className="text-base font-bold text-[#0F172A] mb-0.5">Your Business Profile</h2>
-      <p className="text-xs text-[#64748B] mb-3">Help us tailor tax reliefs specific to your solopreneur situation.</p>
 
       <div className="space-y-3">
         <div>
           <div className="flex gap-3">
             {/* Left column */}
             <div className="flex-1 flex flex-col gap-1.5">
-              <span className="text-[9px] font-bold tracking-widest text-[#94A3B8] uppercase">SSM Reg. No.</span>
+              <span className="text-xs font-semibold tracking-[0.06em] text-muted">SSM Reg. No.</span>
               <input
                 type="text"
                 placeholder="e.g. 202301012345"
                 value={data.ssmNumber || ""}
                 onChange={e => setData({ ...data, ssmNumber: e.target.value })}
-                className="w-full px-3 py-2 rounded-xl border border-[#E2E8F0] text-xs text-[#0F172A] placeholder-[#CBD5E1] focus:outline-none focus:ring-2 focus:ring-[#10B981] focus:border-transparent transition"
+                className="w-full h-[46px] px-4 rounded-xl border-[1.5px] border-border text-[13.5px] text-headings placeholder-[#CBD5E1] focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition"
               />
             </div>
 
             {/* Right column */}
             <div className="flex flex-col items-center gap-1.5">
-              <span className="text-[9px] font-bold tracking-widest text-[#94A3B8] uppercase">SST / GST</span>
+              <span className="text-xs font-semibold tracking-[0.06em] text-muted">SST / GST</span>
               <button
                 onClick={() => setData({ ...data, sst: !data.sst })}
-                className={`flex items-center justify-center px-4 py-2 rounded-xl border-2 transition-all duration-150 h-[34px] ${
-                  data.sst ? "border-[#10B981] bg-[#F0FDF9]" : "border-[#E2E8F0] bg-[#F8FAFC] hover:border-[#10B981]"
+                className={`flex items-center justify-center h-[46px] px-4 rounded-xl border-[1.5px] transition-all duration-150 ${
+                  data.sst ? "border-primary bg-primary-tint" : "border-border bg-[#F8FAFC] hover:border-primary"
                 }`}
               >
-                <div className={`relative w-8 h-4 rounded-full transition-all duration-200 ${data.sst ? "bg-[#10B981]" : "bg-[#CBD5E1]"}`}>
+                <div className={`relative w-8 h-4 rounded-full transition-all duration-200 ${data.sst ? "bg-primary" : "bg-[#CBD5E1]"}`}>
                   <span
-                    className="absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-all duration-200"
+                    className="absolute top-0.5 w-3 h-3 bg-surface rounded-full shadow transition-all duration-200"
                     style={{ left: data.sst ? "calc(100% - 14px)" : "2px" }}
                   />
                 </div>
@@ -420,8 +413,8 @@ function Step5_BusinessProfile({ data, setData, onBack, onNext }) {
           </div>
         </div>
 
-        <div className="border-t border-[#F1F5F9] pt-3">
-          <SectionLabel>Industry / Business Type</SectionLabel>
+        <div className="border-t border-border pt-3">
+          <label className="block text-xs font-semibold tracking-[0.06em] text-muted mb-2">Industry / Business Type</label>
           <select
             value={data.industryCode || ""}
             onChange={e => {
@@ -433,7 +426,7 @@ function Step5_BusinessProfile({ data, setData, onBack, onNext }) {
                 industryActivity: selected?.activity || "",
               });
             }}
-            className="w-full px-3 py-2 rounded-xl border border-[#E2E8F0] text-xs text-[#0F172A] bg-white focus:outline-none focus:ring-2 focus:ring-[#10B981] appearance-none"
+            className="w-full px-4 py-3 rounded-xl border-[1.5px] border-border text-[13.5px] text-headings bg-surface focus:outline-none focus:ring-2 focus:ring-primary appearance-none"
             style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2364748B' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 16px center" }}
           >
             <option value="">Select your industry</option>
@@ -441,12 +434,12 @@ function Step5_BusinessProfile({ data, setData, onBack, onNext }) {
           </select>
           {data.industryCode && (
             <p className="text-[10px] text-[#94A3B8] mt-1.5">
-              MSIC code <span className="font-semibold text-[#0F172A]">{data.industryCode}</span> will be saved to your business profile.
+              MSIC code <span className="font-semibold text-headings">{data.industryCode}</span> will be saved to your business profile.
             </p>
           )}
         </div>
 
-        <div className="border-t border-[#F1F5F9] pt-3">
+        <div className="border-t border-border pt-3">
           <SectionLabel>Business Expenses You Track</SectionLabel>
           {[
             ["homeOffice", "Home office / co-working space"],
@@ -487,15 +480,15 @@ function StepUpload({ onBack, onNext, onSkip }) {
             { icon: "🛡", label: "Relief matched" },
           ].map(({ icon, label }) => (
             <div key={label} className="flex flex-col items-center gap-1">
-              <div className="w-9 h-9 rounded-full bg-[#D1FAE5] flex items-center justify-center text-[#10B981] text-sm">
+              <div className="w-9 h-9 rounded-full bg-primary-tint flex items-center justify-center text-primary text-sm">
                 {icon}
               </div>
-              <span className="text-[10px] text-[#64748B]">{label}</span>
+              <span className="text-[11px] text-muted">{label}</span>
             </div>
           ))}
         </div>
-        <h2 className="text-base font-bold text-[#0F172A]">Upload your first receipt</h2>
-        <p className="text-xs text-[#64748B] mt-0.5">Try it out — snap a photo or upload any receipt from 2025</p>
+        <h2 className="text-sm font-bold text-headings">Upload your first receipt</h2>
+        <p className="text-xs text-muted mt-0.5">Try it out — snap a photo or upload any receipt from 2025</p>
       </div>
 
       <div
@@ -503,32 +496,32 @@ function StepUpload({ onBack, onNext, onSkip }) {
         onDragLeave={() => setDragging(false)}
         onDrop={e => { e.preventDefault(); setDragging(false); }}
         className={`border-2 border-dashed rounded-2xl p-5 text-center transition-all duration-150 ${
-          dragging ? "border-[#10B981] bg-[#F0FDF9]" : "border-[#CBD5E1] hover:border-[#10B981] bg-[#F8FAFC]"
+          dragging ? "border-primary bg-primary-tint" : "border-[#CBD5E1] hover:border-primary bg-[#F8FAFC]"
         }`}
       >
-        <div className="w-9 h-9 rounded-full border border-[#E2E8F0] flex items-center justify-center mx-auto mb-2 bg-white">
+        <div className="w-9 h-9 rounded-full border border-border flex items-center justify-center mx-auto mb-2 bg-surface">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748B" strokeWidth="1.5">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="17 8 12 3 7 8"/>
             <line x1="12" y1="3" x2="12" y2="15"/>
           </svg>
         </div>
-        <p className="text-xs font-semibold text-[#0F172A]">Drag and drop your files here</p>
-        <p className="text-xs text-[#64748B]">or <span className="text-[#10B981] font-medium cursor-pointer hover:underline">click to browse</span></p>
+        <p className="text-xs font-semibold text-headings">Drag and drop your files here</p>
+        <p className="text-xs text-muted">or <span className="text-primary font-medium cursor-pointer hover:underline">click to browse</span></p>
         <p className="text-[10px] text-[#94A3B8] mt-1">Supports PDF, JPG, PNG, HEIC up to 50MB</p>
       </div>
 
       <div className="mt-3">
-        <p className="text-[9px] font-bold tracking-widest text-[#94A3B8] uppercase mb-1.5">What you can upload</p>
+        <p className="text-xs font-semibold tracking-[0.06em] text-muted mb-1.5">What you can upload</p>
         <div className="flex flex-wrap gap-1.5">
           {categories.map(c => (
-            <span key={c} className="text-[10px] px-2.5 py-1 rounded-full bg-[#F1F5F9] text-[#475569] font-medium">{c}</span>
+            <span key={c} className="text-[10px] px-2.5 py-1 rounded-full bg-border text-muted font-medium">{c}</span>
           ))}
         </div>
       </div>
 
       <div className="mt-3 flex justify-center">
-        <button onClick={onSkip || onNext} className="text-xs text-[#94A3B8] hover:text-[#64748B] transition-colors">
+        <button onClick={onSkip || onNext} className="text-xs text-[#94A3B8] hover:text-muted transition-colors">
           Skip for now
         </button>
       </div>
@@ -536,37 +529,23 @@ function StepUpload({ onBack, onNext, onSkip }) {
   );
 }
 
-function StepSavings({ data, onNext }) {
-  const base = 660;
-  const extra =
-    (data.epf            ? 150 : 0) +
-    (data.lifeInsurance  ?  80 : 0) +
-    (data.prs            ? 100 : 0) +
-    (data.medInsurance   ?  60 : 0) +
-    (data.sspn           ?  40 : 0) +
-    (data.hasChildren    ? 120 : 0) +
-    (data.lifestylePurchases ? 80 : 0);
-  const total = base + extra;
-
+function StepSavings({ onNext }) {
   return (
     <Card>
       <div className="text-center py-4">
-        <div className="w-12 h-12 rounded-full bg-[#D1FAE5] flex items-center justify-center mx-auto mb-3">
+        <div className="w-12 h-12 rounded-full bg-primary-tint flex items-center justify-center mx-auto mb-3">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <path d="M20 6L9 17l-5-5" stroke="#10B981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M20 6L9 17l-5-5" stroke="#0D9488" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
-        <p className="text-sm font-bold text-[#0F172A] mb-1">Account created!</p>
-        <p className="text-xs font-semibold text-[#10B981] mb-1.5">Your estimated tax savings</p>
-        <p className="text-4xl font-extrabold text-[#0F172A] mb-3 tracking-tight">RM {total.toLocaleString()}</p>
-        <p className="text-xs text-[#64748B] max-w-xs mx-auto leading-relaxed">
-          Based on your profile, you could save up to this amount in tax reliefs. Upload receipts to get a more accurate figure.
+        <h2 className="text-sm font-bold text-headings mb-3">Account created!</h2>
+        <p className="text-xs text-muted max-w-xs mx-auto leading-relaxed">
+          You're all set. Let's get your reliefs and receipts sorted so you claim everything you're entitled to.
         </p>
-        <p className="text-[10px] text-[#94A3B8] mt-3">This is an estimate. Actual amounts may vary.</p>
       </div>
       <button
         onClick={onNext}
-        className="w-full mt-3 py-3 bg-[#10B981] hover:bg-[#0D9488] text-white font-semibold rounded-xl text-xs transition-all duration-200 shadow-sm hover:shadow-md flex items-center justify-center gap-2"
+        className="w-full mt-3 py-3.5 bg-primary hover:bg-primary-hover text-white font-semibold rounded-xl text-xs transition-all duration-200 shadow-sm hover:shadow-md flex items-center justify-center gap-2"
       >
         Let's start claiming your savings <span>→</span>
       </button>
@@ -672,43 +651,55 @@ export default function GetStarted({ onLogin }) {
 
   // Single registration flow — every account creates one person with one entity.
   // Additional entities are created later from Account Settings (ManageProfile).
-  const stepsConfig = [
-    { label: "Account" },
-    { label: "Income" },
-    { label: "Personal & Family" },
-    { label: "Savings & Insurance" },
-    { label: "Business Profile" },
-  ];
-
   const WIZARD_STEPS = {};
 
   WIZARD_STEPS[0] = (
     <>
-      <ProgressBar current={0} total={5} steps={stepsConfig} />
+      <ProgressBar
+        current={0} total={5}
+        title="Create your account"
+        description="Your details are safe with us."
+      />
       <Step0_Account data={data} setData={setData} onNext={() => setStep(1)} />
     </>
   );
   WIZARD_STEPS[1] = (
     <>
-      <ProgressBar current={1} total={5} steps={stepsConfig} />
+      <ProgressBar
+        current={1} total={5}
+        title="What's your business income?"
+        description="Enter your gross income before deductions."
+      />
       <Step2_Income data={data} setData={setData} onBack={() => setStep(0)} onNext={() => setStep(2)} />
     </>
   );
   WIZARD_STEPS[2] = (
     <>
-      <ProgressBar current={2} total={5} steps={stepsConfig} />
+      <ProgressBar
+        current={2} total={5}
+        title="Personal & Family"
+        description="Marital status, children, and dependents for tax relief."
+      />
       <Step3_Personal data={data} setData={setData} onBack={() => setStep(1)} onNext={() => setStep(3)} />
     </>
   );
   WIZARD_STEPS[3] = (
     <>
-      <ProgressBar current={3} total={5} steps={stepsConfig} />
+      <ProgressBar
+        current={3} total={5}
+        title="Savings & Insurance"
+        description="Select the savings and insurance contributions you have."
+      />
       <Step4_Savings data={data} setData={setData} onBack={() => setStep(2)} onNext={() => setStep(4)} />
     </>
   );
   WIZARD_STEPS[4] = (
     <>
-      <ProgressBar current={4} total={5} steps={stepsConfig} />
+      <ProgressBar
+        current={4} total={5}
+        title="Your Business Profile"
+        description="Help us tailor tax reliefs specific to your solopreneur situation."
+      />
       <Step5_BusinessProfile
         data={data}
         setData={setData}
@@ -719,36 +710,36 @@ export default function GetStarted({ onLogin }) {
     </>
   );
   WIZARD_STEPS[5] = <StepUpload onBack={() => setStep(4)} onNext={() => setStep(6)} />;
-  WIZARD_STEPS[6] = <StepSavings data={data} onNext={() => { onLogin(); navigate("/overview"); }} />;
+  WIZARD_STEPS[6] = <StepSavings onNext={() => { onLogin(); navigate("/overview"); }} />;
 
   const currentView = WIZARD_STEPS[step];
 
   return (
-    <div className="w-screen h-screen bg-[#E8ECF4] flex items-center justify-center px-4 overflow-hidden">
-      <div className="w-full max-w-[440px] bg-white rounded-[20px] shadow-[0_4px_32px_rgba(15,23,42,0.10)] px-7 py-6 flex flex-col">
+    <div className="w-screen h-screen bg-background flex items-center justify-center px-4 overflow-hidden">
+      <div className="w-full max-w-[440px] bg-surface rounded-[20px] shadow-[0_4px_32px_rgba(15,23,42,0.10)] px-7 py-6 flex flex-col">
         {/* Logo */}
         <div className="flex items-center justify-center gap-2 mb-1">
-          <img src={cukaiLogo} alt="Cukai.ai logo" className="h-8 w-8 shrink-0" />
-          <span className="select-none text-lg font-bold tracking-tight text-[#0F172A]">
-            cukai<span className="text-[#10B981]">.</span><span className="font-light text-[#64748B]">ai</span>
+          <img src={cukaiLogo} alt="Cukai.ai logo" className="h-10 w-10 shrink-0" />
+          <span className="select-none text-xl font-bold tracking-tight text-headings">
+            cukai<span className="text-primary">.</span><span className="font-light text-muted">ai</span>
           </span>
         </div>
 
         {/* Error Alert Banner */}
         {error && (
-          <div className="mb-3 p-2.5 rounded-xl bg-red-50 text-red-600 text-[11px] font-medium border border-red-100 animate-fade-in">
+          <div className="mb-3 p-2.5 rounded-xl bg-red-50 text-critical text-[11px] font-medium border border-red-100 animate-fade-in">
             <p>⚠️ {error}</p>
             {error.toLowerCase().includes("email") && (
               <div className="flex gap-2 mt-2">
                 <button
                   onClick={() => { setError(null); setStep(0); }}
-                  className="px-3 py-1 rounded-lg bg-white border border-red-200 text-red-600 text-[10px] font-semibold hover:bg-red-50 transition-colors"
+                  className="px-3 py-1 rounded-lg bg-surface border border-red-200 text-critical text-xs font-semibold hover:bg-red-50 transition-colors"
                 >
                   ← Change email
                 </button>
                 <button
                   onClick={() => navigate("/login")}
-                  className="px-3 py-1 rounded-lg bg-red-600 text-white text-[10px] font-semibold hover:bg-red-700 transition-colors"
+                  className="px-3 py-1 rounded-lg bg-critical text-white text-xs font-semibold hover:bg-red-700 transition-colors"
                 >
                   Log in instead
                 </button>
@@ -757,7 +748,7 @@ export default function GetStarted({ onLogin }) {
             {!error.toLowerCase().includes("email") && (
               <button
                 onClick={() => setError(null)}
-                className="mt-2 px-3 py-1 rounded-lg bg-white border border-red-200 text-red-600 text-[10px] font-semibold hover:bg-red-50 transition-colors"
+                className="mt-2 px-3 py-1 rounded-lg bg-surface border border-red-200 text-critical text-xs font-semibold hover:bg-red-50 transition-colors"
               >
                 Dismiss
               </button>
@@ -771,7 +762,7 @@ export default function GetStarted({ onLogin }) {
         </div>
         
         {loading && (
-          <div className="text-center text-[10px] font-semibold text-[#10B981] mt-2 animate-pulse">
+          <div className="text-center text-[10px] font-semibold text-primary mt-2 animate-pulse">
             Processing secure registration...
           </div>
         )}

@@ -134,7 +134,7 @@ function Hero() {
 
   return (
     /* Main wrapper container */
-    <div className="snap-start w-full h-screen flex flex-col justify-between overflow-hidden bg-[#F8F9FF] relative bg-[linear-gradient(to_right,rgba(15,23,42,.03)_1px,transparent_1px),linear-gradient(to_bottom,rgba(15,23,42,.03)_1px,transparent_1px)] bg-[size:40px_40px]">
+    <div className="snap-start w-full h-screen flex flex-col justify-between overflow-hidden bg-background relative bg-[linear-gradient(to_right,rgba(15,23,42,.03)_1px,transparent_1px),linear-gradient(to_bottom,rgba(15,23,42,.03)_1px,transparent_1px)] bg-[size:40px_40px]">
       {/* Radial glow background asset */}
       <div className="absolute right-0 top-1/2 -translate-y-1/2 w-[800px] h-[800px] rounded-full -z-10 pointer-events-none bg-[rgba(204,251,241,0.4)] blur-[100px] animate-[pulseRadial_8s_ease-in-out_infinite]" />
 
@@ -340,7 +340,7 @@ function StepCard({ num, n, icon, color, title, desc, badge, badgeColor, badgeIc
       </div>
       <h3 className="text-base font-semibold text-slate-900 mb-2">{title}</h3>
       <p className="text-sm leading-relaxed text-slate-600 mb-4">{desc}</p>
-      <div className="mt-auto inline-flex items-center gap-2 bg-[#F8F9FF] px-3 py-1.5 rounded-full border border-slate-200/50 text-xs font-medium text-slate-600">
+      <div className="mt-auto inline-flex items-center gap-2 bg-background px-3 py-1.5 rounded-full border border-slate-200/50 text-xs font-medium text-slate-600">
         {badgeIcon && <Icon name={badgeIcon} className="text-xs" />}
         <span style={badgeColor ? { color: badgeColor } : {}}>{badge}</span>
       </div>
@@ -359,7 +359,7 @@ function HowItWorks() {
   ];
 
   return (
-    <section id="how-it-works" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 py-10 bg-[#F8F9FF] overflow-hidden">
+    <section id="how-it-works" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 py-10 bg-background overflow-hidden">
       <div className="max-w-[1280px] mx-auto w-full flex flex-col gap-6">
         <div ref={ref} className={`flex flex-col items-center text-center max-w-3xl mx-auto transition-all duration-700 ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-5'}`}>
           <AiBadge>✦ The Process</AiBadge>
@@ -408,7 +408,7 @@ function Features() {
   const [ref, visible] = useReveal(0.05);
 
   return (
-    <section id="features" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 pt-16 bg-[#F8F9FF] overflow-hidden">
+    <section id="features" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 pt-16 bg-background overflow-hidden">
       <div className="max-w-[1280px] mx-auto w-full flex flex-col gap-6">
 
         {/* header block */}
@@ -642,7 +642,7 @@ function CukaiBotShowcase() {
   return (
     <section
       id="cukaibot"
-      className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 pt-16 bg-[#F8FAFC] relative overflow-hidden"
+      className="snap-start bg-background h-screen flex flex-col justify-center px-6 md:px-12 pt-16 bg-[#F8FAFC] relative overflow-hidden"
     >
       <div className="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-l from-[#EFF4FF] to-transparent opacity-50 pointer-events-none" />
 
@@ -687,7 +687,7 @@ function CukaiBotShowcase() {
           <ShowcaseReveal delay={160}>
             <div className="relative w-full flex flex-col justify-center pb-8 animate-[float_6s_ease-in-out_infinite]">
               <div className="bg-white rounded-xl shadow-[0px_10px_15px_-3px_rgba(15,23,42,0.08)] border border-slate-200 overflow-hidden flex flex-col h-[400px]">
-                <div className="flex items-center justify-between px-6 py-3 border-b border-slate-200 bg-[#F8FAFC]">
+                <div className="flex items-center justify-between px-6 py-3 border-b border-slate-200 bg-white">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-full bg-[#131b2e] flex items-center justify-center">
                       <img src={cukaiBotIcon} alt="CukaiBot Icon" className="h-8 w-8 object-contain" />
@@ -704,7 +704,7 @@ function CukaiBotShowcase() {
                   </div>
                   <Icon name="more_horiz" className="text-[#76777D]" />
                 </div>
-                <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-[#F8FAFC]">
+                <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-white">
                   <div className="flex justify-end">
                     <div className="bg-[#0F172A] text-white rounded-lg rounded-tr-none px-2 py-1 max-w-[85%] text-sm leading-relaxed">
                       Ada ke relief untuk anak pergi universiti?
@@ -844,7 +844,7 @@ function Pricing() {
   const [ref, visible] = useReveal(0.1);
 
   return (
-    <section id="pricing" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 py-10 bg-[#F8F9FF] overflow-hidden">
+    <section id="pricing" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 py-10 bg-background overflow-hidden">
       <div className="max-w-[1280px] mx-auto w-full flex flex-col gap-5">
         
         {/* Title Group */}
@@ -897,7 +897,7 @@ function FAQ() {
   const right = faqs.slice(3);
 
   return (
-    <section id="faq" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 py-10 bg-[#F8F9FF] overflow-hidden">
+    <section id="faq" className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 py-10 bg-background overflow-hidden">
       <div className="max-w-[1280px] mx-auto w-full flex flex-col gap-6">
         
         {/* Title Group */}
@@ -918,7 +918,7 @@ function FAQ() {
                 return (
                   <div
                     key={key}
-                    className={`bg-[#EFF4FF] border border-slate-200 rounded-xl overflow-hidden cursor-pointer transition-all duration-200 hover:shadow-md ${isOpen ? 'shadow-sm' : ''}`}
+                    className={`bg-white border border-slate-200 rounded-xl overflow-hidden cursor-pointer transition-all duration-200 hover:shadow-md ${isOpen ? 'shadow-sm' : ''}`}
                     onClick={() => setOpen(isOpen ? null : key)}
                   >
                     {/* Upscaled header padding (p-5) and typography (text-[15px]) */}
@@ -1020,7 +1020,7 @@ function Home() {
   return (
     <>
       <LandingNav />
-      <div id="main-scroll" className="bg-[#F8F9FF] text-[#0b1c30] antialiased overflow-x-hidden overflow-y-auto h-screen snap-y snap-mandatory scroll-smooth">
+      <div id="main-scroll" className="bg-background text-[#0b1c30] antialiased overflow-x-hidden overflow-y-auto h-screen snap-y snap-mandatory scroll-smooth">
         <Hero />
         <HowItWorks />
         <Features />

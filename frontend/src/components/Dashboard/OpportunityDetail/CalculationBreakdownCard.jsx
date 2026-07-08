@@ -19,13 +19,13 @@ function CalculationBreakdownCard({ calculation }) {
 
   return (
     // h-full + flex-col so the scrollable middle expands to fill the grid cell
-    <section className="h-full rounded-xl border border-border bg-surface p-5 flex flex-col min-h-0">
+    <section className="h-full rounded-xl border border-border bg-surface p-4 flex flex-col min-h-0">
       
       <div className="flex items-center justify-between gap-2">
-        <h2 className="font-headings text-lg font-semibold text-headings">Calculation Breakdown</h2>
+        <h2 className="font-headings text-sm font-bold text-headings">Calculation Breakdown</h2>
         <button
           type="button"
-          className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-primary-hover"
+          className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors duration-150 hover:bg-primary-hover"
         >
           Apply to Tax Profile
         </button>
@@ -49,7 +49,7 @@ function CalculationBreakdownCard({ calculation }) {
         <div className="shrink-0 mt-3">
           <div className="flex items-center justify-between py-2.5">
             <p className="text-sm font-semibold text-headings">Total Claimable Allowance</p>
-            <p className="font-headings text-base font-bold text-headings bg-primary-tint">{totalClaimable}</p>
+            <p className="font-headings text-sm font-bold text-headings bg-primary-tint">{totalClaimable}</p>
           </div>
 
           <div className="flex items-center justify-between py-2.5">

@@ -408,7 +408,7 @@ function DocContent({ item }) {
                     </span>
                     <CodeBlock text={ep.path} />
                   </div>
-                  <p className="mt-2 text-xs text-[#64748B]">{ep.desc}</p>
+                  <p className="mt-2 text-xs leading-relaxed text-[#64748B]">{ep.desc}</p>
                 </div>
               ))}
             </div>
@@ -450,12 +450,12 @@ function Documentation() {
   return (
     // ── FIXED VIEWPORT FRAME (Matches InsightsInbox.jsx) ──
     <main className="h-[calc(100vh-4.1rem)] bg-background font-body flex flex-col overflow-hidden">
-      <div className="mx-auto w-full max-w-7xl flex flex-col gap-4 px-6 py-5 h-full overflow-hidden">
+      <div className="mx-auto w-full max-w-7xl px-6 py-4 flex flex-col flex-1 min-h-0 gap-3">
 
         {/* ── Page Header (shrink-0 prevents it from squishing) ── */}
         <div className="flex flex-col gap-1 shrink-0">
-          <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">Documentation</h1>
-          <p className="text-sm text-[#64748B]">User manual, module guides, API reference, and frequently asked questions.</p>
+          <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Documentation</h1>
+          <p className="text-xs text-[#64748B] mt-1">User manual, module guides, API reference, and frequently asked questions.</p>
         </div>
 
         {/* ── Master Split Layout ── */}
@@ -479,7 +479,7 @@ function Documentation() {
                 <div key={sec.id}>
                   <button
                     onClick={() => toggleSection(sec.id)}
-                    className="flex w-full items-center gap-2 px-2 py-1.5 text-xs font-bold uppercase tracking-widest text-[#64748B]"
+                    className="flex w-full items-center gap-2 px-2 py-1.5 text-[11px] font-bold uppercase tracking-wider text-[#64748B]"
                   >
                     <span className="text-[#0D9488]">{sec.icon}</span>
                     {sec.label}
@@ -512,7 +512,7 @@ function Documentation() {
                 {filteredSections.flatMap(sec => sec.items).map(item => (
                   <button key={item.id} onClick={() => { setActiveId(item.id); setSearch(''); }} className="block w-full rounded-xl border border-slate-100 bg-white px-4 py-3 text-left shadow-sm hover:border-[#0D9488]/30">
                     <p className="text-sm font-semibold text-[#0F172A]">{item.title}</p>
-                    <p className="mt-0.5 line-clamp-2 text-xs text-[#64748B]">{item.content.description}</p>
+                    <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-[#64748B]">{item.content.description}</p>
                   </button>
                 ))}
               </div>

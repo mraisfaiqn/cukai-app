@@ -202,7 +202,7 @@ const PersonalProfileSummary = ({ profile, onOpen }) => {
       </div>
       <div className="min-w-0 flex-1">
         <h3 className="text-sm font-bold text-[#0F172A] truncate">{profile.fullName || 'Your name'}</h3>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-[#64748B] mt-0.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-[#64748B] mt-0.5">
           <span>{profile.personalTin || 'No TIN set'}</span>
           <span className="text-slate-300">•</span>
           <span className="capitalize">{(profile.maritalStatus || '').replace('-', ' ') || 'Not set'}</span>
@@ -511,7 +511,7 @@ const EntityCard = ({ entity, active, onSwitch, onOpenPreview, personalTin }) =>
             <div className="flex items-center gap-1.5 min-w-0">
               <h3 className="text-sm font-bold text-[#0F172A] truncate">{entity.name || 'Untitled Entity'}</h3>
             </div>
-            <p className="text-[11px] text-[#64748B]">Sole Proprietorship</p>
+            <p className="text-[12px] text-[#64748B]">Sole Proprietorship</p>
           </div>
         </div>
         {active && (
@@ -521,17 +521,17 @@ const EntityCard = ({ entity, active, onSwitch, onOpenPreview, personalTin }) =>
         )}
       </div>
 
-      <div className="grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-0.5 text-[11px] mb-2">
+      <div className="grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-0.5 text-[12px] mb-2">
         <span className="text-[#64748B]">SSM No:</span><span className="font-semibold text-[#0F172A] truncate">{entity.ssmNo || '—'}</span>
         <span className="text-[#64748B]">Personal TIN:</span><span className="font-semibold text-[#0F172A] truncate">{personalTin || '—'}</span>
         <span className="text-[#64748B]">Code:</span><span className="font-semibold text-[#0F172A] truncate">{entity.businessCode || '—'}</span>
         <span className="text-[#64748B]">Net profit:</span><span className="font-semibold text-[#0F172A] truncate">{netProfit ?? '—'}</span>
       </div>
 
-      <p className="text-[11px] text-[#64748B] truncate mb-2">{entity.businessActivity || 'No activity specified'}</p>
+      <p className="text-[12px] text-[#64748B] truncate mb-2">{entity.businessActivity || 'No activity specified'}</p>
 
       {address && (
-        <div className="flex items-start gap-1.5 text-[10px] text-[#94A3B8] mb-2.5">
+        <div className="flex items-start gap-1.5 text-[12px] text-[#94A3B8] mb-2.5">
           <div className="pt-0.5"><MapPinIcon /></div>
           <span className="leading-snug line-clamp-2">{address}</span>
         </div>
@@ -539,7 +539,7 @@ const EntityCard = ({ entity, active, onSwitch, onOpenPreview, personalTin }) =>
 
       <div className="flex-1" />
 
-      <div className="flex items-center justify-between text-[10px] text-[#94A3B8] border-t border-slate-50 pt-2">
+      <div className="flex items-center justify-between text-[11px] text-[#94A3B8] border-t border-slate-50 pt-2">
         <span>{filingNote}</span>
         <span className="inline-flex items-center gap-1 font-semibold text-[#0D9488]">
           View full profile<ChevronRightIcon />
@@ -1066,7 +1066,7 @@ function FormBPreview({ fd, filingYear, onClose }) {
 function InlineSummary({ title, children }) {
   return (
     <div>
-      <p className="mb-1.5 text-[9px] font-bold uppercase tracking-widest text-[#94A3B8]">{title}</p>
+      <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-[#94A3B8]">{title}</p>
       <div className="rounded-lg border border-[#F1F5F9] divide-y divide-[#F1F5F9] overflow-hidden">{children}</div>
     </div>
   );
@@ -1174,7 +1174,7 @@ const GenerateFormsPanel = ({ profile, entities }) => {
               <SRow label="N45 Total liabilities" value={fmtRM(totals.liabilities)} />
             </InlineSummary>
 
-            <p className="text-[9px] text-[#94A3B8] leading-relaxed">
+            <p className="text-[10px] text-[#94A3B8] leading-relaxed">
               Reliefs are estimated at their statutory maximums from the toggles on your personal profile — confirm the actual amounts before filing. Employment, rental and other non-business income are not included in this draft. Open <span className="font-semibold">Preview</span> to see and download the full Form B.
             </p>
           </div>
@@ -1329,7 +1329,7 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
         <div className="flex items-center justify-between shrink-0">
           <div>
             <h2 className="text-sm font-bold text-[#0F172A]">Business Profiles</h2>
-            <p className="text-[11px] text-[#64748B] mt-0.5">Maintain the registered details LHDN requires for each entity you file on behalf of.</p>
+            <p className="text-[12px] text-[#64748B] mt-0.5">Maintain the registered details LHDN requires for each entity you file on behalf of.</p>
           </div>
           <button
             onClick={() => setNewEntityDraft({ ...BLANK_SOLE_PROP })}

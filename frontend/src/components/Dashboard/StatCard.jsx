@@ -34,7 +34,7 @@ function StatCard({
       }
     >
       {/* Label — small, on the highlight card it picks up the teal tone */}
-      <p className={'text-xs font-medium ' + (highlight ? 'text-primary' : 'text-muted')}>
+      <p className={'font-headings text-sm font' + (highlight ? 'text-primary' : 'text-muted')}>
         {label}
       </p>
 

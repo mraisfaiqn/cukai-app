@@ -34,7 +34,7 @@ export default function BrandingPanel() {
           <h1 className="text-[2.4rem] font-extrabold text-white leading-tight tracking-tight mt-2 mb-1">
             Tax Compliance Assisted by
           </h1>
-          <h1 className="text-[2.4rem] font-extrabold text-[#10B981] leading-tight tracking-tight mb-2">
+          <h1 className="text-[2.4rem] font-extrabold text-primary leading-tight tracking-tight mb-2">
             Artificial Intelligence
           </h1>
 
@@ -47,8 +47,8 @@ export default function BrandingPanel() {
 
           {/* Top most one line header */}
           <div className="flex-shrink-0 mb-6">
-            <span className="inline-flex items-center gap-2 border border-[#10B981]/40 text-[#10B981] text-[11px] font-bold tracking-widest px-4 py-2 rounded-full bg-[#10B981]/10">
-              <span className="w-2 h-2 rounded-full bg-[#10B981] flex-shrink-0" />
+            <span className="inline-flex items-center gap-2 border border-primary/40 text-primary text-[11px] font-bold tracking-widest px-4 py-2 rounded-full bg-primary/10">
+              <span className="w-2 h-2 rounded-full bg-primary flex-shrink-0" />
               Less Tax Stress. More Peace of Mind
             </span>
           </div>
@@ -61,19 +61,19 @@ export default function BrandingPanel() {
               "Discover hidden tax-saving opportunities in seconds",
             ].map((feat) => (
               <div key={feat} className="flex items-center gap-3">
-                <span className="w-[22px] h-[22px] rounded-[6px] bg-[#0D9488] flex items-center justify-center flex-shrink-0">
+                <span className="w-[22px] h-[22px] rounded-[6px] bg-primary flex items-center justify-center flex-shrink-0">
                   <CheckIcon />
                 </span>
-                <span className="text-[#CBD5E1] text-[12px] font-normal">{feat}</span>
+                <span className="text-[#CBD5E1] text-xs font-normal">{feat}</span>
               </div>
             ))}
           </div>
 
           <div className="flex gap-5 mt-6">
-            <span className="inline-flex items-center gap-2 border border-[#10B981]/40 text-[#10B981] text-[11px] font-bold tracking-widest px-4 py-2 rounded-full bg-[#10B981]/10">
+            <span className="inline-flex items-center gap-2 border border-primary/40 text-primary text-[11px] font-bold tracking-widest px-4 py-2 rounded-full bg-primary/10">
               {["PDPA Compliant","LHDN Compliant", "Persistent Memory"].map((b) => (
-                <span key={b} className="flex items-center gap-1.5 text-[12px] text-[#64748B] whitespace-nowrap">
-                  <span className="text-[#10B981] text-[13px]">✓</span> {b}
+                <span key={b} className="flex items-center gap-1.5 text-xs text-muted whitespace-nowrap">
+                  <span className="text-primary text-[13px]">✓</span> {b}
                 </span>
               ))}
             </span>

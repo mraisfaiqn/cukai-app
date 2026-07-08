@@ -20,12 +20,12 @@ function WhyYouQualifyCard({
   reference,
 }) {
   return (
-    <section className="h-full rounded-xl border border-border bg-primary-tint p-5 flex flex-col min-h-0">
+    <section className="h-full rounded-xl border border-border bg-primary-tint p-4 flex flex-col min-h-0">
       {/* Header row: icon + title on the left, button pinned to the right */}
       <div className="flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2">
           <span className="text-primary"><SparkleIcon /></span>
-          <h2 className="font-headings text-lg font-semibold text-headings">Why you qualify</h2>
+          <h2 className="font-headings text-sm font-bold text-headings">Why you qualify</h2>
         </div>
         <div className="flex items-center gap-3 ml-auto">
           {reference && (

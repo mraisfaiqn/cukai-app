@@ -407,7 +407,7 @@ function DeadlineChip({ deadlineDate }) {
 function SignalList({ insight }) {
   return (
     <div className="rounded-xl border border-border bg-background px-4 py-3">
-      <p className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted">
+      <p className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted">
         <EyeIcon /> Why am I seeing this?
       </p>
       <div className="space-y-1.5">
@@ -418,7 +418,7 @@ function SignalList({ insight }) {
           </div>
         ))}
       </div>
-      <p className="mt-2.5 border-t border-border pt-2 text-[9px] text-muted">
+      <p className="mt-2.5 border-t border-border pt-2 text-[10px] text-muted">
         {insight.generatedBy === 'llm' ? 'Numbers computed by the rule engine · wording by AI' : 'Computed by the rule engine — no AI involved'}
         {insight.sourceDocumentIds.length > 0 && ` · from ${insight.sourceDocumentIds.length} document${insight.sourceDocumentIds.length === 1 ? '' : 's'} in your vault`}
       </p>
@@ -436,13 +436,13 @@ function DismissMenu({ onDismiss, onClose }) {
           onClick={() => onDismiss('Not relevant this year')}
           className="block w-full px-3.5 py-2.5 text-left text-xs font-medium text-headings transition-colors hover:bg-background">
           Not relevant this year
-          <span className="block text-[9px] font-normal text-muted">Hidden until next YA</span>
+          <span className="block text-[10px] font-normal text-muted">Hidden until next YA</span>
         </button>
         <button
           onClick={() => onDismiss('Snoozed for 2 weeks')}
           className="block w-full border-t border-border px-3.5 py-2.5 text-left text-xs font-medium text-headings transition-colors hover:bg-background">
           Remind me later
-          <span className="block text-[9px] font-normal text-muted">Snoozes for 2 weeks</span>
+          <span className="block text-[10px] font-normal text-muted">Snoozes for 2 weeks</span>
         </button>
       </div>
     </>
@@ -556,7 +556,7 @@ function InsightCard({ insight, expanded, onToggle, onAction, onDismiss, onMarkD
                   <RotateIcon /> Restore to inbox
                 </button>
               )}
-              <span className="ml-auto font-mono text-[9px] text-muted/60">{insight.dedupeKey}</span>
+              <span className="ml-auto font-mono text-[10px] text-muted/60">{insight.dedupeKey}</span>
             </div>
           </div>
         )}
@@ -692,20 +692,20 @@ function InsightsInbox() {
         </div>
       )}
 
-      <div className="mx-auto w-full max-w-4xl flex flex-col gap-4 px-6 py-5 h-full overflow-hidden">
+      <div className="mx-auto w-full max-w-7xl flex flex-col gap-4 px-6 py-4 h-full overflow-hidden">
 
         {/* ── Page header ── */}
         <div className="flex flex-wrap items-start justify-between gap-4 shrink-0">
           <div>
             <div className="flex items-center gap-2.5">
-              <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">AI Insights</h1>
+              <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">AI Insights</h1>
               {needsAction.length > 0 && (
-                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-critical px-1.5 text-[10px] font-bold text-white">
+                <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-white">
                   {needsAction.length}
                 </span>
               )}
             </div>
-            <p className="mt-1 text-sm text-muted">
+            <p className="mt-1 text-xs text-muted">
               {activeEntity ? `Watching ${activeEntity.name}'s tax position` : 'Your tax position, watched continuously'} — insights appear when something needs you.
             </p>
             {/* Engine heartbeat — mirrors the future insight_runs record */}
@@ -723,8 +723,8 @@ function InsightsInbox() {
               { label: 'Next deadline', value: nextDeadlineDays != null ? `${nextDeadlineDays}d` : '—', tone: nextDeadlineDays != null && nextDeadlineDays <= 14 ? 'text-critical' : 'text-headings' },
             ].map(s => (
               <div key={s.label} className="rounded-xl border border-border bg-surface px-4 py-3 min-w-[104px]">
-                <p className={`text-xl font-bold ${s.tone}`}>{s.value}</p>
-                <p className="text-[10px] text-muted whitespace-nowrap">{s.label}</p>
+                <p className="font-headings text-sm text-muted whitespace-nowrap">{s.label}</p>
+                <p className={`font-headings text-xl font-bold tracking-tight ${s.tone}`}>{s.value}</p>
               </div>
             ))}
           </div>
