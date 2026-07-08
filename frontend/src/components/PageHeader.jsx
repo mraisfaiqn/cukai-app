@@ -188,7 +188,7 @@ function PageHeader({ onLogout }) {
           ))}
           <NavLink to="/cukaibot" className={({ isActive }) => `flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-base font-medium transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}>
             <img src={cukaiBot} alt="CukaiBot" className="h-6.5 w-6.5 pt-0.5 -m-1 object-contain" />
-            CukaiBot
+            Cukai Bot
           </NavLink>
         </nav>
 

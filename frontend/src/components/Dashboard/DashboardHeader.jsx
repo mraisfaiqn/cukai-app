@@ -24,7 +24,7 @@ function DashboardHeader({
   return (
     <header>
       {/* Greeting headline */}
-      <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">
+      <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">
         {greeting}, {name}
       </h1>
 
@@ -36,7 +36,7 @@ function DashboardHeader({
         <span aria-hidden="true">·</span>
 
         {/* Assessment-year chip — pill-shaped per the design system's chip spec */}
-        <span className="rounded-full bg-primary-tint px-2.5 py-0.5 text-xs font-semibold text-primary">
+        <span className="rounded-full bg-primary-tint px-2.5 py-0.5 text-sm font-semibold text-primary">
           {assessmentYear}
         </span>
         <span aria-hidden="true">·</span>
