@@ -10,14 +10,14 @@ function TermsConditions() {
         {/* ── Page Header ── */}
         <div className="shrink-0">
           <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Terms & Conditions</h1>
-          <p className="text-xs text-[#64748B] mt-1">
+          <p className="text-xs text-muted mt-1">
             Please read these terms carefully before using our platform. They govern your access to and use of cukai.ai's services.
           </p>
         </div>
 
         {/* ── Terms Content ── */}
         <div className="flex-1 min-h-0 overflow-y-auto">
-          <section className="rounded-xl border border-[#E2E8F0] bg-white p-5">
+          <section className="rounded-xl border border-border bg-surface p-4">
             <div className="space-y-6 text-sm leading-relaxed text-[#334155]">
               <p>
                 Welcome to cukai.ai. By accessing or using our web application, you agree to be bound by these Terms and Conditions. Our platform provides automated tools and AI-driven insights to assist you with tax-related calculations and organization. You are responsible for ensuring that all data, financial information, and inputs you provide to the platform are accurate, complete, and legally valid.

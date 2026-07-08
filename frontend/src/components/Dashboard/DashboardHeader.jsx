@@ -29,14 +29,14 @@ function DashboardHeader({
       </h1>
 
       {/* Entity context line: company · MSIC · [YA chip] · deadline */}
-      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
         <span className="font-medium text-body-text">{entity}</span>
         <span aria-hidden="true">·</span>
         <span>{msic}</span>
         <span aria-hidden="true">·</span>
 
         {/* Assessment-year chip — pill-shaped per the design system's chip spec */}
-        <span className="rounded-full bg-primary-tint px-2.5 py-0.5 text-sm font-semibold text-primary">
+        <span className="rounded-full bg-primary-tint px-2.5 py-0.5 text-xs font-semibold text-primary">
           {assessmentYear}
         </span>
         <span aria-hidden="true">·</span>
