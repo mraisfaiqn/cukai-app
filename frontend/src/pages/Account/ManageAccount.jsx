@@ -270,11 +270,11 @@ function ManageAccount() {
 
         <div className="shrink-0">
           <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Account Settings</h1>
-          <p className="text-xs text-[#64748B] mt-1">Manage your personal details and business entities.</p>
+          <p className="text-xs text-muted mt-1">Manage your personal details and business entities.</p>
         </div>
 
         {loadError && (
-          <div className="p-3 bg-red-50 border border-red-100 text-red-600 rounded-xl text-xs font-medium">
+          <div className="p-3 bg-red-50 border border-red-100 text-critical rounded-xl text-xs font-medium">
             ⚠️ {loadError}
           </div>
         )}
