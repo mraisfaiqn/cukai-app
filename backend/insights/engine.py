@@ -1,11 +1,36 @@
 """
 TaxInsightEngine — the hybrid rule/LLM engine behind the AI Insights inbox.
 
+FIVE CORE INSIGHT TYPES (deterministic, Pipeline A), all localized to LHDN
+Form B rules for Malaysian sole proprietors:
+
+  1. doc_gap          — Smart Deduction Tracker: recurring-vendor bill gaps
+                        AND missing companion claims (e.g. vehicle/petrol
+                        receipts with no mileage-log apportionment on file).
+  2. provision        — Dynamic Tax Bracket Projections: monthly set-aside
+                        guidance AND bracket-jump proximity warnings with
+                        year-end optimisation levers (capital allowance,
+                        EPF/PRS top-ups).
+  3. deadline         — Proactive Deadline & Compliance: upcoming CP500
+                        installments, the statutory Form B deadline (30 June
+                        after the YA), missing CP500 payment records, missing
+                        quarterly bank statements, and a missing prior-year
+                        filed Form B.
+  4. review_pending   — Audit Risk Flagging: per-document "needs answer"
+                        cards AND deterministic expense-ratio anomaly checks
+                        (Entertainment & Gifts / Travel Claims vs gross
+                        revenue; >15% medium band, >25% high band).
+  5. relief_headroom  — Saving Opportunities: ONE aggregated card summing all
+                        unutilized Q4 personal relief headroom with the exact
+                        tax saved at the user's marginal rate.
+
+  (+ digest — the only LLM-phrased card, Pipeline B.)
+
 Architecture (mirrors the contract documented in InsightsInbox.jsx):
 
   PIPELINE A (deterministic) — rules compute every number from the same year
-  summary the dashboard already trusts (main.get_tax_profile_summary) plus
-  targeted queries, emitting insight cards with auditable `signals`.
+  summary the dashboard already trusts (main.get_tax_profile_summary),
+  emitting insight cards with auditable `signals`.
   PIPELINE B (LLM-hybrid) — a single digest card worded by Gemini from
   Pipeline A's computed facts (generated_by='llm').
 
@@ -17,43 +42,38 @@ Architecture (mirrors the contract documented in InsightsInbox.jsx):
   third independent write, so the audit trail survives either failure.
 
   GEMINI BOUNDS + CIRCUIT BREAKER — the Gemini client carries an explicit
-  15s HTTP timeout (within the mandated 10–15s window) and at most one
-  transient retry. On HTTP 429 / ResourceExhausted or a timeout, a
-  process-wide circuit breaker opens for a cooldown window: overlapping
-  bulk-upload runs skip the LLM immediately instead of queueing workers on a
-  throttled endpoint, log the skip to InsightRun.logs, and continue with the
-  template digest. The circuit breaker never retries — Gemini's single
-  transient retry and Flaw C's advisory-lock retry remain the only retry
-  loops, and they cannot compound (the LLM call happens BETWEEN database
-  transactions, never inside one).
+  15s HTTP timeout and at most one transient retry. On HTTP 429 /
+  ResourceExhausted or a timeout, a process-wide circuit breaker opens for a
+  cooldown window: overlapping bulk-upload runs skip the LLM immediately,
+  log the skip to InsightRun.logs, and continue with the template digest.
 
 Production-hardening invariants:
 
-  ASSESSMENT-YEAR SCOPING (Flaw A) — every run analyses exactly ONE Year of
+  ASSESSMENT-YEAR SCOPING — every run analyses exactly ONE Year of
   Assessment, taken from the triggering document's year_of_assessment, never
   from the calendar date. Dedupe keys carry the YA explicitly:
       u{user_id}:e{entity_id}:ya{assessment_year}:{insight_type}:{sub_key_hash}
   Pre-format rows are migrated by insights/backfill_dedupe_keys.py.
 
-  TAX AMENDMENT LOCK (Flaw B) — a YA with a filed Form B on record is FROZEN.
-  The single source of truth for that condition is is_assessment_year_locked()
-  below (FormBProfile row existence — rows are only ever created from
-  uploaded, previously-filed returns); the router reuses the same function for
-  the is_locked response flag and for server-side action rejection. Skips are
-  logged to InsightRun, never silent.
+  TAX AMENDMENT LOCK — a YA with a filed Form B on record is FROZEN. The
+  single source of truth is is_assessment_year_locked() below (FormBProfile
+  row existence — rows are only ever created from uploaded, previously-filed
+  returns; kept deliberately, per explicit product decision). The lock is
+  checked PER ASSESSMENT YEAR: a batch spanning a locked and an open YA
+  triggers separate per-document runs, so only the locked year's analysis is
+  skipped — with an InsightRun log entry, never silently.
 
-  CONCURRENCY SAFETY (Flaw C) — sessions are tight (open → work → commit →
-  close; never held across the LLM call). Writes happen in transactions
-  guarded by PostgreSQL advisory transaction locks (pg_advisory_xact_lock on
-  SHA-1 hashes of the scope and each dedupe_key, acquired in sorted order),
-  which serialise writers across threads AND across worker processes. Write
+  CONCURRENCY SAFETY — sessions are tight (open → work → commit → close;
+  never held across the LLM call). Writes happen in transactions guarded by
+  PostgreSQL advisory transaction locks (pg_advisory_xact_lock on SHA-1
+  hashes of the scope and each dedupe_key, acquired in sorted order), which
+  serialise writers across threads AND across worker processes. Write
   transactions retry up to 3 times with jittered exponential backoff.
 
   RULE VERSIONING — every card is stamped with tax_rules.TAX_RULES_VERSION at
-  write time (rule_version column). When a snoozed insight wakes under a newer
-  version, the router flags it stale and triggers a SCOPED re-run (this
-  engine with only_insight_types set) so figures are recomputed through the
-  normal, auditable path — never mutated in place.
+  write time. When a snoozed insight wakes under a newer version, the router
+  flags it stale and triggers a SCOPED re-run (only_insight_types) so figures
+  are recomputed through the normal, auditable path — never mutated in place.
 
 Imports from `main` and `pipeline` are deferred to call time: main.py imports
 pipeline.py, pipeline.py invokes this engine, and main.py mounts the insights
@@ -87,7 +107,9 @@ logger = logging.getLogger("uvicorn.error")
 
 # Types this engine owns. Cards of these types that stop being generated are
 # auto-resolved (digest excepted — an old digest is history, not a resolved
-# problem, so it simply ages out in the feed).
+# problem, so it simply ages out in the feed). formb_missing remains listed
+# for legacy rows: its check is now folded into the deadline/compliance rule,
+# so old standalone formb_missing cards auto-resolve on the next full run.
 ENGINE_MANAGED_TYPES = (
     "deadline", "review_pending", "relief_headroom", "doc_gap",
     "provision", "formb_missing", "digest",
@@ -96,19 +118,59 @@ AUTO_RESOLVE_TYPES = tuple(t for t in ENGINE_MANAGED_TYPES if t != "digest")
 
 # CP500 installments for individuals run bimonthly across six odd months of
 # the year; the engine uses the 15th as the in-month due day for countdown
-# purposes. Only surfaced when the user's vault actually contains CP500
-# receipts, and always cited to s.107B so the user can verify.
+# purposes. Always cited to s.107B so the user can verify.
 CP500_MONTHS = (1, 3, 5, 7, 9, 11)
 CP500_DUE_DAY = 15
 CP500_LOOKAHEAD_DAYS = 45
 
-# doc_gap detection thresholds
+# Statutory Form B filing deadline: 30 June of the year following the YA.
+FORM_B_DEADLINE_MONTH = 6
+FORM_B_DEADLINE_DAY = 30
+FORM_B_COUNTDOWN_WINDOW_DAYS = 180   # start counting down ~6 months out
+FORM_B_OVERDUE_GRACE_DAYS = 60       # keep showing an overdue card this long
+
+# doc_gap — recurring-vendor detection thresholds
 DOC_GAP_MIN_MONTHS_PRESENT = 3
 DOC_GAP_MAX_TRAILING_MISSING = 4
 
-# relief_headroom thresholds
-RELIEF_HEADROOM_MIN_MYR = 500
-RELIEF_HEADROOM_MAX_CARDS = 3
+# doc_gap — companion-claim detection (Insight 1)
+COMPANION_MIN_VEHICLE_RECEIPTS = 3
+# Conservative default business-use proportion for a vehicle without a
+# mileage log — LHDN disallows unapportioned claims in an audit, so this is
+# the qualifying portion "at risk" until a logbook percentage is confirmed.
+DEFAULT_VEHICLE_BUSINESS_USE_PCT = 50
+
+# provision — bracket-jump warning (Insight 2)
+BRACKET_WARNING_DISTANCE_MYR = 15_000
+
+# review_pending — audit-risk ratio bands (Insight 4). Concrete thresholds:
+# medium band above 15% of gross business revenue, high band above 25%.
+AUDIT_RATIO_MEDIUM = 0.15
+AUDIT_RATIO_HIGH = 0.25
+# Band → severity mapping (existing enum; per explicit product decision:
+# medium renders as the 'Suggested' tier, high as 'Action needed'). The raw
+# band string still lives in the dedupe sub-key and signals.
+AUDIT_BAND_SEVERITY = {"medium": "suggested", "high": "action_required"}
+
+AUDIT_RATIO_GROUPS = [
+    {
+        "label": "Entertainment & Gifts",
+        "slug": "entertainment-gifts",
+        "categories": {"Q3 — Client Entertainment (50% cap)", "Q3 — Client & Corporate Gifts"},
+        "citation": "LHDN audit selection criteria · PR No. 3/2020 (entertainment expenses) · ITA 1967 s.39(1)(l)",
+    },
+    {
+        "label": "Travel Claims",
+        "slug": "travel-claims",
+        "categories": {"Q3 — Transport & Logistics", "Q3 — Mixed-Use Vehicle Expenses"},
+        "citation": "LHDN audit selection criteria · LHDN PR No. 1/2014 (motor vehicle expenses) · ITA 1967 s.33(1)",
+    },
+]
+
+# relief_headroom — aggregated card (Insight 5)
+RELIEF_HEADROOM_MIN_CATEGORY_MYR = 100    # ignore trivial per-category slivers
+RELIEF_HEADROOM_MIN_TOTAL_MYR = 500       # emit the card only above this total
+RELIEF_HEADROOM_MAX_SIGNAL_LINES = 6
 
 REVIEW_PENDING_MAX_CARDS = 8
 
@@ -116,13 +178,13 @@ REVIEW_PENDING_MAX_CARDS = 8
 REOPEN_IMPACT_CHANGE_PCT = 0.15
 
 # Gemini bounds (Pipeline B). Explicit HTTP timeout within the mandated
-# 10–15s window; a single transient retry (mandated earlier) — the circuit
-# breaker below adds NO further retries.
+# 10–15s window; a single transient retry — the circuit breaker below adds
+# NO further retries.
 GEMINI_TIMEOUT_SECONDS = 15
 GEMINI_MAX_RETRIES = 1
 GEMINI_CIRCUIT_COOLDOWN_SECONDS = 120
 
-# Write-transaction retry policy (Flaw C)
+# Write-transaction retry policy
 UPSERT_MAX_ATTEMPTS = 3
 UPSERT_BACKOFF_BASE_SECONDS = 0.1
 
@@ -133,30 +195,19 @@ _REVIEW_CITATIONS = {
     "Q3 — Hire Purchase & Leased Assets":  "ITA 1967 s.33 · Schedule 3",
 }
 
-_RELIEF_SLUGS = {
-    "Q4 — Life Insurance & Takaful Relief": "life-insurance",
-    "Q4 — EPF Personal Contribution":       "epf",
-    "Q4 — Medical & Parental Care":         "medical-parental",
-    "Q4 — Lifestyle Relief":                "lifestyle",
-    "Q4 — Education Relief":                "education",
-    "Q4 — Child Relief":                    "child",
-    "Q4 — Medical Equipment Relief":        "medical-equipment",
-    "Q4 — Private Retirement Scheme (PRS)": "prs",
-    "Q4 — SOCSO Personal Contribution":     "socso",
-    "Q4 — Domestic Tourism Relief":         "tourism",
-    "Q4 — EV Charging Equipment":           "ev-charging",
-}
+_VEHICLE_EXPENSE_CATEGORIES = {"Q3 — Transport & Logistics", "Q3 — Mixed-Use Vehicle Expenses"}
+_MILEAGE_EVIDENCE_CATEGORY = "Q3 — Mixed-Use Vehicle Expenses"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAX AMENDMENT LOCK — single source of truth (Flaw B)
+# TAX AMENDMENT LOCK — single source of truth
 # The lock condition is FormBProfile ROW EXISTENCE for (user, entity, YA):
 # profiles are only ever created from uploaded, previously-FILED Form B
-# returns (pipeline's 'Q1 — Filed Form B (Prior Year)' path), so existence
-# means "already submitted to LHDN". There is no is_submitted column in this
-# schema. Both the engine (skip analysis) and the router (is_locked flag +
-# server-side action rejection) call THESE functions — the condition is
-# defined exactly once.
+# returns, so existence means "already submitted to LHDN". Kept deliberately
+# (explicit product decision) — revisit ONLY if an in-app draft-Form-B flow
+# is ever added, at which point a status flag becomes necessary. Both the
+# engine (skip analysis) and the router (is_locked flag + server-side action
+# rejection) call THESE functions — the condition is defined exactly once.
 # ══════════════════════════════════════════════════════════════════════════════
 
 def is_assessment_year_locked(db: Session, user_id, entity_id: Optional[int],
@@ -201,12 +252,6 @@ def get_locked_year_pairs(db: Session, user_id,
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GEMINI CIRCUIT BREAKER (Pipeline B only)
-# Opens on rate-limit (429 / ResourceExhausted) or timeout; while open, every
-# engine run in this process skips the LLM instantly instead of stacking
-# Gunicorn workers behind a throttled endpoint. Process-local by design: each
-# worker process discovers throttling with at most one failed call, then stays
-# clear for the cooldown. Never blocks or retries — the deterministic pipeline
-# is unaffected either way.
 # ══════════════════════════════════════════════════════════════════════════════
 
 _gemini_circuit = {"open_until": 0.0, "reason": ""}
@@ -317,8 +362,8 @@ class TaxInsightEngine:
         self.trigger = trigger
         self.today = date.today()
         # The TAX year under analysis — from the triggering document, never
-        # the wall clock (Flaw A). Out-of-range/absent values fall back to the
-        # current year, which is also the correct default for manual refresh.
+        # the wall clock. Out-of-range/absent values fall back to the current
+        # year, which is also the correct default for manual refresh.
         if assessment_year is not None and 2000 <= int(assessment_year) <= 2100:
             self.ya = int(assessment_year)
         else:
@@ -387,7 +432,32 @@ class TaxInsightEngine:
         finally:
             db.close()
 
-    # ── Phase 2, Pipeline A: deterministic rules (pure — no session held) ────
+    # ── Shared fact extractors (pure, over the year summary) ────────────────
+    @staticmethod
+    def _marginal_rate_pct(cy: dict) -> Optional[float]:
+        """The user's current marginal rate, from the SAME bracket lookup the
+        dashboard uses (main._bracket_headroom via the year summary) — never
+        reimplemented here."""
+        rate = (cy.get("totals") or {}).get("currentMarginalRatePct")
+        return float(rate) if rate else None
+
+    @staticmethod
+    def _entries_in_categories(cy: dict, categories: set) -> list[dict]:
+        """All document entries (resolved deductions AND pending-review items)
+        whose category falls in `categories`. The two lists are disjoint by
+        aggregation_state, so no amount is ever double counted."""
+        out = []
+        for entry in cy.get("q3Deductions") or []:
+            if entry.get("category") in categories:
+                out.append(entry)
+        for entry in cy.get("mixedPendingReview") or []:
+            if entry.get("category") in categories:
+                out.append(entry)
+        return out
+
+    # ══════════════════════════════════════════════════════════════════════
+    # INSIGHT 3 — deadline: upcoming CP500 installment countdown
+    # ══════════════════════════════════════════════════════════════════════
     def _rule_cp500_deadline(self, cy: dict) -> list[dict]:
         installments = cy.get("cp500Installments") or []
         if not installments:
@@ -445,13 +515,178 @@ class TaxInsightEngine:
             "body": body,
             "rm_impact": expected,
             "deadline_date": upcoming,
-            "citation": "ITA 1967 s.107B",
+            "citation": "ITA 1967 s.107B · LHDN CP500 guideline",
             "signals": signals,
             "source_document_ids": [i.get("documentId") for i in installments if i.get("documentId")],
             "action": {"label": "View installment history", "to": "/account"},
         }]
 
-    def _rule_review_pending(self, cy: dict) -> list[dict]:
+    # ══════════════════════════════════════════════════════════════════════
+    # INSIGHT 3 — deadline: Form B statutory countdown + compliance gaps
+    # One card per distinct missing requirement (sub-key = missing_item_type).
+    # ══════════════════════════════════════════════════════════════════════
+    def _rule_deadline_compliance(self, cy: dict, prior_formb_exists: bool) -> list[dict]:
+        if (cy.get("documentCount") or 0) == 0:
+            return []  # empty year — nothing to remind about yet
+        cards: list[dict] = []
+
+        # ── 3a. Statutory Form B filing deadline: 30 June after the YA ──────
+        # This engine only runs for UNLOCKED years (a filed Form B skips
+        # analysis entirely), so an approaching/overdue deadline here always
+        # means "not filed yet".
+        filing_deadline = date(self.ya + 1, FORM_B_DEADLINE_MONTH, FORM_B_DEADLINE_DAY)
+        days_to_file = (filing_deadline - self.today).days
+        if -FORM_B_OVERDUE_GRACE_DAYS <= days_to_file <= FORM_B_COUNTDOWN_WINDOW_DAYS:
+            overdue = days_to_file < 0
+            if overdue:
+                title = f"YA {self.ya} Form B is past the 30 June deadline"
+                body = (
+                    f"The statutory deadline for filing your YA {self.ya} Form B was "
+                    f"{filing_deadline.strftime('%d %b %Y')} and no filed return is on "
+                    "record here. Late filing attracts penalties under s.112 ITA 1967 — "
+                    "file as soon as possible, or upload your filed Form B if you have "
+                    "already submitted it so this record can be closed."
+                )
+            else:
+                title = f"YA {self.ya} Form B due in {days_to_file} day{'s' if days_to_file != 1 else ''}"
+                body = (
+                    f"Your YA {self.ya} Form B is due by {filing_deadline.strftime('%d %b %Y')} "
+                    f"(paper filing; e-Filing typically has a short grace period). "
+                    f"{cy.get('documentCount')} document{'s are' if cy.get('documentCount') != 1 else ' is'} "
+                    "already classified for this year — resolve any pending review "
+                    "questions below so your figures are complete before you file."
+                )
+            cards.append({
+                "insight_type": "deadline",
+                "severity": "deadline",
+                "generated_by": "rule_template",
+                "dedupe_key": self._key("deadline", "form_b_filing"),
+                "title": title,
+                "body": body,
+                "rm_impact": None,
+                "deadline_date": filing_deadline,
+                "citation": "LHDN Form B filing deadline (s.77 ITA 1967) · s.112 late-filing penalty",
+                "signals": [
+                    {"label": "Statutory deadline", "value": filing_deadline.strftime("%d %b %Y")},
+                    {"label": "Status", "value": "Overdue — no filed return on record" if overdue else f"{days_to_file} days remaining"},
+                    {"label": f"Documents classified for YA{self.ya}", "value": str(cy.get("documentCount"))},
+                    {"label": "Pending review items", "value": str(cy.get("pendingReviewCount") or 0)},
+                ],
+                "source_document_ids": [],
+                "action": {"label": "Review your year summary", "to": "/overview"},
+            })
+
+        # ── 3b. Missing CP500 payment records ───────────────────────────────
+        # Only when the user demonstrably IS on the CP500 scheme (≥1 receipt):
+        # compare receipts on file against installments already due this YA.
+        installments = cy.get("cp500Installments") or []
+        if installments:
+            expected_due = sum(
+                1 for m in CP500_MONTHS if date(self.ya, m, CP500_DUE_DAY) < self.today
+            )
+            have = len(installments)
+            if 0 < have < expected_due:
+                shortfall = expected_due - have
+                cards.append({
+                    "insight_type": "deadline",
+                    "severity": "action_required",
+                    "generated_by": "rule_template",
+                    "dedupe_key": self._key("deadline", "cp500_payment_missing"),
+                    "title": f"{shortfall} CP500 payment record{'s' if shortfall != 1 else ''} missing for YA {self.ya}",
+                    "body": (
+                        f"By now, {expected_due} bimonthly CP500 installments were due for "
+                        f"YA {self.ya}, but only {have} payment record{'s are' if have != 1 else ' is'} "
+                        "in your vault. If you paid them, upload the receipts so your tax "
+                        "position stays reconciled; if you missed them, note that unpaid "
+                        "installments attract a 10% late-payment penalty under s.107B."
+                    ),
+                    "rm_impact": None,
+                    "deadline_date": None,
+                    "citation": "ITA 1967 s.107B · LHDN CP500 guideline",
+                    "signals": [
+                        {"label": "Installments due to date", "value": str(expected_due)},
+                        {"label": "Payment records on file", "value": str(have)},
+                        {"label": "Missing records", "value": str(shortfall)},
+                    ],
+                    "source_document_ids": [i.get("documentId") for i in installments if i.get("documentId")],
+                    "action": {"label": "Upload the missing receipts", "to": "/account"},
+                })
+
+        # ── 3c. Missing quarterly business bank statements ───────────────────
+        # Only when the user has established the pattern (≥1 bank statement
+        # this YA) — one card per fully-ended quarter with no statement, so
+        # Docling line-matching reconciliation can complete.
+        bank_statements = cy.get("bankStatementReviews") or []
+        if bank_statements:
+            quarters_present = set()
+            for bs in bank_statements:
+                d = bs.get("date") or ""
+                if re.match(r"^\d{4}-\d{2}", d) and int(d[:4]) == self.ya:
+                    quarters_present.add((int(d[5:7]) - 1) // 3 + 1)
+            for q in (1, 2, 3, 4):
+                quarter_end = date(self.ya, 3 * q, 28)
+                if self.today <= quarter_end:
+                    continue  # quarter not over yet (or past-YA quarters all qualify)
+                if q in quarters_present:
+                    continue
+                q_months = f"{date(self.ya, 3 * q - 2, 1).strftime('%b')}–{date(self.ya, 3 * q, 1).strftime('%b %Y')}"
+                cards.append({
+                    "insight_type": "deadline",
+                    "severity": "action_required",
+                    "generated_by": "rule_template",
+                    "dedupe_key": self._key("deadline", f"bank_statement_q{q}_missing"),
+                    "title": f"Q{q} {self.ya} bank statement missing",
+                    "body": (
+                        f"You upload business bank statements, but no statement covering "
+                        f"{q_months} is in your vault. Statements are matched line-by-line "
+                        "against your invoices and receipts to catch undocumented income "
+                        "and missing expense records — this quarter can't be reconciled "
+                        "until its statement is uploaded."
+                    ),
+                    "rm_impact": None,
+                    "deadline_date": None,
+                    "citation": "LHDN record-keeping requirement (s.82 ITA 1967)",
+                    "signals": [
+                        {"label": "Missing period", "value": f"Q{q} — {q_months}"},
+                        {"label": "Statements on file this YA", "value": str(len(bank_statements))},
+                        {"label": "Why it matters", "value": "Line-matching reconciliation incomplete for this quarter"},
+                    ],
+                    "source_document_ids": [bs.get("documentId") for bs in bank_statements if bs.get("documentId")],
+                    "action": {"label": "Upload the statement", "to": "/account"},
+                })
+
+        # ── 3d. Prior-year filed Form B missing (folded from the old
+        #        standalone formb_missing type) ──────────────────────────────
+        if not prior_formb_exists:
+            prior_ya = self.ya - 1
+            cards.append({
+                "insight_type": "deadline",
+                "severity": "suggested",
+                "generated_by": "rule_template",
+                "dedupe_key": self._key("deadline", "prior_formb_missing"),
+                "title": f"Upload your filed YA {prior_ya} Form B to unlock smarter insights",
+                "body": (
+                    f"We do not have your filed YA {prior_ya} Form B. Uploading it gives "
+                    "the AI your official prior-year baseline — enabling carry-forward "
+                    "tracking, year-on-year comparisons, and more accurate relief suggestions."
+                ),
+                "rm_impact": None,
+                "deadline_date": None,
+                "citation": "LHDN Form B (prior-year return)",
+                "signals": [
+                    {"label": "Prior-year Form B on file", "value": f"None found for YA {prior_ya}"},
+                    {"label": "Unlocks", "value": "Carry-forward losses · YoY gaps · relief history"},
+                ],
+                "source_document_ids": [],
+                "action": {"label": "Upload Form B", "to": "/account"},
+            })
+
+        return cards
+
+    # ══════════════════════════════════════════════════════════════════════
+    # INSIGHT 4 — review_pending: per-document "needs answer" cards
+    # ══════════════════════════════════════════════════════════════════════
+    def _rule_review_pending_docs(self, cy: dict) -> list[dict]:
         import main as main_module
         pending = cy.get("mixedPendingReview") or []
         cards = []
@@ -505,12 +740,82 @@ class TaxInsightEngine:
             )
         return cards
 
-    def _rule_relief_headroom(self, cy: dict) -> list[dict]:
+    # ══════════════════════════════════════════════════════════════════════
+    # INSIGHT 4 — review_pending: audit-risk expense-ratio anomaly detection
+    # Deterministic ratio check: Entertainment & Gifts / Travel Claims vs
+    # gross business revenue. >15% → medium band, >25% → high band. Sub-key
+    # is (category_slug, band) so a category crossing from medium into high
+    # creates the high card and auto-resolves the medium one (material
+    # variance), while repeated detections in the same band upsert in place.
+    # ══════════════════════════════════════════════════════════════════════
+    def _rule_audit_risk(self, cy: dict) -> list[dict]:
+        totals = cy.get("totals") or {}
+        revenue = float(totals.get("q1BusinessIncome") or 0)
+        if revenue <= 0:
+            return []
+
+        cards = []
+        for group in AUDIT_RATIO_GROUPS:
+            entries = self._entries_in_categories(cy, group["categories"])
+            group_total = round(sum(float(e.get("amountNumeric") or 0) for e in entries), 2)
+            if group_total <= 0:
+                continue
+            ratio = group_total / revenue
+            if ratio > AUDIT_RATIO_HIGH:
+                band = "high"
+            elif ratio > AUDIT_RATIO_MEDIUM:
+                band = "medium"
+            else:
+                continue
+
+            severity = AUDIT_BAND_SEVERITY[band]
+            threshold_pct = int((AUDIT_RATIO_HIGH if band == "high" else AUDIT_RATIO_MEDIUM) * 100)
+            doc_ids = [e.get("documentId") for e in entries if e.get("documentId")]
+            cards.append({
+                "insight_type": "review_pending",
+                "severity": severity,
+                "generated_by": "rule_template",
+                "dedupe_key": self._key("review_pending", f"{group['slug']}:{band}"),
+                "title": (
+                    f"{group['label']} at {ratio * 100:.1f}% of revenue — "
+                    + ("known LHDN audit trigger" if band == "high" else "above typical audit thresholds")
+                ),
+                "body": (
+                    f"Your {group['label'].lower()} spend of {_fmt_rm(group_total)} is "
+                    f"{ratio * 100:.1f}% of your YA {self.ya} gross business revenue "
+                    f"({_fmt_rm(revenue)}) — above the {threshold_pct}% level that is a "
+                    "known LHDN audit selection signal. The claims may be entirely "
+                    "legitimate, but make sure every receipt carries a clear audit "
+                    "trail: client names, business purpose notes, and (for vehicles) a "
+                    "mileage log, so the deductions survive scrutiny."
+                ),
+                "rm_impact": None,
+                "deadline_date": None,
+                "citation": group["citation"],
+                "signals": [
+                    {"label": f"{group['label']} total", "value": _fmt_rm(group_total)},
+                    {"label": "Gross business revenue", "value": _fmt_rm(revenue)},
+                    {"label": "Ratio", "value": f"{ratio * 100:.1f}% (threshold: {threshold_pct}%)"},
+                    {"label": "Risk band", "value": band},
+                    {"label": "Documents in category", "value": str(len(entries))},
+                ],
+                "source_document_ids": doc_ids,
+                "action": {"label": "Review these documents", "to": "/account"},
+            })
+        return cards
+
+    # ══════════════════════════════════════════════════════════════════════
+    # INSIGHT 5 — relief_headroom: ONE aggregated saving-opportunities card
+    # (chosen over per-category cards: a single upsert-in-place summary with a
+    # per-category breakdown in signals; sub-key is the constant
+    # "q4-aggregate", so the card recomputes in place as claims accrue).
+    # ══════════════════════════════════════════════════════════════════════
+    def _rule_relief_headroom_aggregate(self, cy: dict) -> list[dict]:
         import main as main_module
         totals = cy.get("totals") or {}
         if float(totals.get("totalIncome") or 0) <= 0:
             return []
-        marginal = totals.get("currentMarginalRatePct")
+        marginal = self._marginal_rate_pct(cy)
         if not marginal or marginal <= 0:
             return []
 
@@ -519,64 +824,81 @@ class TaxInsightEngine:
             for b in (totals.get("q4ReliefsBreakdown") or [])
         }
 
-        candidates = []
+        lines = []
+        total_headroom = 0.0
         for cat, cap in main_module.RELIEF_CAPS_FALLBACK_MYR.items():
             claimed = claimed_by_cat.get(cat, 0.0)
-            headroom = float(cap) - claimed
-            if headroom < RELIEF_HEADROOM_MIN_MYR:
+            headroom = round(float(cap) - claimed, 2)
+            if headroom < RELIEF_HEADROOM_MIN_CATEGORY_MYR:
                 continue
-            saving = round(headroom * marginal / 100, 2)
-            candidates.append((cat, cap, claimed, headroom, saving))
+            total_headroom += headroom
+            lines.append((cat.replace("Q4 — ", ""), claimed, float(cap), headroom))
+        total_headroom = round(total_headroom, 2)
+        if total_headroom < RELIEF_HEADROOM_MIN_TOTAL_MYR:
+            return []
 
-        candidates.sort(key=lambda c: c[4], reverse=True)
-        cards = []
-        for cat, cap, claimed, headroom, saving in candidates[:RELIEF_HEADROOM_MAX_CARDS]:
-            slug = _RELIEF_SLUGS.get(cat, _slugify(cat))
-            short_name = cat.replace("Q4 — ", "")
-            # A countdown only makes sense while the relief window is still
-            # open — i.e. when analysing the current calendar year. For a
-            # backdated YA the headroom is still reportable at filing time,
-            # but there is no live deadline to count down to.
-            window_close = date(self.ya, 12, 31) if self.is_current_ya else None
-            if self.is_current_ya:
-                body = (
-                    f"You have claimed {_fmt_rm(claimed)} of the {_fmt_rm(cap)} "
-                    f"{short_name} cap this year. Using the remaining "
-                    f"{_fmt_rm(headroom)} before 31 December could save you up to "
-                    f"{_fmt_rm(saving)} in tax at your current {marginal:.0f}% marginal rate."
-                )
-            else:
-                body = (
-                    f"For YA {self.ya}, you claimed {_fmt_rm(claimed)} of the "
-                    f"{_fmt_rm(cap)} {short_name} cap. If you have qualifying "
-                    f"receipts from {self.ya} that were never uploaded, the remaining "
-                    f"{_fmt_rm(headroom)} could be worth up to {_fmt_rm(saving)} at "
-                    f"your {marginal:.0f}% marginal rate for that year."
-                )
-            signals = [
-                {"label": "Claimed so far", "value": f"{_fmt_rm(claimed)} of {_fmt_rm(cap)} cap"},
-                {"label": "Your marginal tax rate", "value": f"{marginal:.0f}%"},
-                {"label": "Potential tax saving", "value": f"{_fmt_rm(headroom)} × {marginal:.0f}% = {_fmt_rm(saving)}"},
-            ]
-            if window_close:
-                signals.append({"label": "Window closes", "value": window_close.strftime("%d %b %Y")})
-            cards.append({
-                "insight_type": "relief_headroom",
-                "severity": "suggested",
-                "generated_by": "rule_template",
-                "dedupe_key": self._key("relief_headroom", slug),
-                "title": f"{_fmt_rm(headroom)} of {short_name} still unclaimed",
-                "body": body,
-                "rm_impact": saving,
-                "deadline_date": window_close,
-                "citation": "Schedule 9, ITA 1967",
-                "signals": signals,
-                "source_document_ids": [],
-                "action": {"label": "How to claim this", "to": "/cukaibot"},
+        lines.sort(key=lambda l: l[3], reverse=True)
+        saving = round(total_headroom * marginal / 100, 2)
+        window_close = date(self.ya, 12, 31) if self.is_current_ya else None
+
+        signals = [
+            {
+                "label": short,
+                "value": f"{_fmt_rm(claimed)} of {_fmt_rm(cap)} claimed — {_fmt_rm(headroom)} left",
+            }
+            for short, claimed, cap, headroom in lines[:RELIEF_HEADROOM_MAX_SIGNAL_LINES]
+        ]
+        if len(lines) > RELIEF_HEADROOM_MAX_SIGNAL_LINES:
+            rest = round(sum(l[3] for l in lines[RELIEF_HEADROOM_MAX_SIGNAL_LINES:]), 2)
+            signals.append({
+                "label": f"+{len(lines) - RELIEF_HEADROOM_MAX_SIGNAL_LINES} more categories",
+                "value": f"{_fmt_rm(rest)} additional headroom",
             })
-        return cards
+        signals.append({"label": "Your marginal tax rate", "value": f"{marginal:.0f}%"})
+        signals.append({
+            "label": "Tax saved if fully used",
+            "value": f"{_fmt_rm(total_headroom)} × {marginal:.0f}% = {_fmt_rm(saving)}",
+        })
+        if window_close:
+            signals.append({"label": "Window closes", "value": window_close.strftime("%d %b %Y")})
 
-    def _rule_doc_gap(self, cy: dict) -> list[dict]:
+        top = lines[0]
+        if self.is_current_ya:
+            body = (
+                f"Across {len(lines)} personal relief categor{'ies' if len(lines) != 1 else 'y'}, "
+                f"{_fmt_rm(total_headroom)} of headroom is still unclaimed for YA {self.ya} — "
+                f"your largest gap is {top[0]} with {_fmt_rm(top[3])} unused. Qualifying "
+                f"spending before 31 December could save you up to {_fmt_rm(saving)} in tax "
+                f"at your current {marginal:.0f}% marginal rate."
+            )
+        else:
+            body = (
+                f"For YA {self.ya}, {_fmt_rm(total_headroom)} of personal relief headroom "
+                f"went unclaimed across {len(lines)} categor{'ies' if len(lines) != 1 else 'y'} "
+                f"(largest: {top[0]}, {_fmt_rm(top[3])} unused). If you hold qualifying "
+                f"{self.ya} receipts that were never uploaded, claiming them is worth up to "
+                f"{_fmt_rm(saving)} at your {marginal:.0f}% marginal rate for that year."
+            )
+
+        return [{
+            "insight_type": "relief_headroom",
+            "severity": "suggested",
+            "generated_by": "rule_template",
+            "dedupe_key": self._key("relief_headroom", "q4-aggregate"),
+            "title": f"{_fmt_rm(total_headroom)} of personal relief headroom — up to {_fmt_rm(saving)} in tax savings",
+            "body": body,
+            "rm_impact": saving,
+            "deadline_date": window_close,
+            "citation": f"Schedule 9, ITA 1967 · LHDN personal relief guideline YA {self.ya}",
+            "signals": signals,
+            "source_document_ids": [],
+            "action": {"label": "How to claim these", "to": "/cukaibot"},
+        }]
+
+    # ══════════════════════════════════════════════════════════════════════
+    # INSIGHT 1 — doc_gap: recurring-vendor bill gaps
+    # ══════════════════════════════════════════════════════════════════════
+    def _rule_vendor_gap(self, cy: dict) -> list[dict]:
         """Recurring-expense gap: a vendor billed monthly for ≥3 months in this
         YA, then the trail goes cold — likely unclaimed deductions. The gap
         window never extends past the YA under analysis (December of that
@@ -590,7 +912,7 @@ class TaxInsightEngine:
             d = entry.get("date") or ""
             if not vendor or not re.match(r"^\d{4}-\d{2}", d):
                 continue
-            v = by_vendor.setdefault(vendor, {"months": {}, "doc_ids": [], "category": entry.get("category")})
+            v = by_vendor.setdefault(vendor, {"months": {}, "doc_ids": []})
             month = d[:7]
             v["months"].setdefault(month, []).append(float(entry.get("amountNumeric") or 0))
             if entry.get("documentId"):
@@ -647,7 +969,77 @@ class TaxInsightEngine:
             })
         return cards
 
-    def _rule_provision(self, summary: dict, cy: dict) -> list[dict]:
+    # ══════════════════════════════════════════════════════════════════════
+    # INSIGHT 1 — doc_gap: missing companion claims (Smart Deduction Tracker)
+    # Vehicle/petrol receipts with no mileage-log apportionment on file: LHDN
+    # disallows unapportioned private-vehicle claims in an audit, so the
+    # qualifying business proportion is "at risk" until a logbook percentage
+    # is confirmed. Sub-key = (expense_category, missing_companion_type).
+    # ══════════════════════════════════════════════════════════════════════
+    def _rule_companion_claims(self, cy: dict) -> list[dict]:
+        vehicle_entries = self._entries_in_categories(cy, _VEHICLE_EXPENSE_CATEGORIES)
+        if len(vehicle_entries) < COMPANION_MIN_VEHICLE_RECEIPTS:
+            return []
+
+        # Mileage-log evidence = a mixed-use vehicle document whose business-use
+        # percentage has been confirmed (deductible_pct persisted) — that is
+        # exactly what the reclassify flow stores when the user supplies their
+        # logbook proportion.
+        mileage_evidence = any(
+            e.get("category") == _MILEAGE_EVIDENCE_CATEGORY and e.get("deductiblePct") is not None
+            for e in cy.get("q3Deductions") or []
+        )
+        if mileage_evidence:
+            return []
+
+        total_spend = round(sum(float(e.get("amountNumeric") or 0) for e in vehicle_entries), 2)
+        if total_spend <= 0:
+            return []
+        qualifying = round(total_spend * DEFAULT_VEHICLE_BUSINESS_USE_PCT / 100, 2)
+        marginal = self._marginal_rate_pct(cy)
+        rm_impact = round(qualifying * marginal / 100, 2) if marginal else None
+        doc_ids = [e.get("documentId") for e in vehicle_entries if e.get("documentId")]
+
+        signals = [
+            {"label": "Vehicle/petrol receipts found", "value": f"{len(vehicle_entries)} document{'s' if len(vehicle_entries) != 1 else ''}"},
+            {"label": "Total vehicle spend", "value": _fmt_rm(total_spend)},
+            {"label": "Mileage log on file", "value": "None found"},
+            {"label": f"Qualifying portion at {DEFAULT_VEHICLE_BUSINESS_USE_PCT}% business use", "value": _fmt_rm(qualifying)},
+        ]
+        if rm_impact is not None:
+            signals.append({
+                "label": "Tax at stake",
+                "value": f"{_fmt_rm(qualifying)} × {marginal:.0f}% marginal rate = {_fmt_rm(rm_impact)}",
+            })
+
+        return [{
+            "insight_type": "doc_gap",
+            "severity": "action_required",
+            "generated_by": "rule_template",
+            "dedupe_key": self._key("doc_gap", "vehicle_expense:missing_mileage_log"),
+            "title": f"{len(vehicle_entries)} vehicle receipts but no mileage log — {_fmt_rm(qualifying)} of deductions at risk",
+            "body": (
+                f"You have {len(vehicle_entries)} vehicle and petrol receipts totalling "
+                f"{_fmt_rm(total_spend)} for YA {self.ya}, but no mileage log or confirmed "
+                "business-use percentage on file. LHDN disallows private-vehicle claims "
+                "without a logbook in an audit. Confirm your business-use proportion "
+                f"(a typical claim is around {DEFAULT_VEHICLE_BUSINESS_USE_PCT}%, worth "
+                f"about {_fmt_rm(qualifying)} of these expenses"
+                + (f" — roughly {_fmt_rm(rm_impact)} in tax at your marginal rate" if rm_impact is not None else "")
+                + ") to secure the deduction."
+            ),
+            "rm_impact": rm_impact,
+            "deadline_date": None,
+            "citation": "LHDN PR No. 1/2014 (business deductions — motor vehicles) · Form B Guidebook",
+            "signals": signals,
+            "source_document_ids": doc_ids,
+            "action": {"label": "Confirm business-use %", "to": "/account"},
+        }]
+
+    # ══════════════════════════════════════════════════════════════════════
+    # INSIGHT 2 — provision: monthly set-aside guidance
+    # ══════════════════════════════════════════════════════════════════════
+    def _rule_provision_set_aside(self, summary: dict, cy: dict) -> list[dict]:
         # summary["projection"] is only produced for the current calendar year
         # (main.py guards on year == today.year), so a backdated YA run
         # naturally emits no provision card.
@@ -687,35 +1079,100 @@ class TaxInsightEngine:
             "action": {"label": "See full breakdown", "to": "/overview"},
         }]
 
-    def _rule_formb_missing(self, cy: dict, prior_formb_exists: bool) -> list[dict]:
-        if (cy.get("documentCount") or 0) == 0:
-            return []  # empty year — nothing to compare a prior Form B against yet
-        if prior_formb_exists:
+    # ══════════════════════════════════════════════════════════════════════
+    # INSIGHT 2 — provision: bracket-jump proximity warning
+    # Reuses the SAME bracket lookup as everything else — the year summary's
+    # currentMarginalRatePct / nextMarginalRatePct / headroomToNextBracketMyr
+    # come from main._bracket_headroom; no bracket math is reimplemented.
+    # Sub-key = (current_bracket, next_bracket): the card recomputes in place
+    # as net profit moves, and rolls to a new card only when the bracket
+    # state itself changes (the old one then auto-resolves).
+    # ══════════════════════════════════════════════════════════════════════
+    def _rule_bracket_warning(self, summary: dict, cy: dict) -> list[dict]:
+        totals = cy.get("totals") or {}
+        chargeable = float(totals.get("estimatedChargeableIncome") or 0)
+        if chargeable <= 0:
             return []
-        prior_ya = self.ya - 1
+        cur_rate = totals.get("currentMarginalRatePct")
+        next_rate = totals.get("nextMarginalRatePct")
+        distance = totals.get("headroomToNextBracketMyr")
+        if cur_rate is None or next_rate is None or distance is None:
+            return []  # already in the top band, or no bracket data
+        distance = float(distance)
+        threshold = round(chargeable + distance, 2)  # next bracket floor
+
+        proj = summary.get("projection") or {}
+        proj_chargeable = float(proj.get("projectedChargeableIncome") or 0)
+        projected_to_cross = proj_chargeable > threshold
+
+        if distance > BRACKET_WARNING_DISTANCE_MYR and not projected_to_cross:
+            return []
+
+        # If the run-rate projection crosses the threshold, the extra tax on
+        # the crossing portion is the concrete stake; otherwise no rm figure.
+        rm_impact = None
+        if projected_to_cross:
+            rm_impact = round((proj_chargeable - threshold) * (float(next_rate) - float(cur_rate)) / 100, 2)
+
+        basis_ya = totals.get("taxBracketBasisYa") or self.ya
+        levers = (
+            "Levers before 31 December: qualifying capital purchases (Schedule 3 "
+            "capital allowance), EPF self-contribution (relief up to RM 4,000) or a "
+            "PRS top-up (up to RM 3,000) — each reduces chargeable income."
+            if self.is_current_ya else
+            "If you hold unclaimed qualifying receipts or reliefs for this year, "
+            "claiming them reduces the chargeable income counted against this bracket."
+        )
+        if projected_to_cross:
+            headline = (
+                f"On track to cross into the {next_rate:.0f}% bracket"
+            )
+            body = (
+                f"Your YA {self.ya} chargeable income is {_fmt_rm(chargeable)} so far — "
+                f"{_fmt_rm(distance)} below the {_fmt_rm(threshold)} threshold where the "
+                f"marginal rate jumps from {cur_rate:.0f}% to {next_rate:.0f}%. At your "
+                f"current run rate you are projected to reach {_fmt_rm(proj_chargeable)}, "
+                f"crossing the line"
+                + (f" — roughly {_fmt_rm(rm_impact)} extra tax on the portion above it" if rm_impact else "")
+                + f". {levers}"
+            )
+        else:
+            headline = f"{_fmt_rm(distance)} from the {next_rate:.0f}% tax bracket"
+            body = (
+                f"Your YA {self.ya} chargeable income of {_fmt_rm(chargeable)} sits in the "
+                f"{cur_rate:.0f}% bracket, {_fmt_rm(distance)} below the {_fmt_rm(threshold)} "
+                f"threshold where the rate rises to {next_rate:.0f}%. Every ringgit above "
+                f"that line is taxed at the higher rate. {levers}"
+            )
+
+        signals = [
+            {"label": "Chargeable income (estimated)", "value": _fmt_rm(chargeable)},
+            {"label": "Current marginal rate", "value": f"{cur_rate:.0f}%"},
+            {"label": "Next bracket", "value": f"{next_rate:.0f}% from {_fmt_rm(threshold)}"},
+            {"label": "Distance to threshold", "value": _fmt_rm(distance)},
+        ]
+        if proj_chargeable:
+            signals.append({
+                "label": "Projected chargeable (run rate)",
+                "value": _fmt_rm(proj_chargeable) + (" — crosses the threshold" if projected_to_cross else ""),
+            })
+
         return [{
-            "insight_type": "formb_missing",
-            "severity": "suggested",
+            "insight_type": "provision",
+            "severity": "action_required" if projected_to_cross else "suggested",
             "generated_by": "rule_template",
-            "dedupe_key": self._key("formb_missing", f"prior-{prior_ya}"),
-            "title": f"Upload your filed YA {prior_ya} Form B to unlock smarter insights",
-            "body": (
-                f"We do not have your filed YA {prior_ya} Form B. Uploading it gives "
-                "the AI your official prior-year baseline — enabling carry-forward "
-                "tracking, year-on-year comparisons, and more accurate relief suggestions."
-            ),
-            "rm_impact": None,
-            "deadline_date": None,
-            "citation": None,
-            "signals": [
-                {"label": "Prior-year Form B on file", "value": f"None found for YA {prior_ya}"},
-                {"label": "Unlocks", "value": "Carry-forward losses · YoY gaps · relief history"},
-            ],
+            "dedupe_key": self._key("provision", f"bracket:{float(cur_rate):g}-{float(next_rate):g}"),
+            "title": headline,
+            "body": body,
+            "rm_impact": rm_impact,
+            "deadline_date": date(self.ya, 12, 31) if self.is_current_ya else None,
+            "citation": f"LHDN Form B progressive tax rate schedule, YA {basis_ya}",
+            "signals": signals,
             "source_document_ids": [],
-            "action": {"label": "Upload Form B", "to": "/account"},
+            "action": {"label": "Plan year-end moves", "to": "/cukaibot"},
         }]
 
-    # ── Phase 2, Pipeline B: the LLM-phrased digest (no session held) ───────
+    # ── Pipeline B: the LLM-phrased digest (no session held) ────────────────
     def _build_digest(self, summary: dict, cy: dict, other_cards: list[dict]) -> list[dict]:
         totals = cy.get("totals") or {}
         income = float(totals.get("totalIncome") or 0)
@@ -726,7 +1183,10 @@ class TaxInsightEngine:
         pending_value = round(sum(c["rm_impact"] or 0 for c in pending), 2)
         reliefs = [c for c in other_cards if c["insight_type"] == "relief_headroom"]
         top_relief = reliefs[0] if reliefs else None
-        deadlines = [c for c in other_cards if c["insight_type"] == "deadline"]
+        deadlines = sorted(
+            [c for c in other_cards if c["insight_type"] == "deadline" and c["deadline_date"]],
+            key=lambda c: c["deadline_date"],
+        )
         next_deadline = deadlines[0] if deadlines else None
 
         prior_income = None
@@ -746,7 +1206,7 @@ class TaxInsightEngine:
             "top_relief_potential_saving_myr": (top_relief["rm_impact"] if top_relief else None),
             "next_deadline": (next_deadline["title"] if next_deadline else None),
             "next_deadline_date": (
-                next_deadline["deadline_date"].isoformat() if next_deadline and next_deadline["deadline_date"] else None
+                next_deadline["deadline_date"].isoformat() if next_deadline else None
             ),
             "projected_tax_myr": float((summary.get("projection") or {}).get("projectedTaxPayable") or 0) or None,
         }
@@ -761,7 +1221,7 @@ class TaxInsightEngine:
             "value": f"{len(pending)}" + (f" — worth ~{_fmt_rm(pending_value)}" if pending_value else ""),
         })
         if top_relief:
-            signals.append({"label": "Top unclaimed relief", "value": top_relief["title"]})
+            signals.append({"label": "Unclaimed relief", "value": top_relief["title"]})
         if next_deadline:
             signals.append({"label": "Next deadline", "value": next_deadline["title"]})
 
@@ -866,7 +1326,7 @@ class TaxInsightEngine:
             )
         if facts.get("top_relief_potential_saving_myr"):
             parts.append(
-                f"Your biggest unclaimed relief could save up to "
+                f"Your unclaimed reliefs could save up to "
                 f"{_fmt_rm(facts['top_relief_potential_saving_myr'])} in tax."
             )
         if facts.get("next_deadline"):
@@ -1024,7 +1484,9 @@ class TaxInsightEngine:
                     # 4c — auto-resolve insights whose underlying condition no
                     # longer holds: engine-managed types (digest excepted) still
                     # active in THIS assessment year but not regenerated by this
-                    # run.
+                    # run. This also retires legacy formb_missing cards (their
+                    # check now lives inside the deadline/compliance rule) and
+                    # audit-risk cards whose ratio moved to a different band.
                     stale_q = db.query(Insight).filter(
                         Insight.user_id == self.user_id,
                         Insight.assessment_year == self.ya,
@@ -1056,10 +1518,10 @@ class TaxInsightEngine:
 
     def _persist_with_retry(self, cards: list[dict], housekeeping: bool) -> tuple[int, int, int]:
         """Jittered exponential backoff around the write transaction for
-        transient lock contention / serialization failures (Flaw C). Each
-        attempt uses a brand-new session (the failed one is already closed).
-        This is the ONLY database retry loop — Gemini failures are handled
-        upstream by the circuit breaker and never reach this code path."""
+        transient lock contention / serialization failures. Each attempt uses
+        a brand-new session (the failed one is already closed). This is the
+        ONLY database retry loop — Gemini failures are handled upstream by
+        the circuit breaker and never reach this code path."""
         last_exc: Optional[Exception] = None
         for attempt in range(UPSERT_MAX_ATTEMPTS):
             try:
@@ -1124,9 +1586,9 @@ class TaxInsightEngine:
         # Phase 1 — facts (short session, closed inside)
         facts = self._gather_facts()
 
-        # Tax Amendment Lock (Flaw B): per-YA, logged, never silent. Note this
-        # aborts only THIS year's analysis — a batch spanning a locked and an
-        # open YA triggers separate per-document runs, and the open year's run
+        # Tax Amendment Lock: per-YA, logged, never silent. This aborts only
+        # THIS year's analysis — a batch spanning a locked and an open YA
+        # triggers separate per-document runs, and the open year's run
         # proceeds normally.
         if facts["locked"]:
             msg = (
@@ -1145,26 +1607,38 @@ class TaxInsightEngine:
         docs_analysed = cy.get("documentCount") or 0
 
         # ── PIPELINE A — deterministic rules, committed FIRST and alone ─────
+        # The 5 core insight types, each backed by one or two rule functions.
         cards_a: list[dict] = []
         a_created = a_updated = a_resolved = 0
         pipeline_a_ok = True
         if summary is not None:
-            rules = [
+            rules: list[tuple[str, Callable[[], list[dict]]]] = [
+                # Insight 3 — Proactive Deadline & Compliance
                 ("deadline",        lambda: self._rule_cp500_deadline(cy)),
-                ("review_pending",  lambda: self._rule_review_pending(cy)),
-                ("relief_headroom", lambda: self._rule_relief_headroom(cy)),
-                ("doc_gap",         lambda: self._rule_doc_gap(cy)),
-                ("provision",       lambda: self._rule_provision(summary, cy)),
-                ("formb_missing",   lambda: self._rule_formb_missing(cy, facts["prior_formb_exists"])),
+                ("deadline",        lambda: self._rule_deadline_compliance(cy, facts["prior_formb_exists"])),
+                # Insight 4 — Audit Risk Flagging + per-document reviews
+                ("review_pending",  lambda: self._rule_review_pending_docs(cy)),
+                ("review_pending",  lambda: self._rule_audit_risk(cy)),
+                # Insight 5 — Saving Opportunities (aggregated relief headroom)
+                ("relief_headroom", lambda: self._rule_relief_headroom_aggregate(cy)),
+                # Insight 1 — Smart Deduction Tracker
+                ("doc_gap",         lambda: self._rule_vendor_gap(cy)),
+                ("doc_gap",         lambda: self._rule_companion_claims(cy)),
+                # Insight 2 — Dynamic Tax Bracket Projections
+                ("provision",       lambda: self._rule_provision_set_aside(summary, cy)),
+                ("provision",       lambda: self._rule_bracket_warning(summary, cy)),
             ]
-            for insight_type, rule in rules:
+            for i, (insight_type, rule) in enumerate(rules):
                 if not self._type_enabled(insight_type):
                     continue
                 try:
                     cards_a.extend(rule())
                 except Exception as e:
-                    self.logs.append(f"rule {insight_type} failed ({type(e).__name__}): {e}")
-                    logger.error(f"[Insights] Rule '{insight_type}' failed for user={self.user_id}: {e}", exc_info=True)
+                    self.logs.append(f"rule {insight_type}#{i} failed ({type(e).__name__}): {e}")
+                    logger.error(
+                        f"[Insights] Rule '{insight_type}' (#{i}) failed for user={self.user_id}: {e}",
+                        exc_info=True,
+                    )
 
         try:
             # Commit point 1: deterministic insights land regardless of

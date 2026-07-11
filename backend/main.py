@@ -1297,7 +1297,10 @@ def reset_document_classification(
 RELIEF_CAPS_FALLBACK_MYR = {
   "Q4 — Life Insurance & Takaful Relief": 3000,
   "Q4 — EPF Personal Contribution":       4000,
-  "Q4 — Medical & Parental Care":         8000,
+  # Raised 8,000 → 10,000 per current LHDN medical relief cap (YA2026 rule
+  # set). This change bumped tax_rules.TAX_RULES_VERSION to "YA2026-v2" so
+  # snoozed insights computed under the old cap re-score on wake.
+  "Q4 — Medical & Parental Care":         10000,
   "Q4 — Lifestyle Relief":                2500,
   "Q4 — Education Relief":                7000,
   "Q4 — Child Relief":                    2000,
