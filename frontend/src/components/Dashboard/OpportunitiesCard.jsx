@@ -19,7 +19,7 @@ function OpportunitiesCard({ opportunities, scrollable = false }) {
     <section className="flex h-full flex-col rounded-xl border border-border bg-surface p-4">
       {/* Card header — shrink-0 so it never gets squeezed */}
       <div className="flex shrink-0 items-center justify-between">
-        <h2 className="font-headings text-sm font-semibold text-headings">
+        <h2 className="font-headings text-sm font-bold text-headings">
           Unclaimed Savings Opportunities
         </h2>
         <a href="#" className="flex items-center gap-1 text-xs font-medium text-primary hover:text-primary-hover">

@@ -10,7 +10,7 @@ const PlusIcon = () => (
   </svg>
 );
 const BuildingIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" className="h-[16px] w-[16px] text-[#64748B]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-[16px] w-[16px] text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="4" y="2" width="16" height="20" rx="2" ry="2" /><line x1="9" y1="22" x2="9" y2="16" /><line x1="15" y1="22" x2="15" y2="16" /><line x1="9" y1="16" x2="15" y2="16" />
     <path d="M8 6h2v2H8V6zm4 0h2v2h-2V6zM8 10h2v2H8v-2zm4 0h2v2h-2v-2z" />
   </svg>
@@ -51,7 +51,7 @@ const AlertTriangleIcon = () => (
   </svg>
 );
 const UserIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" className="h-[18px] w-[18px] text-[#0D9488]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-[18px] w-[18px] text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
   </svg>
 );
@@ -131,7 +131,7 @@ const BLANK_PERSONAL_PROFILE = {
 
 const Field = ({ label, required, hint, children, span = 1 }) => (
   <div className={span === 2 ? 'col-span-2' : 'col-span-1'}>
-    <label className="block text-xs font-semibold text-[#0F172A] mb-1">
+    <label className="block text-xs font-semibold text-headings mb-1">
       {label}{required && <span className="text-[#D85A30]"> *</span>}
     </label>
     {children}
@@ -139,20 +139,20 @@ const Field = ({ label, required, hint, children, span = 1 }) => (
   </div>
 );
 
-const inputClass = "w-full text-xs px-3 py-2 rounded-lg border border-slate-200 text-[#0F172A] placeholder:text-[#94A3B8] focus:outline-none focus:ring-2 focus:ring-[#0D9488]/30 focus:border-[#0D9488] transition-colors duration-150";
+const inputClass = "w-full text-xs px-3 py-2 rounded-lg border border-slate-200 text-headings placeholder:text-[#94A3B8] focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors duration-150";
 const selectClass = inputClass + " bg-white";
 
 const TextInput = (props) => <input type="text" className={inputClass} {...props} />;
 const SelectInput = ({ children, ...props }) => <select className={selectClass} {...props}>{children}</select>;
 
 const SectionLabel = ({ children }) => (
-  <h4 className="text-[11px] font-bold uppercase tracking-wider text-[#0D9488] mb-2.5">{children}</h4>
+  <h4 className="text-[11px] font-bold uppercase tracking-wider text-primary mb-2.5">{children}</h4>
 );
 
 const ToggleRow = ({ label, hint, checked, onChange }) => (
   <label className="flex items-start justify-between gap-3 py-2 cursor-pointer">
     <div className="min-w-0">
-      <p className="text-xs font-semibold text-[#0F172A]">{label}</p>
+      <p className="text-xs font-semibold text-headings">{label}</p>
       {hint && <p className="text-[10px] text-[#94A3B8] mt-0.5 leading-relaxed">{hint}</p>}
     </div>
     <button
@@ -160,7 +160,7 @@ const ToggleRow = ({ label, hint, checked, onChange }) => (
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={`relative shrink-0 w-9 h-5 rounded-full transition-colors duration-150 ${checked ? 'bg-[#0D9488]' : 'bg-slate-200'}`}
+      className={`relative shrink-0 w-9 h-5 rounded-full transition-colors duration-150 ${checked ? 'bg-primary' : 'bg-slate-200'}`}
     >
       <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-150 ${checked ? 'translate-x-4' : 'translate-x-0'}`} />
     </button>
@@ -195,14 +195,14 @@ const PersonalProfileSummary = ({ profile, onOpen }) => {
   return (
     <button
       onClick={onOpen}
-      className="w-full bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4 text-left hover:border-[#0D9488]/40 transition-colors duration-150"
+      className="w-full bg-surface p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4 text-left hover:border-primary/40 transition-colors duration-150"
     >
-      <div className="h-11 w-11 rounded-full bg-[#f0fdf9] border border-slate-100 flex items-center justify-center shrink-0">
+      <div className="h-11 w-11 rounded-full bg-primary-tint border border-slate-100 flex items-center justify-center shrink-0">
         <UserIcon />
       </div>
       <div className="min-w-0 flex-1">
-        <h3 className="text-sm font-bold text-[#0F172A] truncate">{profile.fullName || 'Your name'}</h3>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-[#64748B] mt-0.5">
+        <h3 className="text-sm font-bold text-headings truncate">{profile.fullName || 'Your name'}</h3>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-muted mt-0.5">
           <span>{profile.personalTin || 'No TIN set'}</span>
           <span className="text-slate-300">•</span>
           <span className="capitalize">{(profile.maritalStatus || '').replace('-', ' ') || 'Not set'}</span>
@@ -210,7 +210,7 @@ const PersonalProfileSummary = ({ profile, onOpen }) => {
           <span>{childLabel}</span>
         </div>
       </div>
-      <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#0D9488] shrink-0">
+      <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary shrink-0">
         <EditIcon />Edit profile
       </span>
     </button>
@@ -239,15 +239,15 @@ const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
 
         <div className="shrink-0 flex items-start justify-between gap-3 px-5 py-4 border-b border-slate-100">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="h-9 w-9 rounded-full bg-[#f0fdf9] border border-slate-100 flex items-center justify-center shrink-0">
+            <div className="h-9 w-9 rounded-full bg-primary-tint border border-slate-100 flex items-center justify-center shrink-0">
               <UserIcon />
             </div>
             <div className="min-w-0">
-              <h3 className="text-sm font-bold text-[#0F172A] truncate">Personal Profile</h3>
-              <p className="text-[11px] text-[#64748B]">Used across all entities you file for</p>
+              <h3 className="text-sm font-bold text-headings truncate">Personal Profile</h3>
+              <p className="text-[11px] text-muted">Used across all entities you file for</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-[#94A3B8] hover:text-[#0F172A] transition-colors duration-150 shrink-0" aria-label="Close panel">
+          <button onClick={onClose} className="text-[#94A3B8] hover:text-headings transition-colors duration-150 shrink-0" aria-label="Close panel">
             <XIcon />
           </button>
         </div>
@@ -408,7 +408,7 @@ const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
           </div>
 
           <SectionLabel><span className="mt-2 block">Relief Categories to Prompt For</span></SectionLabel>
-          <p className="text-[11px] text-[#64748B] -mt-1.5 mb-1 leading-relaxed">
+          <p className="text-[11px] text-muted -mt-1.5 mb-1 leading-relaxed">
             These toggles determine which Part H relief questions you'll be asked during filing.
           </p>
           <div className="divide-y divide-slate-50">
@@ -446,12 +446,12 @@ const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
         </div>
 
         <div className="shrink-0 flex gap-2 px-5 py-4 border-t border-slate-100">
-          <button onClick={onClose} className="flex-1 py-2 px-3 text-xs border border-slate-200 rounded-lg font-medium text-[#0F172A] hover:bg-slate-50 transition-colors duration-150">
+          <button onClick={onClose} className="flex-1 py-2 px-3 text-xs border border-slate-200 rounded-lg font-medium text-headings hover:bg-slate-50 transition-colors duration-150">
             Cancel
           </button>
           <button
             onClick={() => onSave(draft)}
-            className="flex-1 py-2 px-3 text-xs bg-[#0D9488] text-white rounded-lg font-semibold flex items-center justify-center gap-1.5 hover:bg-[#0f766e] transition-colors duration-150"
+            className="flex-1 py-2 px-3 text-xs bg-primary text-white rounded-lg font-semibold flex items-center justify-center gap-1.5 hover:bg-primary-hover transition-colors duration-150"
           >
             <CheckIcon />Save Changes
           </button>
@@ -477,7 +477,7 @@ const ProfileTabNav = ({ active, onChange }) => {
           key={t.id}
           onClick={() => onChange(t.id)}
           className={`relative pb-2 pt-0.5 text-sm font-medium transition-all duration-150 select-none ${
-            active === t.id ? 'text-[#0D9488] font-semibold' : 'text-[#64748B] hover:text-[#0F172A]'
+            active === t.id ? 'text-primary font-semibold' : 'text-muted hover:text-headings'
           }`}
         >
           {t.label}
@@ -501,37 +501,37 @@ const EntityCard = ({ entity, active, onSwitch, onOpenPreview, personalTin }) =>
   return (
     <button
       onClick={onOpenPreview}
-      className={`h-full w-full bg-white p-3.5 rounded-xl border shadow-sm flex flex-col text-left transition-colors duration-150 hover:border-[#0D9488]/40 ${active ? 'border-[#0D9488]/40' : 'border-slate-100'}`}
+      className={`h-full w-full bg-surface p-3.5 rounded-xl border shadow-sm flex flex-col text-left transition-colors duration-150 hover:border-primary/40 ${active ? 'border-primary/40' : 'border-slate-100'}`}
     >
       {/* Header row: icon + name + role badge on the left side, Active badge pinned top-right */}
       <div className="flex justify-between items-start mb-2.5 gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <div className="p-1.5 bg-[#f0fdf9] rounded-lg border border-slate-100 shrink-0"><Icon /></div>
+          <div className="p-1.5 bg-primary-tint rounded-lg border border-slate-100 shrink-0"><Icon /></div>
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 min-w-0">
-              <h3 className="text-sm font-bold text-[#0F172A] truncate">{entity.name || 'Untitled Entity'}</h3>
+              <h3 className="text-sm font-bold text-headings truncate">{entity.name || 'Untitled Entity'}</h3>
             </div>
-            <p className="text-[11px] text-[#64748B]">Sole Proprietorship</p>
+            <p className="text-[12px] text-muted">Sole Proprietorship</p>
           </div>
         </div>
         {active && (
-          <span className="bg-[#f0fdf9] text-[#0D9488] border border-emerald-100 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider shrink-0">
+          <span className="bg-primary-tint text-primary border border-emerald-100 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider shrink-0">
             Active
           </span>
         )}
       </div>
 
-      <div className="grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-0.5 text-[11px] mb-2">
-        <span className="text-[#64748B]">SSM No:</span><span className="font-semibold text-[#0F172A] truncate">{entity.ssmNo || '—'}</span>
-        <span className="text-[#64748B]">Personal TIN:</span><span className="font-semibold text-[#0F172A] truncate">{personalTin || '—'}</span>
-        <span className="text-[#64748B]">Code:</span><span className="font-semibold text-[#0F172A] truncate">{entity.businessCode || '—'}</span>
-        <span className="text-[#64748B]">Net profit:</span><span className="font-semibold text-[#0F172A] truncate">{netProfit ?? '—'}</span>
+      <div className="grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-0.5 text-[12px] mb-2">
+        <span className="text-muted">SSM No:</span><span className="font-semibold text-headings truncate">{entity.ssmNo || '—'}</span>
+        <span className="text-muted">Personal TIN:</span><span className="font-semibold text-headings truncate">{personalTin || '—'}</span>
+        <span className="text-muted">Code:</span><span className="font-semibold text-headings truncate">{entity.businessCode || '—'}</span>
+        <span className="text-muted">Net profit:</span><span className="font-semibold text-headings truncate">{netProfit ?? '—'}</span>
       </div>
 
-      <p className="text-[11px] text-[#64748B] truncate mb-2">{entity.businessActivity || 'No activity specified'}</p>
+      <p className="text-[12px] text-muted truncate mb-2">{entity.businessActivity || 'No activity specified'}</p>
 
       {address && (
-        <div className="flex items-start gap-1.5 text-[10px] text-[#94A3B8] mb-2.5">
+        <div className="flex items-start gap-1.5 text-[12px] text-[#94A3B8] mb-2.5">
           <div className="pt-0.5"><MapPinIcon /></div>
           <span className="leading-snug line-clamp-2">{address}</span>
         </div>
@@ -539,9 +539,9 @@ const EntityCard = ({ entity, active, onSwitch, onOpenPreview, personalTin }) =>
 
       <div className="flex-1" />
 
-      <div className="flex items-center justify-between text-[10px] text-[#94A3B8] border-t border-slate-50 pt-2">
+      <div className="flex items-center justify-between text-[11px] text-[#94A3B8] border-t border-slate-50 pt-2">
         <span>{filingNote}</span>
-        <span className="inline-flex items-center gap-1 font-semibold text-[#0D9488]">
+        <span className="inline-flex items-center gap-1 font-semibold text-primary">
           View full profile<ChevronRightIcon />
         </span>
       </div>
@@ -580,26 +580,26 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClo
 
         <div className="shrink-0 flex items-start justify-between gap-3 px-5 py-4 border-b border-slate-100">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="p-2 bg-[#f0fdf9] rounded-lg border border-slate-100 shrink-0">
+            <div className="p-2 bg-primary-tint rounded-lg border border-slate-100 shrink-0">
               <BuildingIcon />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 min-w-0">
-                <h3 className="text-sm font-bold text-[#0F172A] truncate">
+                <h3 className="text-sm font-bold text-headings truncate">
                   {isNew ? 'New Sole Proprietorship' : (draft.name || 'Untitled Entity')}
                 </h3>
               </div>
-              <p className="text-[11px] text-[#64748B]">Sole Proprietorship</p>
+              <p className="text-[11px] text-muted">Sole Proprietorship</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-[#94A3B8] hover:text-[#0F172A] transition-colors duration-150 shrink-0" aria-label="Close panel">
+          <button onClick={onClose} className="text-[#94A3B8] hover:text-headings transition-colors duration-150 shrink-0" aria-label="Close panel">
             <XIcon />
           </button>
         </div>
 
         {active && (
           <div className="shrink-0 px-5 pt-3">
-            <span className="bg-[#f0fdf9] text-[#0D9488] border border-emerald-100 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider">
+            <span className="bg-primary-tint text-primary border border-emerald-100 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider">
               Active Entity
             </span>
           </div>
@@ -709,7 +709,7 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClo
                       <div className="flex gap-2 mt-2.5">
                         <button
                           onClick={() => setConfirmingDelete(false)}
-                          className="py-1.5 px-3 text-xs border border-slate-200 bg-white rounded-lg font-medium text-[#0F172A] hover:bg-slate-50 transition-colors duration-150"
+                          className="py-1.5 px-3 text-xs border border-slate-200 rounded-lg font-medium text-headings hover:bg-slate-50 transition-colors duration-150"
                         >
                           Cancel
                         </button>
@@ -724,7 +724,7 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClo
                     {isOnlyEntity && (
                       <button
                         onClick={() => setConfirmingDelete(false)}
-                        className="mt-2.5 py-1.5 px-3 text-xs border border-slate-200 bg-white rounded-lg font-medium text-[#0F172A] hover:bg-slate-50 transition-colors duration-150"
+                        className="mt-2.5 py-1.5 px-3 text-xs border border-slate-200 rounded-lg font-medium text-headings hover:bg-slate-50 transition-colors duration-150"
                       >
                         Got it
                       </button>
@@ -740,7 +740,7 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClo
           {!active && !isNew && (
             <button
               onClick={onSwitch}
-              className="flex-1 py-2 px-3 text-xs border border-slate-200 rounded-lg font-medium text-[#0F172A] flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors duration-150"
+              className="flex-1 py-2 px-3 text-xs border border-slate-200 rounded-lg font-medium text-headings flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors duration-150"
             >
               <SwitchIcon />Switch to Entity
             </button>
@@ -748,7 +748,7 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClo
           <button
             onClick={handleSave}
             disabled={!canSave || saving}
-            className={`flex-1 py-2 px-3 text-xs rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-colors duration-150 ${!canSave ? "bg-slate-100 text-slate-400 cursor-not-allowed" : saving ? "bg-[#0D9488]/70 text-white cursor-wait" : "bg-[#0D9488] text-white hover:bg-[#0f766e]"}`}
+            className={`flex-1 py-2 px-3 text-xs rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-colors duration-150 ${!canSave ? "bg-slate-100 text-slate-400 cursor-not-allowed" : saving ? "bg-primary/70 text-white cursor-wait" : "bg-primary text-white hover:bg-primary-hover"}`}
           >
             {saving ? (
               <>
@@ -1024,25 +1024,25 @@ function FormBPreview({ fd, filingYear, onClose }) {
       <div
         className={`relative flex h-full w-[720px] max-w-full flex-col bg-white shadow-2xl transition-transform duration-300 ease-out ${visible ? 'translate-x-0' : 'translate-x-full'}`}
         onClick={(e) => e.stopPropagation()}>
-        <div className="no-print flex items-center justify-between border-b border-[#E2E8F0] px-5 py-3 bg-[#F8FAFC] shrink-0">
+        <div className="no-print flex items-center justify-between border-b border-border px-5 py-3 bg-slate-50 shrink-0">
           <div>
-            <p className="text-sm font-bold text-[#0F172A]">Form B Preview — YA {filingYear}</p>
-            <p className="text-[10px] text-[#64748B] mt-0.5">Pre-filled draft. Verify all values before submitting to LHDN.</p>
+            <p className="text-sm font-bold text-headings">Form B Preview — YA {filingYear}</p>
+            <p className="text-[10px] text-muted mt-0.5">Pre-filled draft. Verify all values before submitting to LHDN.</p>
           </div>
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 rounded-lg border border-[#E2E8F0] bg-white px-2 py-1">
-              <button onClick={() => setZoom((z) => Math.max(60, z - 10))} className="text-[#64748B] hover:text-[#0F172A] px-1 text-sm font-bold">−</button>
-              <span className="text-[10px] text-[#64748B] w-8 text-center">{zoom}%</span>
-              <button onClick={() => setZoom((z) => Math.min(150, z + 10))} className="text-[#64748B] hover:text-[#0F172A] px-1 text-sm font-bold">+</button>
+            <div className="flex items-center gap-1 rounded-lg border border-border bg-white px-2 py-1">
+              <button onClick={() => setZoom((z) => Math.max(60, z - 10))} className="text-muted hover:text-headings px-1 text-sm font-bold">−</button>
+              <span className="text-[10px] text-muted w-8 text-center">{zoom}%</span>
+              <button onClick={() => setZoom((z) => Math.min(150, z + 10))} className="text-muted hover:text-headings px-1 text-sm font-bold">+</button>
             </div>
             <button onClick={handleDownload}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-[#0D9488] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0f766e] transition-colors duration-150">
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary-hover transition-colors duration-150">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
               </svg>
               Download
             </button>
-            <button onClick={handleClose} className="text-[#94A3B8] hover:text-[#0F172A] transition-colors ml-1">
+            <button onClick={handleClose} className="text-[#94A3B8] hover:text-headings transition-colors ml-1">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
@@ -1066,7 +1066,7 @@ function FormBPreview({ fd, filingYear, onClose }) {
 function InlineSummary({ title, children }) {
   return (
     <div>
-      <p className="mb-1.5 text-[9px] font-bold uppercase tracking-widest text-[#94A3B8]">{title}</p>
+      <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wider text-[#94A3B8]">{title}</p>
       <div className="rounded-lg border border-[#F1F5F9] divide-y divide-[#F1F5F9] overflow-hidden">{children}</div>
     </div>
   );
@@ -1074,8 +1074,8 @@ function InlineSummary({ title, children }) {
 function SRow({ label, value, bold, highlight }) {
   return (
     <div className={`flex items-center justify-between px-3 py-1.5 ${highlight ? 'bg-[#F0FDF4]' : ''}`}>
-      <span className={`text-[10px] ${bold ? 'font-semibold text-[#0F172A]' : 'text-[#64748B]'}`}>{label}</span>
-      <span className={`text-[10px] ml-6 text-right ${bold ? 'font-bold' : 'font-medium'} ${highlight ? 'text-[#0F6E56]' : 'text-[#0F172A]'}`}>{value}</span>
+      <span className={`text-[10px] ${bold ? 'font-semibold text-headings' : 'text-muted'}`}>{label}</span>
+      <span className={`text-[10px] ml-6 text-right ${bold ? 'font-bold' : 'font-medium'} ${highlight ? 'text-success' : 'text-headings'}`}>{value}</span>
     </div>
   );
 }
@@ -1093,11 +1093,11 @@ const GenerateFormsPanel = ({ profile, entities }) => {
     return (
       <div className="flex-1 min-h-0 flex items-center justify-center">
         <div className="max-w-sm text-center px-6">
-          <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-[#f0fdf9] border border-slate-100 text-[#0D9488]">
+          <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-primary-tint border border-slate-100 text-primary">
             <BuildingIcon />
           </div>
-          <p className="text-sm font-bold text-[#0F172A]">No business entities yet</p>
-          <p className="text-[11px] text-[#64748B] mt-1 leading-relaxed">
+          <p className="text-sm font-bold text-headings">No business entities yet</p>
+          <p className="text-[11px] text-muted mt-1 leading-relaxed">
             Your Form B draft is built from the entities you own. Add a business under <span className="font-semibold">Manage Entities</span> to generate the return.
           </p>
         </div>
@@ -1114,8 +1114,8 @@ const GenerateFormsPanel = ({ profile, entities }) => {
       {/* Header — title / description / actions (mirrors the Manage Entities tab) */}
       <div className="flex items-center justify-between shrink-0">
         <div>
-          <h2 className="text-sm font-bold text-[#0F172A]">Form B — Personal Return YA {filingYear}</h2>
-          <p className="text-[11px] text-[#64748B] mt-0.5">
+          <h2 className="text-sm font-bold text-headings">Form B — Personal Return YA {filingYear}</h2>
+          <p className="text-[12px] text-muted mt-0.5">
             {entityCount > 1
               ? `Combined across ${entityCount} entities · Main business: ${fd.businessName}`
               : `Based on ${fd.businessName}`} · Verify before submitting to LHDN
@@ -1124,7 +1124,7 @@ const GenerateFormsPanel = ({ profile, entities }) => {
         <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => setShowPreview(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-[#0D9488] bg-white px-3 py-1.5 text-xs font-semibold text-[#0D9488] hover:bg-[#f0fdf9] transition-colors duration-150"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-primary px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary-tint transition-colors duration-150"
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
@@ -1133,7 +1133,7 @@ const GenerateFormsPanel = ({ profile, entities }) => {
           </button>
           <button
             onClick={() => setShowPreview(true)}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[#0D9488] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0f766e] transition-colors duration-150"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary-hover transition-colors duration-150"
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
@@ -1145,7 +1145,7 @@ const GenerateFormsPanel = ({ profile, entities }) => {
 
       {/* At-a-glance summary — full form lives in the Preview */}
       <div className="flex-1 min-h-0 overflow-y-auto pr-0.5">
-        <div className="rounded-xl border border-[#E2E8F0] bg-white overflow-hidden">
+        <div className="rounded-xl border border-border bg-surface overflow-hidden">
           <div className="px-5 py-4 space-y-4">
             <InlineSummary title="Part B — Income Computation">
               <SRow label="B1  Statutory business income (all entities)" value={fmtRM(totalIncome)} />
@@ -1174,7 +1174,7 @@ const GenerateFormsPanel = ({ profile, entities }) => {
               <SRow label="N45 Total liabilities" value={fmtRM(totals.liabilities)} />
             </InlineSummary>
 
-            <p className="text-[9px] text-[#94A3B8] leading-relaxed">
+            <p className="text-[10px] text-[#94A3B8] leading-relaxed">
               Reliefs are estimated at their statutory maximums from the toggles on your personal profile — confirm the actual amounts before filing. Employment, rental and other non-business income are not included in this draft. Open <span className="font-semibold">Preview</span> to see and download the full Form B.
             </p>
           </div>
@@ -1328,12 +1328,12 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
       <div className="flex-1 min-h-0 flex flex-col gap-2">
         <div className="flex items-center justify-between shrink-0">
           <div>
-            <h2 className="text-sm font-bold text-[#0F172A]">Business Profiles</h2>
-            <p className="text-[11px] text-[#64748B] mt-0.5">Maintain the registered details LHDN requires for each entity you file on behalf of.</p>
+            <h2 className="text-sm font-bold text-headings">Business Profiles</h2>
+            <p className="text-[12px] text-muted mt-0.5">Maintain the registered details LHDN requires for each entity you file on behalf of.</p>
           </div>
           <button
             onClick={() => setNewEntityDraft({ ...BLANK_SOLE_PROP })}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[#0D9488] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0f766e] transition-colors duration-150 shrink-0"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary-hover transition-colors duration-150 shrink-0"
           >
             <PlusIcon />Create New Entity
           </button>

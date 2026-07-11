@@ -349,10 +349,10 @@ function FaqItem({ q, a }) {
     <div className="border-b border-slate-100 last:border-0">
       <button
         onClick={() => setOpen(v => !v)}
-        className="flex w-full items-center justify-between gap-4 py-4 text-left text-sm font-semibold text-[#0F172A] hover:text-[#0D9488]"
+        className="flex w-full items-center justify-between gap-4 py-4 text-left text-sm font-semibold text-headings hover:text-primary"
       >
         {q}
-        <span className={`shrink-0 text-[#64748B] transition-transform ${open ? 'rotate-180' : ''}`}><ChevronDownIcon /></span>
+        <span className={`shrink-0 text-muted transition-transform ${open ? 'rotate-180' : ''}`}><ChevronDownIcon /></span>
       </button>
       {open && <p className="pb-4 text-sm leading-relaxed text-[#334155]">{a}</p>}
     </div>
@@ -366,19 +366,19 @@ function DocContent({ item }) {
     <div className="space-y-6">
       <div>
         <div className="flex items-center gap-2 mb-1">
-          <h2 className="text-xl font-bold text-[#0F172A]">{item.title}</h2>
+          <h2 className="text-xl font-bold text-headings">{item.title}</h2>
           {item.badge && (
-            <span className="rounded-full border border-[#0D9488]/20 bg-[#f0fdf9] px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#0D9488]">
+            <span className="rounded-full border border-primary/20 bg-primary-tint px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary">
               {item.badge}
             </span>
           )}
         </div>
-        <p className="text-sm leading-relaxed text-[#64748B]">{content.description}</p>
+        <p className="text-sm leading-relaxed text-muted">{content.description}</p>
       </div>
 
       {content.sections.map((sec, i) => (
         <div key={i} className="space-y-3">
-          {sec.heading && <h3 className="text-sm font-bold text-[#0F172A]">{sec.heading}</h3>}
+          {sec.heading && <h3 className="text-sm font-bold text-headings">{sec.heading}</h3>}
 
           {sec.type === 'paragraph' && (
             <p className="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm leading-relaxed text-[#334155]">{sec.text}</p>
@@ -387,11 +387,11 @@ function DocContent({ item }) {
           {sec.type === 'list' && (
             <div className="space-y-2">
               {sec.items.map((it, j) => (
-                <div key={j} className="flex gap-3 rounded-xl border border-slate-100 bg-white px-4 py-3 shadow-sm">
-                  <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-[#0D9488]" />
+                <div key={j} className="flex gap-3 rounded-xl border border-slate-100 bg-surface px-4 py-3 shadow-sm">
+                  <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-primary" />
                   <div>
-                    <p className="text-sm font-semibold text-[#0F172A]">{it.label}</p>
-                    <p className="text-xs leading-relaxed text-[#64748B]">{it.desc}</p>
+                    <p className="text-sm font-semibold text-headings">{it.label}</p>
+                    <p className="text-xs leading-relaxed text-muted">{it.desc}</p>
                   </div>
                 </div>
               ))}
@@ -401,21 +401,21 @@ function DocContent({ item }) {
           {sec.type === 'api' && (
             <div className="space-y-2">
               {sec.endpoints.map((ep, j) => (
-                <div key={j} className="rounded-xl border border-slate-100 bg-white px-4 py-3 shadow-sm">
+                <div key={j} className="rounded-xl border border-slate-100 bg-surface px-4 py-3 shadow-sm">
                   <div className="flex items-center gap-2.5 mb-1.5">
                     <span className={`inline-flex rounded-md border px-2 py-0.5 text-[10px] font-bold ${METHOD_COLOR[ep.method] || 'bg-slate-50 text-slate-600 border-slate-200'}`}>
                       {ep.method}
                     </span>
                     <CodeBlock text={ep.path} />
                   </div>
-                  <p className="mt-2 text-xs text-[#64748B]">{ep.desc}</p>
+                  <p className="mt-2 text-xs leading-relaxed text-muted">{ep.desc}</p>
                 </div>
               ))}
             </div>
           )}
 
           {sec.type === 'faq' && (
-            <div className="rounded-xl border border-slate-100 bg-white px-5 shadow-sm">
+            <div className="rounded-xl border border-slate-100 bg-surface px-5 shadow-sm">
               {sec.items.map((it, j) => <FaqItem key={j} q={it.q} a={it.a} />)}
             </div>
           )}
@@ -450,12 +450,12 @@ function Documentation() {
   return (
     // ── FIXED VIEWPORT FRAME (Matches InsightsInbox.jsx) ──
     <main className="h-[calc(100vh-4.1rem)] bg-background font-body flex flex-col overflow-hidden">
-      <div className="mx-auto w-full max-w-7xl flex flex-col gap-4 px-6 py-5 h-full overflow-hidden">
+      <div className="mx-auto w-full max-w-7xl px-6 py-4 flex flex-col flex-1 min-h-0 gap-3">
 
         {/* ── Page Header (shrink-0 prevents it from squishing) ── */}
         <div className="flex flex-col gap-1 shrink-0">
-          <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">Documentation</h1>
-          <p className="text-sm text-[#64748B]">User manual, module guides, API reference, and frequently asked questions.</p>
+          <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Documentation</h1>
+          <p className="text-xs text-muted mt-1">User manual, module guides, API reference, and frequently asked questions.</p>
         </div>
 
         {/* ── Master Split Layout ── */}
@@ -471,7 +471,7 @@ function Documentation() {
                   value={search}
                   onChange={e => { setSearch(e.target.value); }}
                   placeholder="Search docs…"
-                  className="w-full rounded-xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm text-[#0F172A] placeholder-[#94A3B8] shadow-sm outline-none transition-all focus:border-[#0D9488] focus:ring-2 focus:ring-[#0D9488]/10"
+                  className="w-full rounded-xl border border-slate-200 bg-surface py-2 pl-9 pr-3 text-xs text-headings placeholder-[#94A3B8] shadow-sm outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/10"
                 />
               </div>
 
@@ -479,9 +479,9 @@ function Documentation() {
                 <div key={sec.id}>
                   <button
                     onClick={() => toggleSection(sec.id)}
-                    className="flex w-full items-center gap-2 px-2 py-1.5 text-xs font-bold uppercase tracking-widest text-[#64748B]"
+                    className="flex w-full items-center gap-2 px-2 py-1.5 text-[11px] font-bold uppercase tracking-wider text-muted"
                   >
-                    <span className="text-[#0D9488]">{sec.icon}</span>
+                    <span className="text-primary">{sec.icon}</span>
                     {sec.label}
                     <span className={`ml-auto transition-transform ${openSections[sec.id] ? 'rotate-90' : ''}`}><ChevronRightIcon /></span>
                   </button>
@@ -491,7 +491,7 @@ function Documentation() {
                         <button
                           key={item.id}
                           onClick={() => { setActiveId(item.id); setSearch(''); }}
-                          className={`block w-full rounded-lg px-2 py-1.5 text-left text-sm transition-colors ${activeId === item.id ? 'bg-[#0F172A] font-semibold text-white' : 'text-[#334155] hover:bg-slate-100 hover:text-[#0F172A]'}`}
+                          className={`block w-full rounded-lg px-2 py-1.5 text-left text-sm transition-colors ${activeId === item.id ? 'bg-[#0F172A] font-semibold text-white' : 'text-[#334155] hover:bg-slate-100 hover:text-headings'}`}
                         >
                           {item.title}
                         </button>
@@ -510,9 +510,9 @@ function Documentation() {
             {search ? (
               <div className="mb-3 max-h-40 overflow-y-auto space-y-2 lg:hidden shrink-0">
                 {filteredSections.flatMap(sec => sec.items).map(item => (
-                  <button key={item.id} onClick={() => { setActiveId(item.id); setSearch(''); }} className="block w-full rounded-xl border border-slate-100 bg-white px-4 py-3 text-left shadow-sm hover:border-[#0D9488]/30">
-                    <p className="text-sm font-semibold text-[#0F172A]">{item.title}</p>
-                    <p className="mt-0.5 line-clamp-2 text-xs text-[#64748B]">{item.content.description}</p>
+                  <button key={item.id} onClick={() => { setActiveId(item.id); setSearch(''); }} className="block w-full rounded-xl border border-slate-100 bg-surface px-4 py-3 text-left shadow-sm hover:border-primary/30">
+                    <p className="text-sm font-semibold text-headings">{item.title}</p>
+                    <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-muted">{item.content.description}</p>
                   </button>
                 ))}
               </div>
@@ -524,7 +524,7 @@ function Documentation() {
                 <button
                   key={item.id}
                   onClick={() => setActiveId(item.id)}
-                  className={`rounded-full border px-3 py-1 text-xs font-semibold transition-all ${activeId === item.id ? 'border-[#0F172A] bg-[#0F172A] text-white' : 'border-slate-200 bg-white text-[#64748B]'}`}
+                  className={`rounded-full border px-3 py-1 text-xs font-semibold transition-all ${activeId === item.id ? 'border-[#0F172A] bg-[#0F172A] text-white' : 'border-slate-200 bg-surface text-muted'}`}
                 >
                   {item.title}
                 </button>
@@ -532,7 +532,7 @@ function Documentation() {
             </div>
 
             {/* ── INDEPENDENTLY SCROLLABLE READING CARD ── */}
-            <div className="flex-1 overflow-y-auto min-h-0 rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
+            <div className="flex-1 overflow-y-auto min-h-0 rounded-2xl border border-slate-100 bg-surface p-6 shadow-sm">
               <DocContent item={activeItem} />
             </div>
 
@@ -545,7 +545,7 @@ function Documentation() {
                     key={item.id}
                     onClick={() => setActiveId(item.id)}
                     title={item.title}
-                    className={`h-1.5 rounded-full transition-all ${activeId === item.id ? 'w-4 bg-[#0D9488]' : 'w-1.5 bg-slate-300 hover:bg-slate-400'}`}
+                    className={`h-1.5 rounded-full transition-all ${activeId === item.id ? 'w-4 bg-primary' : 'w-1.5 bg-slate-300 hover:bg-slate-400'}`}
                   />
                 ))}
               </div>

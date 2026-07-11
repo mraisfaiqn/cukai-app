@@ -1,7 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import * as API from '../services/api';
 // ─── Design tokens (matches ManageAccount + UserNavigation) ───────────────────
-// Primary teal: #0F6E56  Active: #0D9488  Text: #0F172A  Muted: #64748B  Border: #E2E8F0
+// Design tokens: use text-primary/bg-primary (#0D9488), text-headings, text-muted, border-border — see design-system.md §4
 
 // ─── Backend category taxonomy (mirrors pipeline.py exactly) ─────────────────
 const Q1_CATEGORIES = [
@@ -131,7 +131,7 @@ function categoryLabel(cat) {
 // ─── Status meta ──────────────────────────────────────────────────────────────
 const STATUS_META = {
   income:         { label: 'Income',          color: '#0369A1', bg: '#EFF6FF', dot: '#0369A1' },
-  deductible:     { label: 'Deductible',      color: '#0F6E56', bg: '#ECFDF5', dot: '#0F6E56' },
+  deductible:     { label: 'Deductible',      color: '#0D9488', bg: '#ECFDF5', dot: '#0D9488' },
   mixed:          { label: 'Needs Review',    color: '#B45309', bg: '#FFFBEB', dot: '#F59E0B' },
   relief:         { label: 'Relief',          color: '#7C3AED', bg: '#F5F3FF', dot: '#7C3AED' },
   non_deductible: { label: 'Personal',        color: '#DC2626', bg: '#FEF2F2', dot: '#DC2626' },
@@ -310,7 +310,7 @@ function UploadProgressEntry({ entry }) {
 
   const phase = entry.phase || 'uploading';
   const barColor = phase === 'failed' ? '#DC2626'
-    : phase === 'done' ? '#0F6E56'
+    : phase === 'done' ? '#0D9488'
     : phase === 'processing' ? '#0369A1'
     : '#94A3B8';
 
@@ -329,8 +329,8 @@ function UploadProgressEntry({ entry }) {
             </svg>
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-[11px] font-medium text-[#0F172A] truncate">{entry.fileName}</p>
-            <div className="mt-1.5 h-1 w-full rounded-full bg-[#E2E8F0] overflow-hidden">
+            <p className="text-[11px] font-medium text-headings truncate">{entry.fileName}</p>
+            <div className="mt-1.5 h-1 w-full rounded-full bg-border overflow-hidden">
               <div
                 className="h-full rounded-full"
                 style={{ width: `${progress}%`, background: barColor, transition: 'width 0.4s ease' }}
@@ -348,13 +348,13 @@ function UploadProgressEntry({ entry }) {
             </span>
           )}
           {phase === 'done' && (
-            <span className="inline-flex items-center gap-1 text-[10px] text-[#0F6E56] font-semibold">
+            <span className="inline-flex items-center gap-1 text-[10px] text-primary font-semibold">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
               Classified
             </span>
           )}
           {phase === 'failed' && (
-            <span className="text-[10px] text-[#DC2626] font-semibold">Failed — check file</span>
+            <span className="text-[10px] text-critical font-semibold">Failed — check file</span>
           )}
         </div>
       </td>
@@ -376,7 +376,7 @@ function StatusBadge({ status }) {
   const key = status || 'mixed';
   const m = STATUS_META[key] || STATUS_META.mixed;
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-medium whitespace-nowrap"
+    <span className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider whitespace-nowrap"
       style={{ background: m.bg, color: m.color }}>
       <span className="h-1.5 w-1.5 rounded-full" style={{ background: m.dot }} />
       {m.label}
@@ -387,10 +387,12 @@ function StatusBadge({ status }) {
 // ─── Confidence badge ─────────────────────────────────────────────────────────
 function ConfidenceBadge({ value }) {
   if (value === null || value === undefined) return null;
-  const color = value >= 90 ? '#0F6E56' : value >= 70 ? '#B45309' : '#DC2626';
-  const bg    = value >= 90 ? '#ECFDF5' : value >= 70 ? '#FFFBEB' : '#FEF2F2';
+  // Maps 1:1 onto the design system's success/warning/critical tiers (§4) —
+  // uses semantic classes instead of inline hex now that all three tiers
+  // have a documented token equivalent.
+  const tone = value >= 90 ? 'bg-success-bg text-success' : value >= 70 ? 'bg-warning-bg text-warning' : 'bg-critical-bg text-critical';
   return (
-    <span className="rounded-full px-2 py-0.5 text-[10px] font-bold" style={{ background: bg, color }}>
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${tone}`}>
       {value}%
     </span>
   );
@@ -446,7 +448,7 @@ function FilePreviewRenderer({ doc, fileUrl }) {
         <img
           src={fileUrl}
           alt={doc.name}
-          className="max-h-full max-w-full object-contain rounded-lg shadow-xl border border-[#E2E8F0]"
+          className="max-h-full max-w-full object-contain rounded-lg shadow-xl border border-border"
           onError={e => { e.target.style.display = 'none'; }}
         />
       </div>
@@ -460,14 +462,14 @@ function FilePreviewRenderer({ doc, fileUrl }) {
     return (
       <div className="flex h-full items-center justify-center p-8 text-center">
         <div>
-          <svg className="mx-auto mb-3 h-12 w-12 text-[#0F6E56]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <svg className="mx-auto mb-3 h-12 w-12 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
             <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
           </svg>
-          <p className="text-xs font-medium text-[#0F172A]">{doc.name}</p>
-          <p className="text-[10px] text-[#64748B] mt-1">Spreadsheet files cannot be previewed in-browser.</p>
+          <p className="text-xs font-medium text-headings">{doc.name}</p>
+          <p className="text-[10px] text-muted mt-1">Spreadsheet files cannot be previewed in-browser.</p>
           <a href={fileUrl} download={doc.name}
-            className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-[#0F6E56] px-4 py-2 text-xs font-semibold text-white hover:bg-[#0A5140] transition-colors">
+            className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white hover:bg-primary-hover transition-colors duration-150">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
@@ -517,24 +519,24 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
     <div className="fixed inset-0 z-50 flex" onClick={handleClose}>
       <div className={`flex-1 bg-black/40 transition-opacity duration-300 ${visible ? 'opacity-100' : 'opacity-0'}`} />
       <div
-        className={`relative flex h-full w-[640px] max-w-full flex-col bg-white shadow-2xl transition-transform duration-300 ease-out ${visible ? 'translate-x-0' : 'translate-x-full'}`}
+        className={`relative flex h-full w-[640px] max-w-full flex-col bg-surface shadow-2xl transition-transform duration-300 ease-out ${visible ? 'translate-x-0' : 'translate-x-full'}`}
         onClick={e => e.stopPropagation()}>
 
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-[#E2E8F0] px-5 py-3 bg-[#F8FAFC] shrink-0">
+        <div className="flex items-center justify-between border-b border-border px-5 py-3 bg-[#F8FAFC] shrink-0">
           <div className="min-w-0">
-            <p className="text-sm font-bold text-[#0F172A] truncate">{doc.name}</p>
+            <p className="text-sm font-bold text-headings truncate">{doc.name}</p>
             <div className="flex items-center gap-2 mt-0.5">
-              <p className="text-[10px] text-[#64748B]">{doc.type || 'Document'}</p>
-              {doc.dateDisplay && <><span className="text-[#CBD5E1]">·</span><p className="text-[10px] text-[#64748B]">{doc.dateDisplay}</p></>}
+              <p className="text-[10px] text-muted">{doc.type || 'Document'}</p>
+              {doc.dateDisplay && <><span className="text-[#CBD5E1]">·</span><p className="text-[10px] text-muted">{doc.dateDisplay}</p></>}
               {doc.ocr_quality && doc.ocr_quality !== 'good' && (
-                <span className="rounded-full bg-[#FFFBEB] px-2 py-0.5 text-[9px] font-semibold text-[#B45309] border border-[#FDE68A]">
+                <span className="rounded-full bg-warning-bg px-2 py-0.5 text-[10px] font-semibold text-warning border border-warning/30">
                   OCR: {doc.ocr_quality}
                 </span>
               )}
             </div>
           </div>
-          <button onClick={handleClose} className="text-[#94A3B8] hover:text-[#0F172A] transition-colors shrink-0 ml-3">
+          <button onClick={handleClose} className="text-[#94A3B8] hover:text-headings transition-colors shrink-0 ml-3">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
@@ -546,8 +548,8 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
           {isPipeline ? (
             <div className="flex h-full items-center justify-center flex-col gap-3 p-8 text-center">
               <div className="h-10 w-10 rounded-full border-4 border-[#0369A1] border-t-transparent animate-spin" />
-              <p className="text-sm font-medium text-[#0F172A]">AI is reading your document…</p>
-              <p className="text-[10px] text-[#64748B]">Classification usually takes 15–45 seconds depending on file complexity.</p>
+              <p className="text-sm font-medium text-headings">AI is reading your document…</p>
+              <p className="text-[10px] text-muted">Classification usually takes 15–45 seconds depending on file complexity.</p>
             </div>
           ) : (
             <div className="h-full overflow-auto">
@@ -557,10 +559,10 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
         </div>
 
         {/* Classification footer */}
-        <div className="shrink-0 border-t border-[#E2E8F0] bg-white px-5 py-4 space-y-3">
+        <div className="shrink-0 border-t border-border bg-surface px-5 py-4 space-y-3">
           {/* Status + confidence row */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-[#64748B]">Classification</span>
+            <span className="text-[10px] text-muted">Classification</span>
             <div className="flex items-center gap-2">
               <ConfidenceBadge value={doc.confidence} />
               <StatusBadge status={badgeStatusFor(doc.category, doc.taxStatus, doc.status)} />
@@ -570,15 +572,15 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
           {/* Category */}
           {doc.category && (
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-[#64748B]">Category</span>
-              <span className="text-[10px] font-medium text-[#0F172A] text-right max-w-[260px] truncate">{categoryLabel(doc.category)}</span>
+              <span className="text-[10px] text-muted">Category</span>
+              <span className="text-[10px] font-medium text-headings text-right max-w-[260px] truncate">{categoryLabel(doc.category)}</span>
             </div>
           )}
 
           {/* ITA section */}
           {doc.ita_section && (
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-[#64748B]">ITA Reference</span>
+              <span className="text-[10px] text-muted">ITA Reference</span>
               <span className="text-[10px] font-mono text-[#0369A1]">{doc.ita_section}</span>
             </div>
           )}
@@ -586,15 +588,15 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
           {/* Amount */}
           {doc.amount && doc.amount !== '—' && (
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-[#64748B]">Amount</span>
-              <span className="text-xs font-bold text-[#0F172A]">{doc.amount}</span>
+              <span className="text-[10px] text-muted">Amount</span>
+              <span className="text-xs font-bold text-headings">{doc.amount}</span>
             </div>
           )}
 
           {/* AI note */}
           {doc.note && (
-            <div className="rounded-lg bg-[#F8FAFC] border border-[#E2E8F0] px-3 py-2">
-              <p className="text-[9px] font-semibold text-[#64748B] uppercase tracking-wide mb-0.5">AI Note</p>
+            <div className="rounded-lg bg-[#F8FAFC] border border-border px-3 py-2">
+              <p className="text-[11px] font-bold text-muted uppercase tracking-wider mb-0.5">AI Note</p>
               <p className="text-[10px] text-[#334155] leading-relaxed">{doc.note}</p>
             </div>
           )}
@@ -603,19 +605,19 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
           <div className="flex gap-2 pt-1">
             {isMixed && !isPipeline && (
               <button onClick={() => { handleClose(); onReclassify(doc); }}
-                className="flex-1 rounded-lg bg-[#B45309] px-3 py-2.5 text-xs font-semibold text-white hover:bg-[#92400E] transition-colors">
+                className="flex-1 rounded-lg bg-warning px-3 py-2 text-xs font-semibold text-white hover:bg-warning/85 transition-colors duration-150">
                 Review &amp; Classify
               </button>
             )}
             {!isMixed && !isPipeline && doc.status !== 'archived' && (
               <button onClick={() => { handleClose(); onReclassify(doc); }}
-                className="flex-1 rounded-lg border border-[#E2E8F0] bg-white px-3 py-2.5 text-xs font-semibold text-[#64748B] hover:border-[#0D9488] hover:text-[#0D9488] transition-colors">
+                className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs font-semibold text-muted hover:border-primary hover:text-primary transition-colors duration-150">
                 Re-classify
               </button>
             )}
             {doc.status !== 'archived' && !isPipeline && (
               <button onClick={() => { handleClose(); onArchive(doc.id); }}
-                className="rounded-lg border border-[#E2E8F0] bg-white px-3 py-2.5 text-xs font-semibold text-[#64748B] hover:border-[#64748B] transition-colors"
+                className="rounded-lg border border-border bg-white px-3 py-2 text-xs font-semibold text-muted hover:border-muted transition-colors duration-150"
                 title="Archive">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>
@@ -623,7 +625,7 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
               </button>
             )}
             <button onClick={() => { handleClose(); onDelete(doc.id); }}
-              className="rounded-lg border border-[#E2E8F0] bg-white px-3 py-2.5 text-xs font-semibold text-[#DC2626]/60 hover:border-[#DC2626] hover:text-[#DC2626] transition-colors"
+              className="rounded-lg border border-border bg-white px-3 py-2 text-xs font-semibold text-critical/60 hover:border-critical hover:text-critical transition-colors duration-150"
               title="Delete">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
@@ -733,9 +735,11 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
   }, [category, doc.deductiblePct, doc.category]);
 
   const confidence = isMixed ? (doc.confidence ?? 50) : (doc.confidence ?? 75);
-  const confTone = confidence >= 90 ? { color: '#0F6E56', bg: '#ECFDF5' }
-    : confidence >= 70 ? { color: '#B45309', bg: '#FFFBEB' }
-    : { color: '#DC2626', bg: '#FEF2F2' };
+  // Same success/warning/critical tiers as ConfidenceBadge — semantic classes
+  // instead of inline hex now that every tier has a documented token.
+  const confToneClass = confidence >= 90 ? 'bg-success-bg text-success'
+    : confidence >= 70 ? 'bg-warning-bg text-warning'
+    : 'bg-critical-bg text-critical';
 
   const handleConfirm = async () => {
     let amountToSend = null;
@@ -803,26 +807,26 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" onClick={onCancel}>
-      <div className="bg-white rounded-2xl shadow-2xl border border-[#E2E8F0] w-[480px] max-h-[88vh] overflow-y-auto p-6 mx-4" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface rounded-2xl shadow-2xl border border-border w-[480px] max-h-[88vh] overflow-y-auto p-6 mx-4" onClick={e => e.stopPropagation()}>
 
         {/* Header */}
         <div className="mb-4 flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-sm font-bold text-[#0F172A]">
+            <p className="text-sm font-bold text-headings">
               {isMixed ? 'Classify this document' : 'Re-classify this document'}
             </p>
-            <p className="text-[10px] text-[#64748B] mt-0.5 truncate">{doc.name} · {doc.amount}</p>
+            <p className="text-[10px] text-muted mt-0.5 truncate">{doc.name} · {doc.amount}</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <div className="flex flex-col items-end">
-              <span className="rounded-full px-2.5 py-1 text-[11px] font-bold" style={{ background: confTone.bg, color: confTone.color }}>
+              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${confToneClass}`}>
                 {confidence}% confidence
               </span>
-              <span className="text-[8px] text-[#94A3B8] mt-0.5 mr-0.5">
+              <span className="text-[10px] text-[#94A3B8] mt-0.5 mr-0.5">
                 {isMixed ? 'AI is undecided' : 'AI classification accuracy'}
               </span>
             </div>
-            <button onClick={onCancel} className="text-[#94A3B8] hover:text-[#0F172A] transition-colors">
+            <button onClick={onCancel} className="text-[#94A3B8] hover:text-headings transition-colors">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
@@ -834,13 +838,13 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
         {isMixed ? (
           <>
             {/* Why the AI couldn't decide */}
-            <div className="rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-3 py-2.5 mb-3">
-              <p className="text-[10px] font-semibold text-[#B45309] mb-1">Why the AI couldn't decide</p>
-              <p className="text-[10px] text-[#92400E] leading-relaxed">
+            <div className="rounded-lg border border-warning/30 bg-warning-bg px-3 py-2.5 mb-3">
+              <p className="text-[10px] font-semibold text-warning mb-1">Why the AI couldn't decide</p>
+              <p className="text-[10px] text-warning leading-relaxed">
                 {doc.reason || fallbackReason}
               </p>
               {doc.source && (
-                <p className="text-[9px] text-[#B45309]/80 mt-1.5 italic">Source: {doc.source}</p>
+                <p className="text-[10px] text-warning/80 mt-1.5 italic">Source: {doc.source}</p>
               )}
             </div>
             {/* Guiding question */}
@@ -854,13 +858,13 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
         ) : (
           <>
             {/* Why the AI placed it here */}
-            <div className="rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2.5 mb-3">
+            <div className="rounded-lg border border-border bg-[#F8FAFC] px-3 py-2.5 mb-3">
               <p className="text-[10px] font-semibold text-[#334155] mb-1">Why the AI classified it this way</p>
-              <p className="text-[10px] text-[#64748B] leading-relaxed">
+              <p className="text-[10px] text-muted leading-relaxed">
                 {doc.note || fallbackReason}
               </p>
-              <p className="text-[9px] text-[#94A3B8] mt-1.5">
-                Currently: <span className="font-semibold text-[#0F172A]">{STATUS_META[doc.taxStatus]?.label || doc.taxStatus}</span> · <span className="font-semibold text-[#0F172A]">{categoryLabel(doc.category)}</span>
+              <p className="text-[10px] text-[#94A3B8] mt-1.5">
+                Currently: <span className="font-semibold text-headings">{STATUS_META[doc.taxStatus]?.label || doc.taxStatus}</span> · <span className="font-semibold text-headings">{categoryLabel(doc.category)}</span>
               </p>
             </div>
             <div className="rounded-lg border border-[#BAE6FD] bg-[#F0F9FF] px-3 py-2.5 mb-4">
@@ -874,7 +878,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
 
         {/* ITA reference if available */}
         {doc.ita_section && (
-          <div className="mb-3 flex items-center gap-2 text-[10px] text-[#64748B]">
+          <div className="mb-3 flex items-center gap-2 text-[10px] text-muted">
             <span className="rounded bg-[#EFF6FF] px-2 py-0.5 font-mono text-[#0369A1] font-semibold">{doc.ita_section}</span>
             <span>ITA 1967 reference</span>
           </div>
@@ -887,7 +891,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
           <>
             {dateRoleEditable && (
               <div className="mb-3">
-                <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">
+                <label className="block text-[10px] font-semibold text-headings mb-1.5">
                   Date{' '}
                   <span className="font-normal text-[#94A3B8]">
                     {canEditDate ? "(OCR couldn't read this — please enter it)" : '(read from document)'}
@@ -898,20 +902,20 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
                     type="date"
                     value={dateInput}
                     onChange={e => { setDateInput(e.target.value); if (dateError) setDateError(''); }}
-                    className={`w-full rounded-lg border bg-white px-3 py-2 text-xs text-[#0F172A] focus:outline-none ${dateError ? 'border-[#FCA5A5] focus:border-[#DC2626]' : 'border-[#E2E8F0] focus:border-[#0D9488]'}`}
+                    className={`w-full rounded-lg border bg-white px-3 py-2 text-xs text-headings focus:outline-none ${dateError ? 'border-[#FCA5A5] focus:border-critical' : 'border-border focus:border-primary'}`}
                   />
                 ) : (
-                  <div className="w-full rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2 text-xs text-[#64748B]">
+                  <div className="w-full rounded-lg border border-border bg-[#F8FAFC] px-3 py-2 text-xs text-muted">
                     {doc.dateDisplay && doc.dateDisplay !== '—' ? doc.dateDisplay : '—'}
                   </div>
                 )}
-                {dateError && <p className="mt-1 text-[10px] text-[#DC2626]">{dateError}</p>}
+                {dateError && <p className="mt-1 text-[10px] text-critical">{dateError}</p>}
               </div>
             )}
 
             {amountRoleEditable ? (
               <div className="mb-3">
-                <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">
+                <label className="block text-[10px] font-semibold text-headings mb-1.5">
                   Amount{' '}
                   <span className="font-normal text-[#94A3B8]">
                     {canEditAmount ? "(OCR couldn't read this — please enter it)" : '(read from document)'}
@@ -919,7 +923,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
                 </label>
                 {canEditAmount ? (
                   <div className="relative">
-                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-[#64748B]">RM</span>
+                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted">RM</span>
                     <input
                       type="number"
                       min="0"
@@ -928,19 +932,19 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
                       value={amountInput}
                       onChange={e => { setAmountInput(e.target.value); if (amountError) setAmountError(''); }}
                       placeholder="0.00"
-                      className={`w-full rounded-lg border bg-white pl-9 pr-3 py-2 text-xs text-[#0F172A] focus:outline-none ${amountError ? 'border-[#FCA5A5] focus:border-[#DC2626]' : 'border-[#E2E8F0] focus:border-[#0D9488]'}`}
+                      className={`w-full rounded-lg border bg-white pl-9 pr-3 py-2 text-xs text-headings focus:outline-none ${amountError ? 'border-[#FCA5A5] focus:border-critical' : 'border-border focus:border-primary'}`}
                     />
                   </div>
                 ) : (
-                  <div className="w-full rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2 text-xs text-[#64748B]">
+                  <div className="w-full rounded-lg border border-border bg-[#F8FAFC] px-3 py-2 text-xs text-muted">
                     {doc.amount && doc.amount !== '—' ? doc.amount : '—'}
                   </div>
                 )}
-                {amountError && <p className="mt-1 text-[10px] text-[#DC2626]">{amountError}</p>}
+                {amountError && <p className="mt-1 text-[10px] text-critical">{amountError}</p>}
               </div>
             ) : (
-              <div className="mb-3 rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2.5">
-                <p className="text-[10px] text-[#64748B] leading-relaxed">
+              <div className="mb-3 rounded-lg border border-border bg-[#F8FAFC] px-3 py-2.5">
+                <p className="text-[10px] text-muted leading-relaxed">
                   This is a summary / statement document — it has no single amount to edit.
                   You can still correct its date above and its category below.
                 </p>
@@ -948,22 +952,22 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
             )}
           </>
         ) : (
-          <div className="mb-3 rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2.5">
-            <p className="text-[10px] text-[#64748B] leading-relaxed">
+          <div className="mb-3 rounded-lg border border-border bg-[#F8FAFC] px-3 py-2.5">
+            <p className="text-[10px] text-muted leading-relaxed">
               This document doesn't carry a single amount or date to edit. You can still correct its category below.
             </p>
           </div>
         )}
 
         {/* Category picker */}
-        <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">
+        <label className="block text-[10px] font-semibold text-headings mb-1.5">
           {canEditCategory ? 'Select the correct category' : 'Category (classified by AI)'}
         </label>
         {canEditCategory ? (
           <select
             value={category}
             onChange={e => setCategory(e.target.value)}
-            className="w-full rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs text-[#0F172A] mb-2 focus:outline-none focus:border-[#0D9488] cursor-pointer"
+            className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-headings mb-2 focus:outline-none focus:border-primary cursor-pointer"
           >
             {RECLASSIFY_GROUPS.map(group => (
               <optgroup key={group.label} label={group.label}>
@@ -974,7 +978,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
             <option value="Non-Tax Document">Non-Tax Document</option>
           </select>
         ) : (
-          <div className="w-full rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] px-3 py-2 text-xs text-[#64748B] mb-2">
+          <div className="w-full rounded-lg border border-border bg-[#F8FAFC] px-3 py-2 text-xs text-muted mb-2">
             {categoryLabel(category)}
           </div>
         )}
@@ -984,7 +988,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
             locked; the rest are entered/edited by the user. */}
         {apportionMeta && (
           <div className="mb-2">
-            <label className="block text-[10px] font-semibold text-[#0F172A] mb-1.5">
+            <label className="block text-[10px] font-semibold text-headings mb-1.5">
               Deductible portion{' '}
               <span className="font-normal text-[#94A3B8]">
                 {apportionMeta.mode === 'statutory' ? '(fixed by law)' : '(% of the amount that is deductible)'}
@@ -1001,12 +1005,12 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
                 disabled={apportionMeta.mode === 'statutory'}
                 onChange={e => { setPctInput(e.target.value); if (pctError) setPctError(''); }}
                 placeholder={apportionMeta.mode === 'required' ? '— %' : ''}
-                className={`w-full rounded-lg border bg-white pr-7 pl-3 py-2 text-xs text-[#0F172A] focus:outline-none disabled:bg-[#F8FAFC] disabled:text-[#64748B] ${pctError ? 'border-[#FCA5A5] focus:border-[#DC2626]' : 'border-[#E2E8F0] focus:border-[#0D9488]'}`}
+                className={`w-full rounded-lg border bg-white pr-7 pl-3 py-2 text-xs text-headings focus:outline-none disabled:bg-[#F8FAFC] disabled:text-muted ${pctError ? 'border-[#FCA5A5] focus:border-critical' : 'border-border focus:border-primary'}`}
               />
-              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#64748B]">%</span>
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted">%</span>
             </div>
-            <p className="mt-1 text-[10px] text-[#64748B] leading-relaxed">{apportionMeta.hint}</p>
-            {pctError && <p className="mt-1 text-[10px] text-[#DC2626]">{pctError}</p>}
+            <p className="mt-1 text-[10px] text-muted leading-relaxed">{apportionMeta.hint}</p>
+            {pctError && <p className="mt-1 text-[10px] text-critical">{pctError}</p>}
           </div>
         )}
 
@@ -1015,12 +1019,12 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
           {nothingEditable && !override ? (
             <p className="text-[10px] text-[#94A3B8]">
               The AI captured every field.{' '}
-              <button onClick={() => setOverride(true)} className="font-semibold text-[#0D9488] hover:text-[#0F6E56] underline">
+              <button onClick={() => setOverride(true)} className="font-semibold text-primary hover:text-primary-hover underline">
                 Edit anyway
               </button>
             </p>
           ) : !override ? (
-            <button onClick={() => setOverride(true)} className="text-[10px] text-[#94A3B8] hover:text-[#0D9488] underline">
+            <button onClick={() => setOverride(true)} className="text-[10px] text-[#94A3B8] hover:text-primary underline">
               Edit a locked field
             </button>
           ) : <span />}
@@ -1028,7 +1032,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
             <button
               onClick={handleReset}
               disabled={resetting}
-              className="text-[10px] font-semibold text-[#64748B] hover:text-[#DC2626] underline disabled:opacity-60">
+              className="text-[10px] font-semibold text-muted hover:text-critical underline disabled:opacity-60">
               {resetting ? 'Resetting…' : 'Reset to AI original'}
             </button>
           )}
@@ -1036,10 +1040,10 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
 
         {/* Derived status preview */}
         <div className="flex items-center gap-2 mb-5 px-1">
-          <span className="text-[10px] text-[#64748B]">Will be classified as:</span>
+          <span className="text-[10px] text-muted">Will be classified as:</span>
           <StatusBadge status={REFERENCE_CATEGORIES.includes(category) ? 'reference' : derivedStatus} />
           {apportionMeta && pctInput !== '' && (
-            <span className="text-[10px] font-semibold text-[#0F6E56]">· {pctInput}% deductible</span>
+            <span className="text-[10px] font-semibold text-primary">· {pctInput}% deductible</span>
           )}
         </div>
 
@@ -1047,7 +1051,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
         <button
           onClick={handleConfirm}
           disabled={saving}
-          className="w-full rounded-xl border-2 border-[#0F6E56] bg-[#F0FDF9] px-4 py-3 text-sm font-bold text-[#0F6E56] hover:bg-[#D1FAE5] transition-colors disabled:opacity-60"
+          className="w-full rounded-xl border-2 border-primary bg-primary-tint px-4 py-3 text-sm font-bold text-primary hover:bg-[#D1FAE5] transition-colors disabled:opacity-60"
         >
           {saving ? 'Saving…' : 'Confirm Classification'}
         </button>
@@ -1067,7 +1071,7 @@ function DocumentCanvas({ doc }) {
     canvas.width = W * dpr; canvas.height = H * dpr;
     canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
     ctx.scale(dpr, dpr);
-    const accent = doc.accent || '#0F6E56';
+    const accent = doc.accent || '#0D9488';
     ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, W, H);
     // Branded header
     ctx.fillStyle = accent; ctx.fillRect(0, 0, W, 88);
@@ -1103,7 +1107,7 @@ function DocumentCanvas({ doc }) {
     ctx.textAlign = 'center'; ctx.fillStyle = '#94A3B8'; ctx.font = '9px sans-serif';
     ctx.fillText('Generated by cukai.ai', W / 2, H - 28);
   }, [doc]);
-  return <canvas ref={canvasRef} className="block mx-auto rounded-lg shadow-xl border border-[#E2E8F0]" style={{ background: '#fff' }} />;
+  return <canvas ref={canvasRef} className="block mx-auto rounded-lg shadow-xl border border-border" style={{ background: '#fff' }} />;
 }
 
 // ─── Spreadsheet table renderer ───────────────────────────────────────────────
@@ -1111,20 +1115,20 @@ function SpreadsheetTable({ rows }) {
   if (!rows || rows.length === 0) return null;
   const colLetters = Array.from({ length: rows[0].length }, (_, i) => String.fromCharCode(65 + i));
   return (
-    <div className="rounded-lg border border-[#E2E8F0] overflow-hidden shadow-xl bg-white m-4">
+    <div className="rounded-lg border border-border overflow-hidden shadow-xl bg-surface m-4">
       <table className="w-full text-[11px] border-collapse">
         <thead>
           <tr>
-            <th className="w-8 border border-[#E2E8F0] bg-[#E8EBEF] text-[9px] text-[#94A3B8]"></th>
-            {colLetters.map(l => <th key={l} className="border border-[#E2E8F0] bg-[#E8EBEF] text-[9px] font-medium text-[#94A3B8] py-1">{l}</th>)}
+            <th className="w-8 border border-border bg-[#E8EBEF] text-[10px] text-[#94A3B8]"></th>
+            {colLetters.map(l => <th key={l} className="border border-border bg-[#E8EBEF] text-[10px] font-medium text-[#94A3B8] py-1">{l}</th>)}
           </tr>
         </thead>
         <tbody>
           {rows.map((row, ri) => (
-            <tr key={ri} className={ri === 0 ? 'bg-[#0F6E56]' : ri % 2 === 0 ? 'bg-white' : 'bg-[#FAFBFC]'}>
-              <td className="border border-[#E2E8F0] bg-[#F1F5F9] text-center text-[9px] text-[#94A3B8] py-1.5">{ri + 1}</td>
+            <tr key={ri} className={ri === 0 ? 'bg-primary' : ri % 2 === 0 ? 'bg-surface' : 'bg-[#FAFBFC]'}>
+              <td className="border border-border bg-[#F1F5F9] text-center text-[10px] text-[#94A3B8] py-1.5">{ri + 1}</td>
               {row.map((cell, ci) => (
-                <td key={ci} className={`border border-[#E2E8F0] px-2.5 py-1.5 whitespace-nowrap ${ri === 0 ? 'font-bold text-white' : ci === row.length - 1 ? 'text-right font-medium text-[#0F172A]' : 'text-[#334155]'}`}>
+                <td key={ci} className={`border border-border px-2.5 py-1.5 whitespace-nowrap ${ri === 0 ? 'font-bold text-white' : ci === row.length - 1 ? 'text-right font-medium text-headings' : 'text-[#334155]'}`}>
                   {cell}
                 </td>
               ))}
@@ -1184,75 +1188,75 @@ function ManualUploadModal({ onConfirm, onCancel }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm" onClick={onCancel}>
-      <div className="bg-white rounded-2xl shadow-2xl border border-[#E2E8F0] w-[520px] max-h-[90vh] overflow-y-auto p-6 mx-4" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface rounded-2xl shadow-2xl border border-border w-[520px] max-h-[90vh] overflow-y-auto p-6 mx-4" onClick={e => e.stopPropagation()}>
         <div className="mb-5 flex items-center justify-between">
           <div>
-            <p className="text-sm font-bold text-[#0F172A]">Manually add a document</p>
-            <p className="text-[10px] text-[#64748B] mt-0.5">No file? Enter the details and we'll save the record.</p>
+            <p className="text-sm font-bold text-headings">Manually add a document</p>
+            <p className="text-[10px] text-muted mt-0.5">No file? Enter the details and we'll save the record.</p>
           </div>
-          <button onClick={onCancel} className="text-[#94A3B8] hover:text-[#0F172A] transition-colors">
+          <button onClick={onCancel} className="text-[#94A3B8] hover:text-headings transition-colors">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] font-medium text-[#64748B] mb-1.5">Document type</label>
+              <label className="block text-[10px] font-medium text-muted mb-1.5">Document type</label>
               <select value={docType} onChange={e => setDocType(e.target.value)}
-                className="w-full rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs text-[#0F172A] focus:outline-none focus:border-[#0D9488] cursor-pointer">
+                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-headings focus:outline-none focus:border-primary cursor-pointer">
                 {['Invoice', 'Receipt', 'Utility Bill', 'Payroll', 'Purchase Order', 'Bank Statement', 'Other'].map(t => <option key={t}>{t}</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-[10px] font-medium text-[#64748B] mb-1.5">Date</label>
+              <label className="block text-[10px] font-medium text-muted mb-1.5">Date</label>
               <input type="date" value={date} onChange={e => setDate(e.target.value)}
-                className="w-full rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs text-[#0F172A] focus:outline-none focus:border-[#0D9488]" />
+                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-headings focus:outline-none focus:border-primary" />
             </div>
           </div>
           <div>
-            <label className="block text-[10px] font-medium text-[#64748B] mb-1.5">Vendor / payee name</label>
+            <label className="block text-[10px] font-medium text-muted mb-1.5">Vendor / payee name</label>
             <input type="text" value={vendor} onChange={e => setVendor(e.target.value)} placeholder="e.g. ABC Trading Sdn Bhd"
-              className="w-full rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs text-[#0F172A] focus:outline-none focus:border-[#0D9488] placeholder:text-[#CBD5E1]" />
+              className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-headings focus:outline-none focus:border-primary placeholder:text-[#CBD5E1]" />
           </div>
           <div>
-            <label className="block text-[10px] font-medium text-[#64748B] mb-1.5">Vendor address</label>
+            <label className="block text-[10px] font-medium text-muted mb-1.5">Vendor address</label>
             <input type="text" value={vendorAddr} onChange={e => setVendorAddr(e.target.value)} placeholder="e.g. No. 12, Jalan Damai, KL"
-              className="w-full rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs text-[#0F172A] focus:outline-none focus:border-[#0D9488] placeholder:text-[#CBD5E1]" />
+              className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-headings focus:outline-none focus:border-primary placeholder:text-[#CBD5E1]" />
           </div>
           <div>
-            <label className="block text-[10px] font-medium text-[#64748B] mb-1.5">Document / receipt number</label>
+            <label className="block text-[10px] font-medium text-muted mb-1.5">Document / receipt number</label>
             <input type="text" value={docNo} onChange={e => setDocNo(e.target.value)} placeholder="e.g. INV-2026-0001"
-              className="w-full rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs text-[#0F172A] focus:outline-none focus:border-[#0D9488] placeholder:text-[#CBD5E1]" />
+              className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-headings focus:outline-none focus:border-primary placeholder:text-[#CBD5E1]" />
           </div>
           {/* Line items */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className="block text-[10px] font-medium text-[#64748B]">Line items</label>
-              <button onClick={addLineItem} className="text-[10px] text-[#0D9488] font-semibold hover:text-[#0F6E56] transition-colors">+ Add item</button>
+              <label className="block text-[10px] font-medium text-muted">Line items</label>
+              <button onClick={addLineItem} className="text-[10px] text-primary font-semibold hover:text-primary-hover transition-colors">+ Add item</button>
             </div>
             <div className="space-y-2">
               {lineItems.map((li, i) => (
                 <div key={i} className="flex items-center gap-2">
                   <input type="text" value={li.desc} onChange={e => updateLineItem(i, 'desc', e.target.value)} placeholder="Description"
-                    className="flex-1 min-w-0 rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs text-[#0F172A] focus:outline-none focus:border-[#0D9488] placeholder:text-[#CBD5E1]" />
+                    className="flex-1 min-w-0 rounded-lg border border-border bg-white px-3 py-2 text-xs text-headings focus:outline-none focus:border-primary placeholder:text-[#CBD5E1]" />
                   <input type="number" value={li.amt} onChange={e => updateLineItem(i, 'amt', e.target.value)} placeholder="0.00"
-                    className="w-24 shrink-0 rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs text-[#0F172A] text-right focus:outline-none focus:border-[#0D9488] placeholder:text-[#CBD5E1]" />
-                  <button onClick={() => removeLineItem(i)} className="shrink-0 text-[#CBD5E1] hover:text-[#DC2626] transition-colors">
+                    className="w-24 shrink-0 rounded-lg border border-border bg-white px-3 py-2 text-xs text-headings text-right focus:outline-none focus:border-primary placeholder:text-[#CBD5E1]" />
+                  <button onClick={() => removeLineItem(i)} className="shrink-0 text-[#CBD5E1] hover:text-critical transition-colors">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                   </button>
                 </div>
               ))}
             </div>
             <div className="flex items-center justify-between mt-2 pt-2 border-t border-[#F1F5F9]">
-              <span className="text-[10px] font-semibold text-[#64748B]">Total</span>
-              <span className="text-xs font-bold text-[#0F172A]">{fmtRM(total)}</span>
+              <span className="text-[10px] font-semibold text-muted">Total</span>
+              <span className="text-xs font-bold text-headings">{fmtRM(total)}</span>
             </div>
           </div>
           {/* Category */}
           <div>
-            <label className="block text-[10px] font-medium text-[#64748B] mb-1.5">Category</label>
+            <label className="block text-[10px] font-medium text-muted mb-1.5">Category</label>
             <select value={category} onChange={e => setCategory(e.target.value)}
-              className="w-full rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs text-[#0F172A] focus:outline-none focus:border-[#0D9488] cursor-pointer">
+              className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-headings focus:outline-none focus:border-primary cursor-pointer">
               {RECLASSIFY_GROUPS.map(group => (
                 <optgroup key={group.label} label={group.label}>
                   {group.cats.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
@@ -1262,19 +1266,19 @@ function ManualUploadModal({ onConfirm, onCancel }) {
           </div>
           {/* Notes */}
           <div>
-            <label className="block text-[10px] font-medium text-[#64748B] mb-1.5">Notes (optional)</label>
+            <label className="block text-[10px] font-medium text-muted mb-1.5">Notes (optional)</label>
             <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Any additional context for this document"
-              className="w-full rounded-lg border border-[#E2E8F0] bg-white px-3 py-2 text-xs text-[#0F172A] focus:outline-none focus:border-[#0D9488] placeholder:text-[#CBD5E1] resize-none" />
+              className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-headings focus:outline-none focus:border-primary placeholder:text-[#CBD5E1] resize-none" />
           </div>
         </div>
         <button
           onClick={handleSubmit}
           disabled={!isValid || saving}
-          className={`w-full mt-6 rounded-xl px-4 py-3 text-sm font-bold transition-colors ${isValid && !saving ? 'bg-[#0F6E56] text-white hover:bg-[#0A5140] cursor-pointer' : 'bg-[#F1F5F9] text-[#CBD5E1] cursor-not-allowed'}`}>
+          className={`w-full mt-6 rounded-xl px-4 py-3 text-sm font-bold transition-colors ${isValid && !saving ? 'bg-primary text-white hover:bg-primary-hover cursor-pointer' : 'bg-[#F1F5F9] text-[#CBD5E1] cursor-not-allowed'}`}>
           {saving ? 'Saving…' : 'Save Document'}
         </button>
-        {saveError && <p className="text-[10px] text-[#DC2626] text-center mt-2">{saveError}</p>}
-        {!isValid && !saveError && <p className="text-[9px] text-[#94A3B8] text-center mt-2">Fill in vendor name, document number, date, and at least one line item.</p>}
+        {saveError && <p className="text-[10px] text-critical text-center mt-2">{saveError}</p>}
+        {!isValid && !saveError && <p className="text-[10px] text-[#94A3B8] text-center mt-2">Fill in vendor name, document number, date, and at least one line item.</p>}
       </div>
     </div>
   );
@@ -1327,11 +1331,15 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
     { value: 'failed',       label: `Failed${failedDocs.length ? ` (${failedDocs.length})` : ''}` },
     { value: 'archived',     label: 'Archived' },
   ];
-  const CHIP_SELECTED_STYLE = {
-    all:          { background: '#0F6E56', color: '#FFFFFF', borderColor: '#0F6E56' }, // primary teal
-    needs_review: { background: '#FEF3C7', color: '#92400E', borderColor: '#FCD34D' }, // amber (Needs Review tag)
-    failed:       { background: '#FEE2E2', color: '#B91C1C', borderColor: '#FCA5A5' }, // red (Failed tag)
-    archived:     { background: '#E2E8F0', color: '#475569', borderColor: '#CBD5E1' }, // pastel grey
+  // Semantic classes instead of inline hex — all/needs_review/failed map onto
+  // the design system's primary/warning/critical tokens (§4); archived has no
+  // status-tone equivalent, so it uses the sanctioned neutral slate utility
+  // classes (§4's "slate, never gray" rule) rather than a one-off hex.
+  const CHIP_SELECTED_CLASS = {
+    all:          'bg-primary text-white border-primary',
+    needs_review: 'bg-warning-bg text-warning border-warning',
+    failed:       'bg-critical-bg text-critical border-critical',
+    archived:     'bg-slate-200 text-slate-600 border-slate-300',
   };
 
   // Category axis — quadrant, but labelled the way users think (no "Qn —"
@@ -1431,12 +1439,12 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
   return (
     <>
       {limitToast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 rounded-xl border border-[#FECACA] bg-[#FEF2F2] px-5 py-3 shadow-xl">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 rounded-xl border border-critical/30 bg-critical-bg px-5 py-3 shadow-xl">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-critical shrink-0">
             <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
           </svg>
-          <p className="text-[11px] font-semibold text-[#DC2626]">{limitToast}</p>
-          <button onClick={() => setLimitToast('')} className="text-[#DC2626]/60 hover:text-[#DC2626] ml-1">
+          <p className="text-[11px] font-semibold text-critical">{limitToast}</p>
+          <button onClick={() => setLimitToast('')} className="text-critical/60 hover:text-critical ml-1">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
@@ -1463,24 +1471,24 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
       <div className="flex h-full min-h-0 flex-col gap-3">
         {/* Drop zone */}
         <div
-          className={`shrink-0 rounded-xl border-2 border-dashed p-5 text-center transition-colors cursor-pointer ${dragging ? 'border-[#0D9488] bg-[#ECFDF5]' : 'border-[#CBD5E1] bg-[#F8FAFC] hover:border-[#0D9488]'}`}
+          className={`shrink-0 rounded-xl border-2 border-dashed p-5 text-center transition-colors cursor-pointer ${dragging ? 'border-primary bg-success-bg' : 'border-[#CBD5E1] bg-[#F8FAFC] hover:border-primary'}`}
           onClick={() => inputRef.current?.click()}
           onDragOver={e => { e.preventDefault(); setDragging(true); }}
           onDragLeave={() => setDragging(false)}
           onDrop={e => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}>
           <input ref={inputRef} type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.xlsx,.xls,.csv"
             className="hidden" onChange={handleInputChange} />
-          <div className="mx-auto mb-2 h-9 w-9 rounded-full bg-[#ECFDF5] flex items-center justify-center">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0F6E56" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <div className="mx-auto mb-2 h-9 w-9 rounded-full bg-success-bg flex items-center justify-center">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-primary">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
           </div>
-          <p className="text-sm font-medium text-[#0F172A]">Drop files here or <span className="text-[#0D9488]">browse</span></p>
-          <p className="mt-0.5 text-[10px] text-[#64748B]">PDF, JPG, PNG, XLSX, CSV · Max 20 MB per file · Up to 10 files at once</p>
-          <p className="mt-2 text-[10px] text-[#94A3B8]">
+          <p className="text-sm font-medium text-headings">Drop files here or <span className="text-primary">browse</span></p>
+          <p className="mt-0.5 text-[10px] text-muted">PDF, JPG, PNG, XLSX, CSV · Max 20 MB per file · Up to 10 files at once</p>
+          <p className="mt-2 text-[11px] text-[#94A3B8]">
             No file?{' '}
             <button onClick={e => { e.stopPropagation(); setManualUploadOpen(true); }}
-              className="text-[#0D9488] font-semibold hover:text-[#0F6E56] underline transition-colors">
+              className="text-primary font-semibold hover:text-primary-hover underline transition-colors">
               Manually add a document
             </button>
           </p>
@@ -1499,7 +1507,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 placeholder="Search documents…"
-                className="rounded-lg border border-[#E2E8F0] bg-white pl-7 pr-3 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] w-44"
+                className="rounded-lg border border-border bg-white pl-7 pr-3 py-1.5 text-xs text-[#334155] focus:outline-none focus:border-primary w-44"
               />
             </div>
 
@@ -1511,9 +1519,8 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
                   <button
                     key={chip.value}
                     onClick={() => setStateFilter(chip.value)}
-                    style={selected ? CHIP_SELECTED_STYLE[chip.value] : undefined}
-                    className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition-colors ${
-                      selected ? '' : 'border-[#E2E8F0] bg-white text-[#334155] font-medium hover:border-[#0D9488]'
+                    className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors ${
+                      selected ? CHIP_SELECTED_CLASS[chip.value] : 'border-border bg-surface text-[#334155] font-medium hover:border-primary'
                     }`}>
                     {chip.label}
                   </button>
@@ -1525,18 +1532,18 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
           <div className="ml-auto flex items-center gap-2">
             {/* Category (quadrant) axis + year + sort — apply within any state view */}
             <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
-              className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
+              className="rounded-lg border border-border bg-white px-2.5 py-1.5 text-xs text-[#334155] focus:outline-none focus:border-primary cursor-pointer">
               {CATEGORY_FILTER_OPTIONS.map(o => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </select>
             <select value={yearFilter} onChange={e => setYearFilter(e.target.value)}
-              className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
+              className="rounded-lg border border-border bg-white px-2.5 py-1.5 text-xs text-[#334155] focus:outline-none focus:border-primary cursor-pointer">
               <option value="all">All years</option>
               {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
             <select value={sortBy} onChange={e => setSortBy(e.target.value)}
-              className="rounded-lg border border-[#E2E8F0] bg-white px-2.5 py-1.5 text-[10px] text-[#334155] focus:outline-none focus:border-[#0D9488] cursor-pointer">
+              className="rounded-lg border border-border bg-white px-2.5 py-1.5 text-xs text-[#334155] focus:outline-none focus:border-primary cursor-pointer">
               <option value="date_desc">Newest first</option>
                   <option value="date_asc">Oldest first</option>
                   <option value="amount_desc">Amount: high → low</option>
@@ -1547,7 +1554,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
         </div>
 
         {/* Document table */}
-        <div className="flex-1 min-h-0 overflow-y-auto rounded-xl border border-[#E2E8F0] bg-white">
+        <div className="flex-1 min-h-0 overflow-y-auto rounded-xl border border-border bg-surface">
           {uploads.length === 0 && resumingDocs.length === 0 && filtered.length === 0 ? (
             <div className="flex h-full items-center justify-center p-8 text-center">
               <div>
@@ -1562,9 +1569,9 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
           ) : (
             <table className="w-full text-sm">
               <thead className="sticky top-0 z-10 bg-[#F8FAFC]">
-                <tr className="border-b border-[#E2E8F0]">
+                <tr className="border-b border-border">
                   {['File', 'Amount', 'Category', 'Classification', 'Date', ''].map(h => (
-                    <th key={h} className="py-2.5 px-3 first:pl-4 last:pr-4 text-left text-[10px] font-semibold text-[#64748B] last:text-right">{h}</th>
+                    <th key={h} className="py-2.5 px-3 first:pl-4 last:pr-4 text-left text-[12px] font-semibold text-muted last:text-right">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -1589,19 +1596,19 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
                 {filtered.map(doc => (
                   <tr key={doc.id}
                     onClick={() => setPreviewDoc(doc)}
-                    className="border-b border-[#F1F5F9] last:border-0 cursor-pointer bg-white hover:bg-[#F8FAFC] transition-colors">
+                    className="border-b border-[#F1F5F9] last:border-0 cursor-pointer bg-surface hover:bg-[#F8FAFC] transition-colors">
                     <td className="py-2.5 pl-4 pr-3 min-w-0">
-                      <p className="font-medium text-[#0F172A] text-[11px] leading-tight truncate max-w-[160px]">{doc.name}</p>
-                      <p className="text-[9px] text-[#94A3B8] mt-0.5 truncate max-w-[160px]">{doc.type}</p>
+                      <p className="font-medium text-headings text-xs leading-tight truncate max-w-[160px]">{doc.name}</p>
+                      <p className="text-[11px] text-[#94A3B8] mt-0.5 truncate max-w-[160px]">{doc.type}</p>
                     </td>
-                    <td className="px-3 py-2.5 text-xs font-semibold text-[#0F172A] whitespace-nowrap">{doc.amount}</td>
-                    <td className="px-3 py-2.5 text-[10px] text-[#334155] max-w-[140px]">
+                    <td className="px-3 py-2.5 text-xs font-semibold text-headings whitespace-nowrap">{doc.amount}</td>
+                    <td className="px-3 py-2.5 text-xs text-[#334155] max-w-[140px]">
                       <span className="block truncate">{categoryLabel(doc.category)}</span>
                     </td>
                     <td className="px-3 py-2.5">
                       <StatusBadge status={badgeStatusFor(doc.category, doc.taxStatus, doc.status)} />
                     </td>
-                    <td className="px-3 py-2.5 text-[10px] text-[#64748B] whitespace-nowrap">{doc.dateDisplay}</td>
+                    <td className="px-3 py-2.5 text-xs text-muted whitespace-nowrap">{doc.dateDisplay}</td>
                     <td className="py-2.5 pr-4">
                       <div className="flex items-center justify-end gap-2">
                         {/* Retry — only for failed docs */}
@@ -1610,7 +1617,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
                             onClick={e => { e.stopPropagation(); onRetry(doc); }}
                             className="text-[#CBD5E1] hover:text-[#0369A1] transition-colors"
                             title="Retry classification">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
                               <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
                             </svg>
@@ -1619,16 +1626,16 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
                         {/* Archive */}
                         {doc.status !== 'archived' && (
                           <button onClick={e => { e.stopPropagation(); onArchive(doc.id); }}
-                            className="text-[#CBD5E1] hover:text-[#64748B] transition-colors" title="Archive">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            className="text-[#CBD5E1] hover:text-muted transition-colors" title="Archive">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>
                             </svg>
                           </button>
                         )}
                         {/* Delete */}
                         <button onClick={e => { e.stopPropagation(); onRemove(doc.id); }}
-                          className="text-[#CBD5E1] hover:text-[#DC2626] transition-colors" title="Delete">
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          className="text-[#CBD5E1] hover:text-critical transition-colors" title="Delete">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
                           </svg>
                         </button>
@@ -1994,16 +2001,16 @@ function CukaiAccount() {
     <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body flex flex-col">
       {/* Duplicate / retry toast */}
       {dupToast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-5 py-3 shadow-xl">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#B45309" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 rounded-xl border border-warning/30 bg-warning-bg px-5 py-3 shadow-xl">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-warning shrink-0">
             <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
           </svg>
-          <p className="text-[11px] font-semibold text-[#B45309]">
+          <p className="text-[11px] font-semibold text-warning">
             {dupToast.retryHint
               ? `Failed record cleared — drop "${dupToast.fileName}" again to retry.`
               : `"${dupToast.fileName}" was uploaded recently. Drop again to force re-upload.`}
           </p>
-          <button onClick={() => setDupToast(null)} className="text-[#B45309]/60 hover:text-[#B45309] ml-1">
+          <button onClick={() => setDupToast(null)} className="text-warning/60 hover:text-warning ml-1">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
@@ -2014,7 +2021,7 @@ function CukaiAccount() {
         {/* Header */}
         <div className="shrink-0">
           <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Cukai Account</h1>
-          <p className="text-xs text-[#64748B] mt-1">Upload receipts and classify your expenses{activeEntity ? ` — ${activeEntity.name}` : ''}.</p>
+          <p className="text-xs text-muted mt-1">Upload receipts and classify your expenses{activeEntity ? ` — ${activeEntity.name}` : ''}.</p>
         </div>
 
         {/* Documents */}
@@ -2023,8 +2030,8 @@ function CukaiAccount() {
             {docsLoading ? (
               <div className="flex h-full items-center justify-center">
                 <div className="flex flex-col items-center gap-3">
-                  <div className="h-8 w-8 rounded-full border-4 border-[#0F6E56] border-t-transparent animate-spin" />
-                  <p className="text-sm text-[#64748B]">Loading your documents…</p>
+                  <div className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin" />
+                  <p className="text-sm text-muted">Loading your documents…</p>
                 </div>
               </div>
             ) : (

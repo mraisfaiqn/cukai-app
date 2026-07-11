@@ -101,9 +101,9 @@ function CarouselShell({ label, slides, dotsUnderRight = false }) {
   );
 
   return (
-    <section className="flex h-full flex-col rounded-xl border border-border bg-surface p-4">
+    <section className="flex h-full flex-col rounded-xl border border-border bg-surface p-3">
       <style>{'.cukai-carousel::-webkit-scrollbar{display:none}'}</style>
-      {label && <p className="text-xs font-medium text-muted shrink-0 mb-2">{label}</p>}
+      {label && <p className="font-headings text-sm font-bold text-headings shrink-0 mb-2">{label}</p>}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
@@ -138,7 +138,7 @@ function DeadlinesCarousel({ deadlines }) {
       <div className="flex flex-1 items-start gap-3 py-2 px-0.5">
         <span className={'mt-0.5 h-9 w-1 shrink-0 rounded-full ' + tone.bar} />
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-semibold text-headings truncate">{d.label}</p>
+          <p className="text-sm font-semibold text-headings truncate">{d.label}</p>
           <p className="mt-0.5 text-xs text-muted truncate">{d.sub}</p>
         </div>
         <span className={'shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ' + tone.pill}>
@@ -242,10 +242,10 @@ function PieSlide({ chart }) {
         >
           <div className="flex items-center gap-1.5">
             <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: hovered.color }} />
-            <span className="text-[10px] font-semibold text-headings leading-tight">{hovered.label}</span>
+            <span className="text-xs font-semibold text-headings leading-tight">{hovered.label}</span>
           </div>
-          <p className="text-[10px] text-muted mt-1">{fmtRM(hovered.value)}</p>
-          <p className="text-[10px] text-muted">{pct(hovered.value, total)} of total</p>
+          <p className="text-xs text-muted mt-1">{fmtRM(hovered.value)}</p>
+          <p className="text-xs text-muted">{pct(hovered.value, total)} of total</p>
           {hovered.cap != null && (
             <p className={'text-[10px] mt-1 ' + (hovered.wasCapped ? 'text-warning font-semibold' : 'text-muted')}>
               {hovered.wasCapped
@@ -258,48 +258,49 @@ function PieSlide({ chart }) {
 
       {/* Left column (1/4) — legend (scrollable) + footer total */}
       <div className="col-span-1 flex flex-col min-h-0">
-        <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5">
+        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col justify-center space-y-1.5 pr-0.5">
           {slices.length === 0 ? (
-            <p className="text-[10px] text-muted">No data yet</p>
+            <p className="text-xs text-muted">No data yet</p>
           ) : (
             slices.map(sl => (
               <div key={sl.label} className="flex items-start justify-between gap-2">
                 <div className="flex items-start gap-1.5 min-w-0">
-                  <span className="mt-0.5 h-2 w-2 shrink-0 rounded-sm" style={{ background: sl.color }} />
+                  <span className="mt-1.5 h-2 w-2 shrink-0 rounded-sm" style={{ background: sl.color }} />
                   <div className="min-w-0">
-                    <span className="block truncate text-[10px] text-muted">{sl.label}</span>
+                    <span className="block truncate text-sm text-muted">{sl.label}</span>
                     {/* Relief-cap progress: shown only for capped relief categories.
                         Amber once the statutory ceiling is reached. */}
                     {sl.cap != null && (
-                      <span className={'block text-[9px] leading-tight ' + (sl.wasCapped ? 'text-warning font-semibold' : 'text-muted')}>
+                      <span className={'block text-[10px] leading-tight ' + (sl.wasCapped ? 'text-warning font-semibold' : 'text-muted')}>
                         {fmtRM(Math.min(sl.value, sl.cap))} / {fmtRM(sl.cap)}
                         {sl.wasCapped ? ' · cap reached' : ' cap'}
                       </span>
                     )}
                   </div>
                 </div>
-                <span className="text-[10px] font-semibold text-headings shrink-0">{pct(sl.value, total)}</span>
+                <span className="text-sm font-semibold text-headings shrink-0">{pct(sl.value, total)}</span>
               </div>
             ))
           )}
         </div>
         {chart.footerLabel && (
           <div className="shrink-0 mt-2 border-t border-border pt-2">
-            <p className="text-[10px] text-muted">{chart.footerLabel}</p>
-            <p className="text-xs font-bold" style={{ color: chart.footerColor || 'inherit' }}>{fmtRM(total)}</p>
+            <p className="text-sm text-muted">{chart.footerLabel}</p>
+            <p className="text-sm font-bold" style={{ color: chart.footerColor || 'inherit' }}>{fmtRM(total)}</p>
           </div>
         )}
       </div>
 
-      {/* Right columns (3/4) — title + enlarged donut */}
-      <div className="col-span-3 flex flex-col items-center justify-center min-h-0">
+      {/* Right columns (3/4) — title fixed at top, donut centered in the remaining space (matches bar chart layout) */}
+      <div className="col-span-3 flex flex-col min-h-0">
         <div className="text-center shrink-0 mb-2">
-          <p className="text-xs font-semibold text-headings">{chart.title}</p>
-          {chart.subtitle && <p className="text-[10px] text-muted mt-0.5">{chart.subtitle}</p>}
+          <p className="font-headings text-sm font-bold text-headings">{chart.title}</p>
+          {chart.subtitle && <p className="text-sm text-muted mt-0.5">{chart.subtitle}</p>}
         </div>
+        <div className="flex-1 min-h-0 flex items-center justify-center">
         {total === 0 ? (
           <div style={{ width: SIZE, height: SIZE }} className="flex items-center justify-center rounded-full border-2 border-dashed border-border">
-            <p className="text-[10px] text-muted text-center px-2">No data yet</p>
+            <p className="text-xs text-muted text-center px-2">No data yet</p>
           </div>
         ) : (
           <div className="relative" style={{ width: SIZE, height: SIZE }}>
@@ -314,13 +315,14 @@ function PieSlide({ chart }) {
                   onMouseEnter={e => { setMouse({ x: e.clientX, y: e.clientY }); setHovered(sl); }}
                   onMouseMove={e => setMouse({ x: e.clientX, y: e.clientY })} />
               ))}
-              <text x={CX} y={CY - 5} textAnchor="middle" fontSize={SIZE * 0.065} fill="var(--color-muted, #94A3B8)" fontFamily="sans-serif">total</text>
+              <text x={CX} y={CY - 5} textAnchor="middle" fontSize={SIZE * 0.065} fill="var(--color-muted, #94A3B8)" fontFamily="sans-serif">Total</text>
               <text x={CX} y={CY + 10} textAnchor="middle" fontSize={SIZE * 0.072} fill="var(--color-headings, #0F172A)" fontWeight="700" fontFamily="sans-serif">
                 {fmtRM(total)}
               </text>
             </svg>
           </div>
         )}
+        </div>
       </div>
     </div>
   );
@@ -366,10 +368,10 @@ function BarSlide({ chart }) {
         >
           <div className="flex items-center gap-1.5">
             <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: hovered.color }} />
-            <span className="text-[10px] font-semibold text-headings leading-tight">{hovered.label}</span>
+            <span className="text-xs font-semibold text-headings leading-tight">{hovered.label}</span>
           </div>
-          <p className="text-[10px] text-muted mt-1">{fmtRM(hovered.value)}</p>
-          <p className="text-[10px] text-muted">YA {hovered.year}</p>
+          <p className="text-xs text-muted mt-1">{fmtRM(hovered.value)}</p>
+          <p className="text-xs text-muted">YA {hovered.year}</p>
         </div>
       )}
 
@@ -378,7 +380,7 @@ function BarSlide({ chart }) {
         {BAR_METRICS.map(m => (
           <div key={m.key} className="flex items-center gap-1.5 min-w-0">
             <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: m.color }} />
-            <span className="truncate text-[10px] text-muted">{m.label}</span>
+            <span className="truncate text-sm text-muted">{m.label}</span>
           </div>
         ))}
       </div>
@@ -386,12 +388,12 @@ function BarSlide({ chart }) {
       {/* Right columns — title + grouped bars */}
       <div className="col-span-3 flex flex-col min-h-0">
         <div className="text-center shrink-0 mb-2">
-          <p className="text-xs font-semibold text-headings">Tax Summary by Year</p>
-          <p className="text-[10px] text-muted mt-0.5">Across years of assessment</p>
+          <p className="font-headings text-sm font-bold text-headings">Tax Summary by Year</p>
+          <p className="text-sm text-muted mt-0.5">Across years of assessment</p>
         </div>
         {rows.length === 0 ? (
           <div className="flex flex-1 items-center justify-center">
-            <p className="text-[10px] text-muted">No data yet</p>
+            <p className="text-xs text-muted">No data yet</p>
           </div>
         ) : (
           <div className="flex-1 min-h-0 overflow-x-auto cukai-carousel" style={{ scrollbarWidth: 'none' }}>
@@ -639,17 +641,19 @@ export default function Overview() {
   }, [fetchDashboardMetrics]);
 
   return (
-    <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body">
-      <div className="flex h-full w-full flex-col gap-3 p-3">
+    <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body flex flex-col">
+      <div className="mx-auto w-full max-w-7xl px-6 py-4 flex flex-col flex-1 min-h-0 gap-3">
       {/* ── Header using dynamic backend account details ── */}
-      <DashboardHeader
-        greeting={timeOfDayGreeting()}
-        name={liveAccount.name}
-        entity={liveAccount.entity}
-        msic={liveAccount.msic}
-        assessmentYear={liveAccount.assessmentYear}
-        deadlineNote={liveAccount.deadlineNote}
-      />
+      <div className="shrink-0">
+        <DashboardHeader
+          greeting={timeOfDayGreeting()}
+          name={liveAccount.name}
+          entity={liveAccount.entity}
+          msic={liveAccount.msic}
+          assessmentYear={liveAccount.assessmentYear}
+          deadlineNote={liveAccount.deadlineNote}
+        />
+      </div>
 
       {/* ── Action banner reflects pending-review documents in the Upload tab;
             hidden entirely once nothing needs the user's attention ── */}

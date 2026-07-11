@@ -24,12 +24,12 @@ function DashboardHeader({
   return (
     <header>
       {/* Greeting headline */}
-      <h1 className="font-headings text-3xl font-bold tracking-tight text-headings">
+      <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">
         {greeting}, {name}
       </h1>
 
       {/* Entity context line: company · MSIC · [YA chip] · deadline */}
-      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
         <span className="font-medium text-body-text">{entity}</span>
         <span aria-hidden="true">·</span>
         <span>{msic}</span>

@@ -10,7 +10,7 @@ import TaxProvisionCard from '../../components/Dashboard/OpportunityDetail/TaxPr
 import WhyYouQualifyCard from '../../components/Dashboard/OpportunityDetail/WhyYouQualifyCard';
 import CalculationBreakdownCard from '../../components/Dashboard/OpportunityDetail/CalculationBreakdownCard';
 import cukaiBot from '../../assets/cukaibot-icon.png';
-const BotIcon = ({ className = 'h-5 w-5 object-contain' }) => (
+const BotIcon = ({ className = 'h-4 w-4 object-contain' }) => (
   <img src={cukaiBot} alt="CukaiBot" className={className} />
 );
 
@@ -24,7 +24,7 @@ function OpportunityDetail() {
 
   return (
     // Match Overview's viewport-locked shell: full height minus navbar, no outer scroll
-    <div className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body flex flex-col">
+    <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body flex flex-col">
       {!detail ? (
         <div className="mx-auto max-w-7xl px-6 py-16 text-center">
           <h1 className="font-headings text-2xl font-bold text-headings">Opportunity not found</h1>
@@ -48,26 +48,26 @@ function OpportunityDetail() {
             </nav>
           </div>
 
-          {/* Main — fills remaining height, no overflow */}
-          <main className="flex-1 min-h-0 flex flex-col mx-auto w-full max-w-7xl px-6 py-4 gap-3">
+          {/* Content — fills remaining height, no overflow */}
+          <div className="flex-1 min-h-0 flex flex-col mx-auto w-full max-w-7xl px-6 py-4 gap-3">
 
             {/* Page title + actions — unchanged */}
             <div className="flex flex-wrap items-start justify-between gap-4 shrink-0">
               <div>
-                <h1 className="font-headings text-2xl font-bold text-headings">{detail.title}</h1>
-                <p className="mt-1 text-sm text-muted">{detail.subtitle}</p>
+                <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">{detail.title}</h1>
+                <p className="mt-1 text-xs text-muted">{detail.subtitle}</p>
               </div>
               <div className="flex items-center gap-2 pr-[1.25rem]">
                 <button
                   type="button"
-                  className="flex items-center gap-1.5 rounded-lg border border-primary px-4 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary hover:text-white"
+                  className="flex items-center gap-1.5 rounded-lg border border-primary px-3 py-2 text-xs font-semibold text-primary transition-colors duration-150 hover:bg-primary hover:text-white"
                 >
                   <BotIcon />
                   Ask CukaiBot
                 </button>
                 <Link
                   to="/overview"
-                  className="rounded-lg bg-white border px-4 py-2 text-sm font-semibold text-headings transition-colors hover:bg-primary-tint"
+                  className="rounded-lg bg-white border border-border px-3 py-2 text-xs font-semibold text-headings transition-colors duration-150 hover:bg-primary-tint"
                 >
                   Back to Overview
                 </Link>
@@ -102,10 +102,10 @@ function OpportunityDetail() {
                 />
               </div>
             </div>
-          </main>
+          </div>
         </div>
       )}
-    </div>
+    </main>
   );
 }
 

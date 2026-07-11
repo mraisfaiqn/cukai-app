@@ -32,7 +32,7 @@ function SupportingDocumentsCard({
     // No outer bg/padding — this lives inside TaxProvisionCard's padded section
     <div className="flex flex-col gap-5">
       <div>
-        <h2 className="font-headings text-sm font-semibold text-headings">Link Supporting Documents</h2>
+        <h2 className="font-headings text-sm font-bold text-headings">Link Supporting Documents</h2>
         <p className="mt-0.5 text-xs text-muted">Cukai.AI found a matching invoice in your vault.</p>
       </div>
 
@@ -52,11 +52,11 @@ function SupportingDocumentsCard({
           className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-border p-4 text-muted transition-colors hover:bg-primary-tint/30"
         >
           <UploadIcon />
-          <span className="text-xs font-medium">Upload alternative invoice</span>
+          <span className="text-xs font-semibold">Upload alternative invoice</span>
         </button>
 
         {/* Compliance note */}
-        <div className="flex items-start gap-2 rounded-lg bg-[#FFF9E6] p-2.5">
+        <div className="flex items-start gap-2 rounded-lg bg-warning-bg p-2.5">
           <span className="mt-0.5 text-muted"><InfoIcon /></span>
           <p className="text-[10px] leading-relaxed text-muted">
             LHDN requires audit-ready documentation to be kept for 7 years. Cukai.AI will automatically archive this link.
