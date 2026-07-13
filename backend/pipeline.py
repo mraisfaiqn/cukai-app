@@ -3961,7 +3961,7 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
     # into main/pipeline at call time, so importing it at module top here
     # would be circular. run_insight_engine never raises — an insight
     # failure must not fail an already-committed document.
-    if document.user_id:
+    if document.user_id and document.year_of_assessment is not None:
       from insights.engine import run_insight_engine
       # assessment_year comes from the DOCUMENT, not the wall clock: a 2025
       # receipt uploaded in July 2026 must refresh the YA2025 feed, never
@@ -3970,6 +3970,16 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
       run_insight_engine(
         document.user_id, document.entity_id, "document_classified", db_session_factory,
         assessment_year=document.year_of_assessment,
+      )
+    elif document.user_id:
+      # No year_of_assessment could be derived (undated/unparseable document).
+      # The year summary filters on that exact column, so ANY year's engine
+      # run would be blind to this document — a wall-clock-year run learns
+      # nothing and risks auto-resolving unrelated current-year cards off an
+      # unchanged snapshot. Skip, and leave a trace for debugging.
+      logger.info(
+        f"[Pipeline] Document ID {doc_id} classified without a year_of_assessment — "
+        "insight engine run skipped (no year feed can see this document)."
       )
 
   except Exception as e:

@@ -1642,8 +1642,12 @@ class TaxInsightEngine:
 
         try:
             # Commit point 1: deterministic insights land regardless of
-            # anything Gemini does afterwards.
-            a_created, a_updated, a_resolved = self._persist_with_retry(cards_a, housekeeping=True)
+            # anything Gemini does afterwards. housekeeping only when the
+            # summary actually loaded — otherwise cards_a is empty because the
+            # FACTS are missing, not because every condition cleared, and the
+            # auto-resolve pass would wrongly mass-resolve the whole scope.
+            a_created, a_updated, a_resolved = self._persist_with_retry(
+                cards_a, housekeeping=summary is not None)
         except Exception as e:
             pipeline_a_ok = False
             self.logs.append(f"pipeline A persist failed ({type(e).__name__}): {e}")
@@ -1694,6 +1698,27 @@ class TaxInsightEngine:
         )
 
 
+# ── Per-scope run serialization ──────────────────────────────────────────────
+# _gather_facts reads the year summary in its own short session, long BEFORE
+# _persist_once takes the Postgres advisory lock. Two concurrent same-scope
+# runs (e.g. a batch upload fanning out across the pipeline thread pool) could
+# therefore both gather, then persist in either order — and the LAST writer's
+# stale snapshot would auto-resolve cards its sibling just created. Serializing
+# whole runs per (user, entity, ya) makes every run gather AFTER the previous
+# same-scope run committed. Process-local by design: all trigger paths (the
+# pipeline tail, FastAPI BackgroundTasks, main._queue_insight_refresh) run in
+# this one uvicorn process. A multi-process deployment would need the advisory
+# lock moved before the gather phase instead.
+
+_SCOPE_RUN_LOCKS: dict = {}
+_SCOPE_RUN_LOCKS_GUARD = threading.Lock()
+
+
+def _scope_run_lock(user_id, entity_id, ya) -> threading.Lock:
+    with _SCOPE_RUN_LOCKS_GUARD:
+        return _SCOPE_RUN_LOCKS.setdefault((user_id, entity_id, ya), threading.Lock())
+
+
 def run_insight_engine(user_id, entity_id, trigger: str, db_session_factory,
                        assessment_year=None, only_insight_types=None,
                        initial_logs=None) -> None:
@@ -1718,7 +1743,10 @@ def run_insight_engine(user_id, entity_id, trigger: str, db_session_factory,
             only_insight_types=only_insight_types,
             initial_logs=initial_logs,
         )
-        engine.run()
+        # engine.ya is the constructor-resolved year (incl. the current-year
+        # fallback), so the lock key is exact for every trigger path.
+        with _scope_run_lock(uid, entity_id, engine.ya):
+            engine.run()
     except Exception as e:
         logger.error(f"[Insights] Engine run failed for user={user_id}: {e}", exc_info=True)
         if engine is not None:
