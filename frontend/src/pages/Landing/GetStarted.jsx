@@ -533,21 +533,26 @@ function StepSavings({ onNext }) {
   return (
     <Card>
       <div className="text-center py-4">
+        {/* <h2 className="text-sm font-bold text-headings mb-3">Account created!</h2> */}
         <div className="w-12 h-12 rounded-full bg-primary-tint flex items-center justify-center mx-auto mb-3">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
             <path d="M20 6L9 17l-5-5" stroke="#0D9488" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
-        <h2 className="text-sm font-bold text-headings mb-3">Account created!</h2>
-        <p className="text-xs text-muted max-w-xs mx-auto leading-relaxed">
-          You're all set. Let's get your reliefs and receipts sorted so you claim everything you're entitled to.
+        <div className="flex items-center justify-center gap-2 mb-1">
+          <span className="select-none text-base font-bold tracking-tight text-headings">
+            You're<span className="text-primary"> all </span><span className="font-light text-muted">set.</span>
+          </span>
+        </div>
+        <p className="text-sm text-muted max-w-xs mx-auto leading-relaxed">
+          Let's get your reliefs and receipts sorted so you claim everything you're entitled to.
         </p>
       </div>
       <button
         onClick={onNext}
         className="w-full mt-3 py-3.5 bg-primary hover:bg-primary-hover text-white font-semibold rounded-xl text-xs transition-all duration-200 shadow-sm hover:shadow-md flex items-center justify-center gap-2"
       >
-        Let's start claiming your savings <span>→</span>
+        Start claiming your savings <span>→</span>
       </button>
     </Card>
   );
@@ -574,7 +579,6 @@ export default function GetStarted({ onLogin }) {
         email:                        data.email                           || "",
         password:                     data.password                        || "",
         fullName:                     data.fullName                        || "",
-        idType:                       "ic",
         identificationNo:             data.identificationNo                || "",
         personalTin:                  data.personalTin                     || "",
         citizenship:                  "MYS",

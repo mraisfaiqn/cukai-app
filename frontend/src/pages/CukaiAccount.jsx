@@ -329,7 +329,7 @@ function UploadProgressEntry({ entry }) {
             </svg>
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-[11px] font-medium text-headings truncate">{entry.fileName}</p>
+            <p className="text-xs font-medium text-headings truncate">{entry.fileName}</p>
             <div className="mt-1.5 h-1 w-full rounded-full bg-border overflow-hidden">
               <div
                 className="h-full rounded-full"
@@ -484,7 +484,7 @@ function FilePreviewRenderer({ doc, fileUrl }) {
 }
 
 // ─── Document Preview slide-over ──────────────────────────────────────────────
-function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
+function DocumentPreview({ doc, onClose, onReclassify, onArchive, onUnarchive, onDelete }) {
   const [visible, setVisible] = useState(false);
   const [fileUrl, setFileUrl] = useState(null);
 
@@ -525,12 +525,12 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-5 py-3 bg-[#F8FAFC] shrink-0">
           <div className="min-w-0">
-            <p className="text-sm font-bold text-headings truncate">{doc.name}</p>
+            <p className="text-base font-bold text-headings truncate">{doc.name}</p>
             <div className="flex items-center gap-2 mt-0.5">
-              <p className="text-[10px] text-muted">{doc.type || 'Document'}</p>
-              {doc.dateDisplay && <><span className="text-[#CBD5E1]">·</span><p className="text-[10px] text-muted">{doc.dateDisplay}</p></>}
+              <p className="text-xs text-muted">{doc.type || 'Document'}</p>
+              {doc.dateDisplay && <><span className="text-[#CBD5E1]">·</span><p className="text-xs text-muted">{doc.dateDisplay}</p></>}
               {doc.ocr_quality && doc.ocr_quality !== 'good' && (
-                <span className="rounded-full bg-warning-bg px-2 py-0.5 text-[10px] font-semibold text-warning border border-warning/30">
+                <span className="rounded-full bg-warning-bg px-2 py-0.5 text-xs font-semibold text-warning border border-warning/30">
                   OCR: {doc.ocr_quality}
                 </span>
               )}
@@ -549,7 +549,7 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
             <div className="flex h-full items-center justify-center flex-col gap-3 p-8 text-center">
               <div className="h-10 w-10 rounded-full border-4 border-[#0369A1] border-t-transparent animate-spin" />
               <p className="text-sm font-medium text-headings">AI is reading your document…</p>
-              <p className="text-[10px] text-muted">Classification usually takes 15–45 seconds depending on file complexity.</p>
+              <p className="text-xs text-muted">Classification usually takes 15–45 seconds depending on file complexity.</p>
             </div>
           ) : (
             <div className="h-full overflow-auto">
@@ -562,7 +562,7 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
         <div className="shrink-0 border-t border-border bg-surface px-5 py-4 space-y-3">
           {/* Status + confidence row */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-muted">Classification</span>
+            <span className="text-xs text-muted">Classification</span>
             <div className="flex items-center gap-2">
               <ConfidenceBadge value={doc.confidence} />
               <StatusBadge status={badgeStatusFor(doc.category, doc.taxStatus, doc.status)} />
@@ -572,32 +572,32 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
           {/* Category */}
           {doc.category && (
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-muted">Category</span>
-              <span className="text-[10px] font-medium text-headings text-right max-w-[260px] truncate">{categoryLabel(doc.category)}</span>
+              <span className="text-xs text-muted">Category</span>
+              <span className="text-xs font-medium text-headings text-right max-w-[260px] truncate">{categoryLabel(doc.category)}</span>
             </div>
           )}
 
           {/* ITA section */}
           {doc.ita_section && (
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-muted">ITA Reference</span>
-              <span className="text-[10px] font-mono text-[#0369A1]">{doc.ita_section}</span>
+              <span className="text-xs text-muted">ITA Reference</span>
+              <span className="text-xs font-mono text-[#0369A1]">{doc.ita_section}</span>
             </div>
           )}
 
           {/* Amount */}
           {doc.amount && doc.amount !== '—' && (
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-muted">Amount</span>
-              <span className="text-xs font-bold text-headings">{doc.amount}</span>
+              <span className="text-xs text-muted">Amount</span>
+              <span className="text-sm font-bold text-headings">{doc.amount}</span>
             </div>
           )}
 
           {/* AI note */}
           {doc.note && (
             <div className="rounded-lg bg-[#F8FAFC] border border-border px-3 py-2">
-              <p className="text-[11px] font-bold text-muted uppercase tracking-wider mb-0.5">AI Note</p>
-              <p className="text-[10px] text-[#334155] leading-relaxed">{doc.note}</p>
+              <p className="text-xs font-bold text-muted uppercase tracking-wider mb-0.5">AI Note</p>
+              <p className="text-xs text-[#334155] leading-relaxed">{doc.note}</p>
             </div>
           )}
 
@@ -605,27 +605,39 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onDelete }) {
           <div className="flex gap-2 pt-1">
             {isMixed && !isPipeline && (
               <button onClick={() => { handleClose(); onReclassify(doc); }}
-                className="flex-1 rounded-lg bg-warning px-3 py-2 text-xs font-semibold text-white hover:bg-warning/85 transition-colors duration-150">
+                className="flex-1 rounded-lg bg-warning px-3 py-2 text-sm font-semibold text-white hover:bg-warning/85 transition-colors duration-150">
                 Review &amp; Classify
               </button>
             )}
             {!isMixed && !isPipeline && doc.status !== 'archived' && (
               <button onClick={() => { handleClose(); onReclassify(doc); }}
-                className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs font-semibold text-muted hover:border-primary hover:text-primary transition-colors duration-150">
+                className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-sm font-semibold text-muted hover:border-primary hover:text-primary transition-colors duration-150">
                 Re-classify
               </button>
             )}
             {doc.status !== 'archived' && !isPipeline && (
               <button onClick={() => { handleClose(); onArchive(doc.id); }}
-                className="rounded-lg border border-border bg-white px-3 py-2 text-xs font-semibold text-muted hover:border-muted transition-colors duration-150"
+                className="rounded-lg border border-border bg-white px-3 py-2 text-sm font-semibold text-muted hover:border-muted transition-colors duration-150"
                 title="Archive">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>
                 </svg>
               </button>
             )}
+            {doc.status === 'archived' && (
+              <button onClick={() => { handleClose(); onUnarchive(doc.id); }}
+                className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-sm font-semibold text-muted hover:border-primary hover:text-primary transition-colors duration-150"
+                title="Unarchive — move back to the main document list">
+                <span className="inline-flex items-center gap-1.5">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="14" y1="15" x2="10" y2="15"/><polyline points="9 12 12 9 15 12"/><line x1="12" y1="9" x2="12" y2="16"/>
+                  </svg>
+                  Unarchive
+                </span>
+              </button>
+            )}
             <button onClick={() => { handleClose(); onDelete(doc.id); }}
-              className="rounded-lg border border-border bg-white px-3 py-2 text-xs font-semibold text-critical/60 hover:border-critical hover:text-critical transition-colors duration-150"
+              className="rounded-lg border border-border bg-white px-3 py-2 text-sm font-semibold text-critical/60 hover:border-critical hover:text-critical transition-colors duration-150"
               title="Delete">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
@@ -812,17 +824,17 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
         {/* Header */}
         <div className="mb-4 flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-sm font-bold text-headings">
+            <p className="text-base font-bold text-headings">
               {isMixed ? 'Classify this document' : 'Re-classify this document'}
             </p>
-            <p className="text-[10px] text-muted mt-0.5 truncate">{doc.name} · {doc.amount}</p>
+            <p className="text-xs text-muted mt-0.5 truncate">{doc.name} · {doc.amount}</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <div className="flex flex-col items-end">
-              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${confToneClass}`}>
+              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-bold uppercase tracking-wider ${confToneClass}`}>
                 {confidence}% confidence
               </span>
-              <span className="text-[10px] text-[#94A3B8] mt-0.5 mr-0.5">
+              <span className="text-xs text-[#94A3B8] mt-0.5 mr-0.5">
                 {isMixed ? 'AI is undecided' : 'AI classification accuracy'}
               </span>
             </div>
@@ -839,18 +851,18 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
           <>
             {/* Why the AI couldn't decide */}
             <div className="rounded-lg border border-warning/30 bg-warning-bg px-3 py-2.5 mb-3">
-              <p className="text-[10px] font-semibold text-warning mb-1">Why the AI couldn't decide</p>
-              <p className="text-[10px] text-warning leading-relaxed">
+              <p className="text-xs font-semibold text-warning mb-1">Why the AI couldn't decide</p>
+              <p className="text-xs text-warning leading-relaxed">
                 {doc.reason || fallbackReason}
               </p>
               {doc.source && (
-                <p className="text-[10px] text-warning/80 mt-1.5 italic">Source: {doc.source}</p>
+                <p className="text-xs text-warning/80 mt-1.5 italic">Source: {doc.source}</p>
               )}
             </div>
             {/* Guiding question */}
             <div className="rounded-lg border border-[#BAE6FD] bg-[#F0F9FF] px-3 py-2.5 mb-4">
-              <p className="text-[10px] font-semibold text-[#075985] mb-1">A question to help you decide</p>
-              <p className="text-[10px] text-[#0C4A6E] leading-relaxed">
+              <p className="text-xs font-semibold text-[#075985] mb-1">A question to help you decide</p>
+              <p className="text-xs text-[#0C4A6E] leading-relaxed">
                 {doc.question || fallbackQuestion}
               </p>
             </div>
@@ -859,17 +871,17 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
           <>
             {/* Why the AI placed it here */}
             <div className="rounded-lg border border-border bg-[#F8FAFC] px-3 py-2.5 mb-3">
-              <p className="text-[10px] font-semibold text-[#334155] mb-1">Why the AI classified it this way</p>
-              <p className="text-[10px] text-muted leading-relaxed">
+              <p className="text-xs font-semibold text-[#334155] mb-1">Why the AI classified it this way</p>
+              <p className="text-xs text-muted leading-relaxed">
                 {doc.note || fallbackReason}
               </p>
-              <p className="text-[10px] text-[#94A3B8] mt-1.5">
+              <p className="text-xs text-[#94A3B8] mt-1.5">
                 Currently: <span className="font-semibold text-headings">{STATUS_META[doc.taxStatus]?.label || doc.taxStatus}</span> · <span className="font-semibold text-headings">{categoryLabel(doc.category)}</span>
               </p>
             </div>
             <div className="rounded-lg border border-[#BAE6FD] bg-[#F0F9FF] px-3 py-2.5 mb-4">
-              <p className="text-[10px] font-semibold text-[#075985] mb-1">Does this still look right?</p>
-              <p className="text-[10px] text-[#0C4A6E] leading-relaxed">
+              <p className="text-xs font-semibold text-[#075985] mb-1">Does this still look right?</p>
+              <p className="text-xs text-[#0C4A6E] leading-relaxed">
                 {doc.question || fallbackQuestion}
               </p>
             </div>
@@ -878,7 +890,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
 
         {/* ITA reference if available */}
         {doc.ita_section && (
-          <div className="mb-3 flex items-center gap-2 text-[10px] text-muted">
+          <div className="mb-3 flex items-center gap-2 text-xs text-muted">
             <span className="rounded bg-[#EFF6FF] px-2 py-0.5 font-mono text-[#0369A1] font-semibold">{doc.ita_section}</span>
             <span>ITA 1967 reference</span>
           </div>
@@ -891,7 +903,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
           <>
             {dateRoleEditable && (
               <div className="mb-3">
-                <label className="block text-[10px] font-semibold text-headings mb-1.5">
+                <label className="block text-xs font-semibold text-headings mb-1.5">
                   Date{' '}
                   <span className="font-normal text-[#94A3B8]">
                     {canEditDate ? "(OCR couldn't read this — please enter it)" : '(read from document)'}
@@ -902,20 +914,20 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
                     type="date"
                     value={dateInput}
                     onChange={e => { setDateInput(e.target.value); if (dateError) setDateError(''); }}
-                    className={`w-full rounded-lg border bg-white px-3 py-2 text-xs text-headings focus:outline-none ${dateError ? 'border-[#FCA5A5] focus:border-critical' : 'border-border focus:border-primary'}`}
+                    className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-headings focus:outline-none ${dateError ? 'border-[#FCA5A5] focus:border-critical' : 'border-border focus:border-primary'}`}
                   />
                 ) : (
-                  <div className="w-full rounded-lg border border-border bg-[#F8FAFC] px-3 py-2 text-xs text-muted">
+                  <div className="w-full rounded-lg border border-border bg-[#F8FAFC] px-3 py-2 text-sm text-muted">
                     {doc.dateDisplay && doc.dateDisplay !== '—' ? doc.dateDisplay : '—'}
                   </div>
                 )}
-                {dateError && <p className="mt-1 text-[10px] text-critical">{dateError}</p>}
+                {dateError && <p className="mt-1 text-xs text-critical">{dateError}</p>}
               </div>
             )}
 
             {amountRoleEditable ? (
               <div className="mb-3">
-                <label className="block text-[10px] font-semibold text-headings mb-1.5">
+                <label className="block text-xs font-semibold text-headings mb-1.5">
                   Amount{' '}
                   <span className="font-normal text-[#94A3B8]">
                     {canEditAmount ? "(OCR couldn't read this — please enter it)" : '(read from document)'}
@@ -923,7 +935,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
                 </label>
                 {canEditAmount ? (
                   <div className="relative">
-                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted">RM</span>
+                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted">RM</span>
                     <input
                       type="number"
                       min="0"
@@ -932,19 +944,19 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
                       value={amountInput}
                       onChange={e => { setAmountInput(e.target.value); if (amountError) setAmountError(''); }}
                       placeholder="0.00"
-                      className={`w-full rounded-lg border bg-white pl-9 pr-3 py-2 text-xs text-headings focus:outline-none ${amountError ? 'border-[#FCA5A5] focus:border-critical' : 'border-border focus:border-primary'}`}
+                      className={`w-full rounded-lg border bg-white pl-9 pr-3 py-2 text-sm text-headings focus:outline-none ${amountError ? 'border-[#FCA5A5] focus:border-critical' : 'border-border focus:border-primary'}`}
                     />
                   </div>
                 ) : (
-                  <div className="w-full rounded-lg border border-border bg-[#F8FAFC] px-3 py-2 text-xs text-muted">
+                  <div className="w-full rounded-lg border border-border bg-[#F8FAFC] px-3 py-2 text-sm text-muted">
                     {doc.amount && doc.amount !== '—' ? doc.amount : '—'}
                   </div>
                 )}
-                {amountError && <p className="mt-1 text-[10px] text-critical">{amountError}</p>}
+                {amountError && <p className="mt-1 text-xs text-critical">{amountError}</p>}
               </div>
             ) : (
               <div className="mb-3 rounded-lg border border-border bg-[#F8FAFC] px-3 py-2.5">
-                <p className="text-[10px] text-muted leading-relaxed">
+                <p className="text-xs text-muted leading-relaxed">
                   This is a summary / statement document — it has no single amount to edit.
                   You can still correct its date above and its category below.
                 </p>
@@ -953,21 +965,21 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
           </>
         ) : (
           <div className="mb-3 rounded-lg border border-border bg-[#F8FAFC] px-3 py-2.5">
-            <p className="text-[10px] text-muted leading-relaxed">
+            <p className="text-xs text-muted leading-relaxed">
               This document doesn't carry a single amount or date to edit. You can still correct its category below.
             </p>
           </div>
         )}
 
         {/* Category picker */}
-        <label className="block text-[10px] font-semibold text-headings mb-1.5">
+        <label className="block text-xs font-semibold text-headings mb-1.5">
           {canEditCategory ? 'Select the correct category' : 'Category (classified by AI)'}
         </label>
         {canEditCategory ? (
           <select
             value={category}
             onChange={e => setCategory(e.target.value)}
-            className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-headings mb-2 focus:outline-none focus:border-primary cursor-pointer"
+            className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-headings mb-2 focus:outline-none focus:border-primary cursor-pointer"
           >
             {RECLASSIFY_GROUPS.map(group => (
               <optgroup key={group.label} label={group.label}>
@@ -978,7 +990,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
             <option value="Non-Tax Document">Non-Tax Document</option>
           </select>
         ) : (
-          <div className="w-full rounded-lg border border-border bg-[#F8FAFC] px-3 py-2 text-xs text-muted mb-2">
+          <div className="w-full rounded-lg border border-border bg-[#F8FAFC] px-3 py-2 text-sm text-muted mb-2">
             {categoryLabel(category)}
           </div>
         )}
@@ -988,7 +1000,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
             locked; the rest are entered/edited by the user. */}
         {apportionMeta && (
           <div className="mb-2">
-            <label className="block text-[10px] font-semibold text-headings mb-1.5">
+            <label className="block text-xs font-semibold text-headings mb-1.5">
               Deductible portion{' '}
               <span className="font-normal text-[#94A3B8]">
                 {apportionMeta.mode === 'statutory' ? '(fixed by law)' : '(% of the amount that is deductible)'}
@@ -1005,26 +1017,26 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
                 disabled={apportionMeta.mode === 'statutory'}
                 onChange={e => { setPctInput(e.target.value); if (pctError) setPctError(''); }}
                 placeholder={apportionMeta.mode === 'required' ? '— %' : ''}
-                className={`w-full rounded-lg border bg-white pr-7 pl-3 py-2 text-xs text-headings focus:outline-none disabled:bg-[#F8FAFC] disabled:text-muted ${pctError ? 'border-[#FCA5A5] focus:border-critical' : 'border-border focus:border-primary'}`}
+                className={`w-full rounded-lg border bg-white pr-7 pl-3 py-2 text-sm text-headings focus:outline-none disabled:bg-[#F8FAFC] disabled:text-muted ${pctError ? 'border-[#FCA5A5] focus:border-critical' : 'border-border focus:border-primary'}`}
               />
-              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted">%</span>
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted">%</span>
             </div>
-            <p className="mt-1 text-[10px] text-muted leading-relaxed">{apportionMeta.hint}</p>
-            {pctError && <p className="mt-1 text-[10px] text-critical">{pctError}</p>}
+            <p className="mt-1 text-xs text-muted leading-relaxed">{apportionMeta.hint}</p>
+            {pctError && <p className="mt-1 text-xs text-critical">{pctError}</p>}
           </div>
         )}
 
         {/* Edit-anyway override + reset */}
         <div className="mb-4 flex items-center justify-between">
           {nothingEditable && !override ? (
-            <p className="text-[10px] text-[#94A3B8]">
+            <p className="text-xs text-[#94A3B8]">
               The AI captured every field.{' '}
               <button onClick={() => setOverride(true)} className="font-semibold text-primary hover:text-primary-hover underline">
                 Edit anyway
               </button>
             </p>
           ) : !override ? (
-            <button onClick={() => setOverride(true)} className="text-[10px] text-[#94A3B8] hover:text-primary underline">
+            <button onClick={() => setOverride(true)} className="text-xs text-[#94A3B8] hover:text-primary underline">
               Edit a locked field
             </button>
           ) : <span />}
@@ -1032,7 +1044,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
             <button
               onClick={handleReset}
               disabled={resetting}
-              className="text-[10px] font-semibold text-muted hover:text-critical underline disabled:opacity-60">
+              className="text-xs font-semibold text-muted hover:text-critical underline disabled:opacity-60">
               {resetting ? 'Resetting…' : 'Reset to AI original'}
             </button>
           )}
@@ -1040,10 +1052,10 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
 
         {/* Derived status preview */}
         <div className="flex items-center gap-2 mb-5 px-1">
-          <span className="text-[10px] text-muted">Will be classified as:</span>
+          <span className="text-xs text-muted">Will be classified as:</span>
           <StatusBadge status={REFERENCE_CATEGORIES.includes(category) ? 'reference' : derivedStatus} />
           {apportionMeta && pctInput !== '' && (
-            <span className="text-[10px] font-semibold text-primary">· {pctInput}% deductible</span>
+            <span className="text-xs font-semibold text-primary">· {pctInput}% deductible</span>
           )}
         </div>
 
@@ -1284,7 +1296,7 @@ function ManualUploadModal({ onConfirm, onCancel }) {
   );
 }
 
-function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, onUpdateStatus, onReset, onManualAdd, initialStateFilter }) {
+function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive, onRetry, onUpdateStatus, onReset, onManualAdd, initialStateFilter }) {
   const inputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
   // Two orthogonal filter axes that compose:
@@ -1458,6 +1470,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
           onClose={() => setPreviewDoc(null)}
           onReclassify={(d) => { setPreviewDoc(null); setReclassDoc(d); }}
           onArchive={(id) => { setPreviewDoc(null); onArchive(id); }}
+          onUnarchive={(id) => { setPreviewDoc(null); onUnarchive(id); }}
           onDelete={(id) => { setPreviewDoc(null); onRemove(id); }}
         />
       )}
@@ -1629,6 +1642,18 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onRetry, on
                             className="text-[#CBD5E1] hover:text-muted transition-colors" title="Archive">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>
+                            </svg>
+                          </button>
+                        )}
+                        {/* Unarchive — only ever visible when filtered to the
+                            Archived state, since archived docs are hidden
+                            from the default list. Restores the document to
+                            the main list (status: 'completed'). */}
+                        {doc.status === 'archived' && (
+                          <button onClick={e => { e.stopPropagation(); onUnarchive(doc.id); }}
+                            className="text-[#CBD5E1] hover:text-primary transition-colors" title="Unarchive — move back to the main list">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="14" y1="15" x2="10" y2="15"/><polyline points="9 12 12 9 15 12"/><line x1="12" y1="9" x2="12" y2="16"/>
                             </svg>
                           </button>
                         )}
@@ -1882,6 +1907,23 @@ function CukaiAccount() {
     }
   }, [activeEntity?.id]);
 
+  // ── Unarchive ────────────────────────────────────────────────────────────────
+  // Restores an archived document back to the main list. Mirrors archiveDoc:
+  // optimistic local update first, backend call to persist, and a re-fetch
+  // to reconcile local state if the request fails.
+  const unarchiveDoc = useCallback(async (id) => {
+    const userId = localStorage.getItem('userId');
+    const entityId = activeEntity?.id || null;
+    setDocs(prev => prev.map(d => d.id === id ? { ...d, status: 'completed' } : d));
+    try { await API.unarchiveDocument(id, userId, entityId); } catch (e) {
+      console.error('[Unarchive]', e);
+      try {
+        const full = await API.getDocument(id, userId, entityId);
+        setDocs(prev => prev.map(d => d.id === id ? mapApiDoc(full) : d));
+      } catch (_) {}
+    }
+  }, [activeEntity?.id]);
+
   // ── Re-classify ─────────────────────────────────────────────────────────────
   const updateDocStatus = useCallback(async (id, status, category, amount = null, date = null, deductiblePct = null) => {
     const userId = localStorage.getItem('userId');
@@ -2041,6 +2083,7 @@ function CukaiAccount() {
                 onFileDrop={handleFileDrop}
                 onRemove={removeDoc}
                 onArchive={archiveDoc}
+                onUnarchive={unarchiveDoc}
                 onRetry={retryDoc}
                 onUpdateStatus={updateDocStatus}
                 onReset={resetDoc}

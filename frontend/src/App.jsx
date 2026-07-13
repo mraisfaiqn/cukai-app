@@ -40,7 +40,14 @@ function PublicLayout({ isAuthenticated }) {
 }
 
 function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  // Initialise from localStorage instead of always starting false — LoginPanel
+  // already saves userId there on a successful login, but nothing was ever
+  // reading it back on startup, so every refresh reset isAuthenticated to
+  // false and bounced the user back to /login even though they were still
+  // logged in. This is a lightweight "trust the browser" check (Approach 1);
+  // once account deletion/suspension exists, this should be upgraded to also
+  // verify the user against the backend on load (Approach 2).
+  const [isAuthenticated, setIsAuthenticated] = useState(() => !!localStorage.getItem('userId'))
   
   return (
     <Router>

@@ -193,6 +193,15 @@ export const archiveDocument = async (docId, userId = null, entityId = null) => 
   return data;
 };
 
+/** Restore an archived document back to the main list (status: 'completed'). */
+export const unarchiveDocument = async (docId, userId = null, entityId = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.patch(`/api/documents/${docId}/unarchive`, {}, { params });
+  return data;
+};
+
 /**
  * Re-run OCR/classification on a previously failed document using the file
  * already stored on disk. Returns { document_id, status: 'pending' }.
