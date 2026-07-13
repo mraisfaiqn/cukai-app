@@ -229,8 +229,8 @@ def _serialize_person(person: models.Person) -> dict:
     "id":                          person.id,
     "email":                       person.email,
     "fullName":                    person.full_name,
-    "idType":                      person.id_type,
     "identificationNo":            person.identification_no,
+    "passportNo":                  person.passport_no,
     "personalTin":                 person.personal_tin,
     "citizenship":                 person.citizenship,
     "gender":                      person.gender,
@@ -239,6 +239,7 @@ def _serialize_person(person: models.Person) -> dict:
     "maritalEventDate":            person.marital_event_date.isoformat() if person.marital_event_date else None,
     "spouseName":                  person.spouse_name,
     "spouseIdNo":                  person.spouse_id_no,
+    "spousePassportNo":            person.spouse_passport_no,
     "spouseDob":                   person.spouse_dob.isoformat() if person.spouse_dob else None,
     "assessmentType":              person.assessment_type,
     "numberOfChildren":            person.number_of_children,
@@ -251,9 +252,15 @@ def _serialize_person(person: models.Person) -> dict:
     "refundMethod":                person.refund_method,
     "bankName":                    person.bank_name,
     "bankAccountNo":               person.bank_account_no,
+    "duitnowIdType":               person.duitnow_id_type,
+    "employerTin":                 person.employer_tin,
+    "taxBorneByEmployer":          person.tax_borne_by_employer,
+    "carriesOnEcommerce":          person.carries_on_ecommerce,
+    "ecommerceModel":              person.ecommerce_model,
     "recordKeeping":               person.record_keeping,
     "hasForeignAccounts":          person.has_foreign_accounts,
     "rpgtDisposal":                person.rpgt_disposal,
+    "disposalDeclared":            person.disposal_declared,
     "hasDependentParents":         person.has_dependent_parents,
     "hasEpfLifeInsurance":         person.has_epf_life_insurance,
     "hasEducationMedicalInsurance":person.has_education_medical_insurance,
@@ -332,8 +339,8 @@ async def user_reg(payload: dict, db: Session = Depends(get_db)):
     email=p["email"],
     password_hash=hash_password(p["password"]),
     full_name=p.get("fullName") or p.get("full_name"),
-    id_type=p.get("idType", "ic"),
     identification_no=p.get("identificationNo"),
+    passport_no=p.get("passportNo"),
     personal_tin=p.get("personalTin"),
     citizenship=p.get("citizenship", "MYS"),
     gender=p.get("gender"),
@@ -342,6 +349,7 @@ async def user_reg(payload: dict, db: Session = Depends(get_db)):
     marital_event_date=parse_date(p.get("maritalEventDate")),
     spouse_name=p.get("spouseName"),
     spouse_id_no=p.get("spouseIdNo"),
+    spouse_passport_no=p.get("spousePassportNo"),
     spouse_dob=parse_date(p.get("spouseDob")),
     assessment_type=p.get("assessmentType"),
     number_of_children=p.get("numberOfChildren", 0),
@@ -354,9 +362,15 @@ async def user_reg(payload: dict, db: Session = Depends(get_db)):
     refund_method=p.get("refundMethod", "bank"),
     bank_name=p.get("bankName"),
     bank_account_no=p.get("bankAccountNo"),
+    duitnow_id_type=p.get("duitnowIdType", "ic"),
+    employer_tin=p.get("employerTin"),
+    tax_borne_by_employer=p.get("taxBorneByEmployer", False),
+    carries_on_ecommerce=p.get("carriesOnEcommerce", False),
+    ecommerce_model=p.get("ecommerceModel"),
     record_keeping=p.get("recordKeeping", True),
     has_foreign_accounts=p.get("hasForeignAccounts", False),
     rpgt_disposal=p.get("rpgtDisposal", False),
+    disposal_declared=p.get("disposalDeclared", False),
     has_dependent_parents=p.get("hasDependentParents", False),
     has_epf_life_insurance=p.get("hasEpfLifeInsurance", False),
     has_education_medical_insurance=p.get("hasEducationMedicalInsurance", False),
@@ -447,8 +461,8 @@ async def update_profile(person_id: int, payload: dict, db: Session = Depends(ge
   # Apply every field that arrives in the payload; ignore unknown keys
   field_map = {
     "fullName":                    "full_name",
-    "idType":                      "id_type",
     "identificationNo":            "identification_no",
+    "passportNo":                  "passport_no",
     "personalTin":                 "personal_tin",
     "citizenship":                 "citizenship",
     "gender":                      "gender",
@@ -457,6 +471,7 @@ async def update_profile(person_id: int, payload: dict, db: Session = Depends(ge
     "maritalEventDate":            None,   # handled below
     "spouseName":                  "spouse_name",
     "spouseIdNo":                  "spouse_id_no",
+    "spousePassportNo":            "spouse_passport_no",
     "spouseDob":                   None,   # handled below
     "assessmentType":              "assessment_type",
     "numberOfChildren":            "number_of_children",
@@ -469,9 +484,15 @@ async def update_profile(person_id: int, payload: dict, db: Session = Depends(ge
     "refundMethod":                "refund_method",
     "bankName":                    "bank_name",
     "bankAccountNo":               "bank_account_no",
+    "duitnowIdType":               "duitnow_id_type",
+    "employerTin":                 "employer_tin",
+    "taxBorneByEmployer":          "tax_borne_by_employer",
+    "carriesOnEcommerce":          "carries_on_ecommerce",
+    "ecommerceModel":              "ecommerce_model",
     "recordKeeping":               "record_keeping",
     "hasForeignAccounts":          "has_foreign_accounts",
     "rpgtDisposal":                "rpgt_disposal",
+    "disposalDeclared":            "disposal_declared",
     "hasDependentParents":         "has_dependent_parents",
     "hasEpfLifeInsurance":         "has_epf_life_insurance",
     "hasEducationMedicalInsurance":"has_education_medical_insurance",
@@ -509,6 +530,23 @@ async def create_entity(person_id: int, payload: dict, db: Session = Depends(get
   person = db.query(models.Person).filter(models.Person.id == person_id).first()
   if not person:
     raise HTTPException(status_code=404, detail="Person not found")
+
+  # Guard against the same business being registered twice under one profile.
+  # Compared case-/whitespace-insensitively on whichever of name / SSM no. is
+  # actually provided, so two entities that both happen to leave SSM no. blank
+  # don't get flagged as a false-positive match.
+  new_name = (payload.get("name") or "").strip().lower()
+  new_ssm = (payload.get("ssmNo") or "").strip().lower()
+  for existing in person.entities:
+    existing_name = (existing.name or "").strip().lower()
+    existing_ssm = (existing.ssm_no or "").strip().lower()
+    name_clash = bool(new_name) and new_name == existing_name
+    ssm_clash = bool(new_ssm) and new_ssm == existing_ssm
+    if name_clash or ssm_clash:
+      raise HTTPException(
+        status_code=409,
+        detail="Business already created — an entity with this name or SSM number already exists on your profile.",
+      )
 
   entity = models.Entity(
     person_id=person_id,
@@ -1091,6 +1129,27 @@ def archive_document(
   doc.status = "archived"
   db.commit()
   return {"message": f"Document ID {doc_id} archived.", "document_id": doc_id, "status": "archived"}
+
+
+@app.patch("/api/documents/{doc_id}/unarchive", status_code=200)
+def unarchive_document(
+  doc_id: int,
+  user_id:   str            = Query(..., description="Owner of the document."),
+  entity_id: Optional[int] = Query(default=None),
+  db: Session = Depends(get_db),
+):
+  """
+  Restore an archived document back to the main list. Archiving is only ever
+  offered on a fully-resolved document (completed or failed — see the
+  isPipeline check on the frontend), so 'completed' is always the correct
+  status to return to: there's no in-flight classification state to resume,
+  and any document that reaches the archived list already has whatever
+  category/amount data it's going to have.
+  """
+  doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
+  doc.status = "completed"
+  db.commit()
+  return {"message": f"Document ID {doc_id} unarchived.", "document_id": doc_id, "status": "completed"}
 
 
 @app.patch("/api/documents/{doc_id}/reclassify", status_code=200)
