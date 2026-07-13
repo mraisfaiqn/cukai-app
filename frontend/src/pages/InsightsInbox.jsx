@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getAllEntities, getInsights, updateInsightState } from '../services/api';
+import { getAllEntities, getInsights, updateInsightState, runInsightEngine } from '../services/api';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // AI INSIGHTS INBOX — live view over the backend insight engine.
@@ -396,10 +396,15 @@ function InsightsInbox() {
   const [insights, setInsights] = useState([]);
   const [lastRun, setLastRun] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);         // fetch failed (≠ empty feed)
+  const [refreshing, setRefreshing] = useState(false); // freshness poll in flight
   const [tab, setTab] = useState('active');          // active | resolved | dismissed
   const [activeGroup, setActiveGroup] = useState('All');
   const [expandedId, setExpandedId] = useState(null);
   const [toast, setToast] = useState('');
+  const lastRunRef = useRef(null);   // latest lastRun seen — freshness-poll baseline
+  const pollTokenRef = useRef(0);    // lets a newer poll supersede an older loop
+  const mountPollDoneRef = useRef(false);
 
   // Load the real feed whenever the entity changes. The endpoint returns a
   // WRAPPED payload { insights, lastRun } — never map the response directly.
@@ -408,28 +413,96 @@ function InsightsInbox() {
     if (!userId) {
       setInsights([]);
       setLastRun(null);
+      lastRunRef.current = null;
       setLoading(false);
-      return;
+      return null;
     }
     try {
       const data = await getInsights(userId, activeEntity?.id ?? null);
       setInsights(data.insights || []);
       setLastRun(data.lastRun || null);
+      lastRunRef.current = data.lastRun || null;
+      setError(false);
+      return data;
     } catch {
-      setInsights([]);
-      setLastRun(null);
+      // A fetch failure is NOT an empty inbox: keep whatever is already on
+      // screen and flag the error — the error panel below only renders when
+      // there is nothing older to keep showing.
+      setError(true);
+      return null;
     } finally {
       setLoading(false);
     }
   }, [activeEntity?.id]);
 
+  // After a documentsChanged signal, the engine run lands seconds later on a
+  // backend thread. Poll until lastRun.ranAt ADVANCES past the last value we
+  // saw (server timestamps compared only to themselves — no clock-skew
+  // exposure), bounded so a legitimately skipped run (e.g. an undated
+  // document) just exhausts a few cheap GETs and stops.
+  const startFreshnessPoll = useCallback(() => {
+    const token = ++pollTokenRef.current;
+    const baseline = lastRunRef.current?.ranAt ?? null;
+    setRefreshing(true);
+    let tries = 0;
+    const tick = async () => {
+      if (pollTokenRef.current !== token) return; // superseded by a newer poll
+      const data = await refreshInsights();
+      const ranAt = data?.lastRun?.ranAt ?? null;
+      if ((data && ranAt !== baseline) || ++tries >= 10) {
+        if (pollTokenRef.current === token) setRefreshing(false);
+        return;
+      }
+      setTimeout(tick, 3000);
+    };
+    tick();
+  }, [refreshInsights]);
+
+  // Live cross-page refresh: CukaiAccount broadcasts 'documentsChanged' when
+  // a document mutation lands on the backend (upload classified, manual add,
+  // delete, reclassify, reset, archive) — the same pattern as 'entitySwitch'.
+  useEffect(() => {
+    const onDocsChanged = () => startFreshnessPoll();
+    window.addEventListener('documentsChanged', onDocsChanged);
+    return () => window.removeEventListener('documentsChanged', onDocsChanged);
+  }, [startFreshnessPoll]);
+
   useEffect(() => {
     setLoading(true);
     setExpandedId(null);
-    refreshInsights();
-  }, [refreshInsights]);
+    // Cross-page case: the documentsChanged event fired BEFORE this page
+    // mounted (upload on the account page → navigate here). If that was
+    // recent, the engine run may still be landing — poll instead of trusting
+    // a single fetch. Once per mount; entity switches use the plain fetch.
+    const changedAt = Number(sessionStorage.getItem('documentsChangedAt') || 0);
+    if (!mountPollDoneRef.current && changedAt && Date.now() - changedAt < 90_000) {
+      mountPollDoneRef.current = true;
+      startFreshnessPoll();
+    } else {
+      refreshInsights();
+    }
+  }, [refreshInsights, startFreshnessPoll]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 2600); };
+
+  // Manual re-run (202 fire-and-forget per year), then poll for the result.
+  // Covers the current year plus any prior years already represented in the
+  // feed, so a prior-YA card refreshes too — capped to keep it cheap.
+  const manualRefresh = async () => {
+    const userId = localStorage.getItem('userId');
+    if (!userId || refreshing) return;
+    const years = [...new Set([
+      new Date().getFullYear(),
+      ...insights.map(i => i.assessmentYear).filter(Boolean),
+    ])].slice(0, 3);
+    try {
+      await Promise.all(years.map(y => runInsightEngine(userId, activeEntity?.id ?? null, y)));
+    } catch {
+      // Queueing failed for some year — the poll below still reconciles
+      // whatever DID queue, and the error state covers a dead backend.
+    }
+    startFreshnessPoll();
+  };
 
   // Fire-and-forget server write behind every optimistic local transition.
   const patchState = (id, payload) => {
@@ -533,18 +606,27 @@ function InsightsInbox() {
             <p className="mt-1 text-xs text-muted">
               {activeEntity ? `Watching ${activeEntity.name}'s tax position` : 'Your tax position, watched continuously'} — insights appear when something needs you.
             </p>
-            {/* Engine heartbeat — the latest insight_runs record */}
-            {lastRun ? (
-              <p className="mt-1.5 flex items-center gap-1.5 text-[10px] text-muted">
-                <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
-                Last analysed {timeAgo(lastRun.ranAt)} · trigger: {(lastRun.trigger || '').replace(/_/g, ' ')} · {lastRun.documentsAnalysed} documents → {lastRun.signalsFound} signals
-              </p>
-            ) : (
-              <p className="mt-1.5 flex items-center gap-1.5 text-[10px] text-muted">
-                <span className="h-1.5 w-1.5 rounded-full bg-muted" />
-                No analysis run yet — upload a document and the tax brain wakes up.
-              </p>
-            )}
+            {/* Engine heartbeat — the latest insight_runs record — + manual re-run */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              {lastRun ? (
+                <p className="flex items-center gap-1.5 text-[10px] text-muted">
+                  <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
+                  Last analysed {timeAgo(lastRun.ranAt)} · trigger: {(lastRun.trigger || '').replace(/_/g, ' ')} · {lastRun.documentsAnalysed} documents → {lastRun.signalsFound} signals
+                </p>
+              ) : (
+                <p className="flex items-center gap-1.5 text-[10px] text-muted">
+                  <span className="h-1.5 w-1.5 rounded-full bg-muted" />
+                  No analysis run yet — upload a document and the tax brain wakes up.
+                </p>
+              )}
+              <button
+                onClick={manualRefresh}
+                disabled={refreshing}
+                className={`inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold transition-colors ${refreshing ? 'text-muted cursor-wait' : 'text-muted hover:border-primary hover:text-primary'}`}>
+                <RotateIcon className={`h-2.5 w-2.5 ${refreshing ? 'animate-spin' : ''}`} />
+                {refreshing ? 'Analysing…' : 'Refresh'}
+              </button>
+            </div>
           </div>
 
           {/* Stat strip */}
@@ -596,6 +678,23 @@ function InsightsInbox() {
                   <SparkleIcon className="h-5 w-5 text-muted" />
                 </div>
                 <p className="text-sm font-semibold text-headings">Loading your insights…</p>
+              </div>
+            ) : error && insights.length === 0 ? (
+              // Fetch failed and there is nothing older on screen — say so
+              // explicitly instead of masquerading as an empty inbox.
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface py-16 text-center">
+                <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-critical-bg">
+                  <XIcon className="h-5 w-5 text-critical" />
+                </div>
+                <p className="text-sm font-semibold text-headings">Couldn’t load your insights</p>
+                <p className="mt-1 max-w-xs text-xs text-muted">
+                  The insights service didn’t respond. Your documents are safe — this is just the feed.
+                </p>
+                <button
+                  onClick={() => { setLoading(true); refreshInsights(); }}
+                  className="mt-4 rounded-lg bg-headings px-4 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90">
+                  Try again
+                </button>
               </div>
             ) : visible.length === 0 ? (
               <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface py-16 text-center">

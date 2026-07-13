@@ -252,13 +252,22 @@ def trigger_insight_run(
     background_tasks: BackgroundTasks,
     user_id:   int           = Query(..., description="User to recompute insights for."),
     entity_id: Optional[int] = Query(default=None),
+    assessment_year: Optional[int] = Query(
+        default=None, ge=2000, le=2100,
+        description="Assessment year to recompute. Omitted → the current year "
+                    "(the engine's default) — pass explicitly to refresh a "
+                    "prior year's feed.",
+    ),
     db: Session = Depends(get_db),
 ):
     """Manual refresh. The engine runs after the response is sent (FastAPI
     BackgroundTasks) with its own DB session — the request never blocks on
     rule evaluation or the digest's Gemini call."""
     _verify_entity_owned(db, user_id, entity_id)
-    background_tasks.add_task(run_insight_engine, user_id, entity_id, "manual_refresh", SessionLocal)
+    background_tasks.add_task(
+        run_insight_engine, user_id, entity_id, "manual_refresh", SessionLocal,
+        assessment_year=assessment_year,
+    )
     return InsightRunRequestOut(
         message="Insight engine run queued.",
         trigger="manual_refresh",
