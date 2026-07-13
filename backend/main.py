@@ -47,6 +47,36 @@ MAX_BATCH_FILES = 10
 MAX_BATCH_BYTES = 100 * 1024 * 1024  # 100 MB
 
 
+def _queue_insight_refresh(user_id, entity_id, trigger: str, *assessment_years) -> None:
+  """Queue insight-engine run(s) after a document mutation, off the request
+  thread. The engine is otherwise only triggered from the classification
+  pipeline's tail (pipeline.run_document_pipeline), so endpoints that mutate
+  documents WITHOUT re-running the pipeline (manual entry, delete, reclassify,
+  reset, archive) must call this — otherwise the AI Insights feed goes stale
+  until an unrelated upload happens to land in the same assessment year.
+
+  Accepts multiple candidate years (varargs) and deduplicates: reclassify/reset
+  pass (previous_ya, new_ya) so a date edit that MOVED the document across
+  years refreshes both feeds, while a same-year edit fires exactly one run.
+  Null years are dropped — a document with no year_of_assessment is invisible
+  to every year summary, so a run would learn nothing from it."""
+  if not user_id:
+    return
+  years = sorted({int(y) for y in assessment_years if y is not None})
+  if not years:
+    logger.info(f"[Insights] Skipping insight refresh ({trigger}): no year_of_assessment.")
+    return
+  # Deferred import — main.py imports pipeline.py, pipeline.py invokes the
+  # engine, and the engine imports main at call time; a top-level import here
+  # would be circular. Same pattern as pipeline.py's tail trigger.
+  from insights.engine import run_insight_engine
+  for ya in years:
+    _pipeline_executor.submit(
+      run_insight_engine, user_id, entity_id, trigger, SessionLocal,
+      assessment_year=ya,
+    )
+
+
 def _requeue_interrupted_documents() -> None:
   """Re-queue documents left mid-flight by a previous process (status
   'processing' or 'pending'). Without this, a restart during OCR leaves a
@@ -981,6 +1011,10 @@ def create_manual_document(
   db.commit()
   db.refresh(db_doc)
 
+  # Manual entries never pass through the classification pipeline, so the
+  # engine's pipeline-tail trigger never fires for them — refresh explicitly.
+  _queue_insight_refresh(db_doc.user_id, db_doc.entity_id, "document_manual_entry", db_doc.year_of_assessment)
+
   return _serialize_doc(db_doc)
 
 
@@ -1045,6 +1079,9 @@ def delete_document(
 ):
   doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
   file_path = doc.file_path
+  # Captured BEFORE deletion — needed to refresh the right insight feed after
+  # the row (and its year_of_assessment) is gone.
+  doc_ya, doc_user, doc_entity = doc.year_of_assessment, doc.user_id, doc.entity_id
 
   # A filed Form B document also created a FormBProfile row, linked back to this
   # document via source_document_id. That column is a plain integer, not a
@@ -1080,6 +1117,9 @@ def delete_document(
 
   db.delete(doc)
   db.commit()
+  # Removing a document can invalidate insights built from it (doc_gap,
+  # provision, audit-risk ratios…) — re-run so stale cards auto-resolve.
+  _queue_insight_refresh(doc_user, doc_entity, "document_deleted", doc_ya)
   try:
     if file_path and os.path.isfile(file_path):
       os.remove(file_path)
@@ -1133,6 +1173,9 @@ def archive_document(
   doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
   doc.status = "archived"
   db.commit()
+  # Archiving removes the doc from the year summary (status filter is
+  # 'completed'), so its insights must recompute just like a deletion.
+  _queue_insight_refresh(doc.user_id, doc.entity_id, "document_archived", doc.year_of_assessment)
   return {"message": f"Document ID {doc_id} archived.", "document_id": doc_id, "status": "archived"}
 
 
@@ -1231,6 +1274,11 @@ def reclassify_document(
     "aggregation_state":  _pre_edit_ed.get("aggregation_state"),
   }
 
+  # Captured fresh on EVERY edit (unlike _original, written once): a date edit
+  # below may move the document to another assessment year, and both the old
+  # and new years' insight feeds must then recompute.
+  prev_ya = doc.year_of_assessment
+
   if new_status:
     doc.tax_status = new_status
   if new_category:
@@ -1302,6 +1350,9 @@ def reclassify_document(
 
   doc.extracted_data = ed
   db.commit()
+  # One run normally; two when the date edit moved the document across years
+  # (the varargs set-dedupe collapses same-year edits to a single run).
+  _queue_insight_refresh(doc.user_id, doc.entity_id, "document_reclassified", prev_ya, doc.year_of_assessment)
   return _serialize_doc(doc)
 
 
@@ -1322,6 +1373,9 @@ def reset_document_classification(
   orig = ed.get("_original")
   if not orig:
     raise HTTPException(status_code=400, detail="This document hasn't been edited — there's nothing to reset.")
+  # Reverting may move the document back to its original assessment year —
+  # refresh both the year it's leaving and the year it returns to.
+  prev_ya = doc.year_of_assessment
 
   doc.category   = orig.get("category")
   doc.tax_status = orig.get("tax_status")
@@ -1345,6 +1399,7 @@ def reset_document_classification(
 
   doc.extracted_data = ed
   db.commit()
+  _queue_insight_refresh(doc.user_id, doc.entity_id, "document_reset", prev_ya, doc.year_of_assessment)
   return _serialize_doc(doc)
 
 

@@ -300,11 +300,14 @@ export const updateInsightState = async (insightId, payload, userId) => {
 
 /**
  * Queue a manual re-run of the insight engine (fire-and-forget, 202).
- * The refreshed feed lands on the next getInsights() call.
+ * The refreshed feed lands on the next getInsights() call. Pass
+ * assessmentYear to recompute a prior year's feed — omitted, the engine
+ * defaults to the current year.
  */
-export const runInsightEngine = async (userId, entityId = null) => {
+export const runInsightEngine = async (userId, entityId = null, assessmentYear = null) => {
   const params = { user_id: userId };
   if (entityId) params.entity_id = entityId;
+  if (assessmentYear) params.assessment_year = assessmentYear;
   const { data } = await api.post('/api/insights/run', {}, { params });
   return data;
 };
