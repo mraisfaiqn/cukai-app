@@ -114,6 +114,32 @@ function timeAgo(iso) {
   return fmtDate(iso);
 }
 
+function plural(count, singular, pluralForm = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
+function runHeartbeat(run) {
+  if (!run) return '';
+  if (run.status === 'queued') {
+    return `Analysis queued${run.assessmentYear ? ` for YA${run.assessmentYear}` : ''}`;
+  }
+  if (run.status === 'running') {
+    return `Analysing${run.assessmentYear ? ` YA${run.assessmentYear}` : ''}…`;
+  }
+  const when = run.completedAt || run.ranAt;
+  if (run.status === 'failed') {
+    return `Analysis failed${when ? ` ${timeAgo(when)}` : ''}`;
+  }
+  if (run.status === 'skipped') {
+    return `Analysis skipped${run.assessmentYear ? ` for YA${run.assessmentYear}` : ''}`;
+  }
+  const documents = run.documentsInScope ?? run.documentsAnalysed ?? 0;
+  // insightsMatched is useful engine telemetry, but it includes cards that
+  // remain resolved or dismissed. Showing it beside the Inbox count therefore
+  // implies that all matched cards should be visible, which is not true.
+  return `Last analysed ${timeAgo(when)} · Based on ${plural(documents, 'document')}`;
+}
+
 const fmtRM = (v) => 'RM ' + Number(v).toLocaleString('en-MY', { maximumFractionDigits: 0 });
 
 // ── Severity → design-system traffic-light tiers ──────────────────────────────
@@ -435,21 +461,26 @@ function InsightsInbox() {
     }
   }, [activeEntity?.id]);
 
-  // After a documentsChanged signal, the engine run lands seconds later on a
-  // backend thread. Poll until lastRun.ranAt ADVANCES past the last value we
-  // saw (server timestamps compared only to themselves — no clock-skew
-  // exposure), bounded so a legitimately skipped run (e.g. an undated
-  // document) just exhausts a few cheap GETs and stops.
+  // After a documentsChanged signal, a durable queued row appears immediately
+  // and the engine completes later on a backend thread. Poll until a new/changed
+  // run reaches a terminal state; a queue timestamp alone is not fresh output.
   const startFreshnessPoll = useCallback(() => {
     const token = ++pollTokenRef.current;
-    const baseline = lastRunRef.current?.ranAt ?? null;
+    const baselineId = lastRunRef.current?.id ?? null;
+    const baselineCompletedAt = lastRunRef.current?.completedAt ?? null;
     setRefreshing(true);
     let tries = 0;
     const tick = async () => {
       if (pollTokenRef.current !== token) return; // superseded by a newer poll
       const data = await refreshInsights();
-      const ranAt = data?.lastRun?.ranAt ?? null;
-      if ((data && ranAt !== baseline) || ++tries >= 10) {
+      const run = data?.lastRun ?? null;
+      const terminal = run && ['completed', 'failed', 'skipped'].includes(run.status);
+      const advanced = run && (
+        run.id !== baselineId || (run.completedAt ?? null) !== baselineCompletedAt
+      );
+      // A queued row is now created immediately. Do not mistake that queue
+      // timestamp for finished analysis; wait for a terminal state.
+      if ((data && terminal && advanced) || ++tries >= 10) {
         if (pollTokenRef.current === token) setRefreshing(false);
         return;
       }
@@ -600,8 +631,8 @@ function InsightsInbox() {
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
               {lastRun ? (
                 <p className="flex items-center gap-1.5 text-[10px] text-muted">
-                  <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
-                  Last analysed {timeAgo(lastRun.ranAt)} · trigger: {(lastRun.trigger || '').replace(/_/g, ' ')} · {lastRun.documentsAnalysed} documents → {lastRun.signalsFound} signals
+                  <span className={`h-1.5 w-1.5 rounded-full ${lastRun.status === 'failed' ? 'bg-critical' : lastRun.status === 'queued' || lastRun.status === 'running' ? 'bg-warning animate-pulse' : lastRun.status === 'skipped' ? 'bg-muted' : 'bg-success'}`} />
+                  {runHeartbeat(lastRun)}
                 </p>
               ) : (
                 <p className="flex items-center gap-1.5 text-[10px] text-muted">

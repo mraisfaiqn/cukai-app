@@ -2367,15 +2367,20 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
     # would be circular. run_insight_engine never raises — an insight
     # failure must not fail an already-committed document.
     if document.user_id and document.year_of_assessment is not None:
-      from insights.engine import run_insight_engine
+      from insights.engine import queue_insight_run, run_insight_engine
       # assessment_year comes from the DOCUMENT, not the wall clock: a 2025
       # receipt uploaded in July 2026 must refresh the YA2025 feed, never
       # pollute YA2026. The engine also enforces the per-YA amendment lock
       # (filed Form B on record ⇒ analysis skipped, with an audit log entry).
-      run_insight_engine(
+      run_id, created = queue_insight_run(
         document.user_id, document.entity_id, "document_classified", db_session_factory,
         assessment_year=document.year_of_assessment,
       )
+      if created:
+        run_insight_engine(
+          document.user_id, document.entity_id, "document_classified", db_session_factory,
+          assessment_year=document.year_of_assessment, run_id=run_id,
+        )
     elif document.user_id:
       # No year_of_assessment could be derived (undated/unparseable document).
       # The year summary filters on that exact column, so ANY year's engine
