@@ -264,3 +264,118 @@ class FormBProfile(Base):
         # no-entity case.)
         Index("ix_formb_user_entity_ya", "user_id", "entity_id", "year_of_assessment", unique=True),
     )
+
+
+class ChatSession(Base):
+    """
+    A single CukaiBot conversation thread. One user can have several sessions
+    open at once (mirrors a WhatsApp chat-thread model) — session_id is what
+    scopes ChatMessage rows together, separate from user_id, which just
+    records who owns the thread.
+
+    Scoped to an entity the same way Document/CapitalAsset/FormBProfile are,
+    so switching the active entity in the UI swaps to that entity's own
+    conversation (see getInitialMessagesForEntity in CukaiBot.jsx, which this
+    table replaces).
+    """
+    __tablename__ = "chat_sessions"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(64), unique=True, nullable=False, index=True)
+    user_id    = Column(String(128), nullable=True, index=True)
+    entity_id  = Column(Integer, ForeignKey("entities.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    title      = Column(String(255), nullable=True)  # short label, e.g. first user message truncated
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    messages = relationship(
+        "ChatMessage", back_populates="session", cascade="all, delete-orphan",
+        order_by="ChatMessage.created_at",
+    )
+
+    __table_args__ = (
+        Index("ix_chatsession_user_entity", "user_id", "entity_id"),
+    )
+
+
+class ChatMessage(Base):
+    """
+    One turn in a ChatSession. role is 'user' or 'assistant'. citations stores
+    the MongoDB chunks (receipt/tax-law snippets) that were retrieved and used
+    to ground an assistant reply — kept as JSONB so the frontend's existing
+    CitationCard shape (tag/title/snippet/verified) can be persisted verbatim
+    without a schema migration every time that shape changes.
+    """
+    __tablename__ = "chat_messages"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(64), ForeignKey("chat_sessions.session_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id    = Column(String(128), nullable=True, index=True)
+
+    role       = Column(String(20), nullable=False)
+    content    = Column(String, nullable=False)
+    citations  = Column(JSONB, nullable=True)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    session = relationship("ChatSession", back_populates="messages")
+
+    __table_args__ = (
+        CheckConstraint("role IN ('user', 'assistant')", name="ck_chatmessage_role"),
+        Index("ix_chatmessage_session_created", "session_id", "created_at"),
+    )
+
+
+class ExternalResource(Base):
+    """
+    Registry of official external reference documents (LHDN Public Rulings,
+    the Income Tax Act 1967, e-Invoice Guidelines, etc.) downloaded and
+    ingested for CukaiBot's RAG retrieval.
+
+    This is the Postgres "library catalog" half of the external-resource
+    pipeline — one row per source document, tracking where it came from and
+    whether it's been embedded yet. The actual embedded text chunks live in
+    MongoDB's separate `external_resource_chunks` collection (see mongo.py),
+    keyed back to this table via external_resource_id. Splitting it this way
+    mirrors the existing Document/document_chunks split: Postgres owns
+    structured bookkeeping (what do we have, where did it come from, is it
+    current), MongoDB owns the embedded content used for similarity search.
+
+    Distinct from Document (which is a user's own uploaded receipt/invoice):
+    an ExternalResource is a shared, authoritative reference text that
+    applies to every user, not something any one user uploaded.
+    """
+    __tablename__ = "external_resources"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Catalog metadata
+    title           = Column(String(500), nullable=False)
+    resource_type   = Column(String(50),  nullable=False)   # "act" | "public_ruling" | "guideline"
+    reference_no    = Column(String(50),  nullable=True)    # e.g. "PR No. 4/2015", "Act 53"
+    category        = Column(String(255), nullable=True)    # human-readable topic, e.g. "Entertainment Expense"
+    source_url      = Column(String(1000), nullable=False)
+    date_issued     = Column(Date,   nullable=True)         # publication date per LHDN, when known
+    superseded_by   = Column(String(50),  nullable=True)    # reference_no of the ruling that replaced this one, if any
+
+    # Ingestion bookkeeping
+    local_path      = Column(String(1000), nullable=True)   # where the downloaded PDF is cached on disk
+    status          = Column(String(20), default="pending") # "pending" | "downloaded" | "embedded" | "failed"
+    chunk_count     = Column(Integer, nullable=True)         # how many chunks this resource produced in Mongo
+    error_message   = Column(String, nullable=True)
+    downloaded_at   = Column(DateTime, nullable=True)
+    embedded_at     = Column(DateTime, nullable=True)
+    created_at      = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint(
+            "resource_type IN ('act', 'public_ruling', 'guideline')",
+            name="ck_externalresource_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'downloaded', 'embedded', 'failed')",
+            name="ck_externalresource_status",
+        ),
+        Index("ix_externalresource_reference_no", "reference_no", unique=True),
+    )

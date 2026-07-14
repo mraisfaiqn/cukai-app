@@ -23,7 +23,7 @@ from sqlalchemy import or_
 
 from database import init_db, SessionLocal
 import models
-from models import Document, FormBProfile, CapitalAsset
+from models import Document, FormBProfile, CapitalAsset, ChatSession, ChatMessage
 from capital_allowance import compute_capital_allowance_for_year
 from utils import parse_amount, money
 from pipeline import (
@@ -32,7 +32,10 @@ from pipeline import (
   REVIEW_CATEGORY, NON_TAX_CATEGORY,
   derive_document_role, derive_aggregation_state,
   APPORTIONED_CATEGORIES, resolve_deductible_pct,
+  embed_document_for_rag,
 )
+import mongo
+from embeddings import embed_text
 
 _pipeline_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="pipeline")
 
@@ -136,6 +139,16 @@ async def lifespan(app: FastAPI):
   os.makedirs(STORAGE_DIR, exist_ok=True)
   app.mount("/files", StaticFiles(directory=STORAGE_DIR), name="stored_documents")
   _requeue_interrupted_documents()
+  # Best-effort: verify/create the MongoDB Atlas vector search index used by
+  # CukaiBot's RAG retrieval (one index on the one document_chunks
+  # collection, which holds user receipts, tax_law summaries, and
+  # external_resource PDF chunks together — see mongo.py's module docstring).
+  # Non-fatal if MONGODB_ATLAS_CLUSTER_URI isn't set yet or Atlas is unreachable — the rest
+  # of the app (uploads, tax profile, etc.) should still start normally.
+  try:
+    mongo.ensure_vector_index()
+  except Exception as e:
+    logger.warning(f"[Startup] MongoDB vector index setup skipped: {e}")
   try:
     yield
   finally:
@@ -1042,6 +1055,17 @@ def delete_document(
       os.remove(file_path)
   except OSError as e:
     logger.warning(f"[Delete] Could not remove file '{file_path}': {e}")
+
+  # Remove this document's embedded RAG chunks so deleted receipts stop
+  # surfacing in future CukaiBot answers. Non-fatal — the document itself is
+  # already gone from Postgres either way.
+  try:
+    mongo_deleted = mongo.delete_chunks_for_document(doc_id)
+    if mongo_deleted:
+      logger.info(f"[Delete] Removed {mongo_deleted} MongoDB chunk(s) for document ID {doc_id}.")
+  except Exception as e:
+    logger.warning(f"[Delete] Could not remove MongoDB chunks for document ID {doc_id}: {e}")
+
   return {"message": f"Document ID {doc_id} deleted.", "document_id": doc_id}
 
 
@@ -1238,6 +1262,16 @@ def reclassify_document(
 
   doc.extracted_data = ed
   db.commit()
+
+  # Keep RAG retrieval in sync with the correction: drop the old chunk(s) and
+  # re-embed from the now-updated category/status/amount/date. Non-fatal —
+  # the reclassification itself already succeeded and is committed above.
+  try:
+    mongo.delete_chunks_for_document(doc.id)
+    embed_document_for_rag(doc)
+  except Exception as e:
+    logger.warning(f"[Reclassify] Could not re-embed document ID {doc.id} for RAG: {e}")
+
   return _serialize_doc(doc)
 
 
@@ -1281,6 +1315,14 @@ def reset_document_classification(
 
   doc.extracted_data = ed
   db.commit()
+
+  # Keep RAG retrieval in sync with the revert — non-fatal on failure.
+  try:
+    mongo.delete_chunks_for_document(doc.id)
+    embed_document_for_rag(doc)
+  except Exception as e:
+    logger.warning(f"[Reset] Could not re-embed document ID {doc.id} for RAG: {e}")
+
   return _serialize_doc(doc)
 
 
@@ -1925,3 +1967,464 @@ def get_form_b_profile(
     "confidence":                record.confidence,
     "createdAt":                 record.created_at.strftime("%Y-%m-%d %H:%M:%S"),
   }
+
+
+# ── CukaiBot chat (RAG) ──────────────────────────────────────────────────────
+# Implements the 5-step retrieval-chat loop from the team's architecture
+# diagram: (1) fetch PostgreSQL session history → (2) [contextualization
+# skipped for this build — see note on _generate_chat_answer] → (3) MongoDB
+# Atlas $vectorSearch → (4) Gemini generation grounded in retrieved context +
+# history → (5) persist both turns to PostgreSQL and respond.
+#
+# Two databases, two different jobs (mirrors the comment already on
+# ChatSession/ChatMessage in models.py):
+#   PostgreSQL → short-term memory: this conversation's own turns, by session_id.
+#   MongoDB    → long-term memory: which receipt/tax-law chunks are semantically
+#                relevant to the current question, via vector similarity.
+
+CHAT_HISTORY_TURN_LIMIT = 20  # most recent messages pulled into the prompt
+CHAT_VECTOR_TOP_K        = 5
+
+CHAT_SYSTEM_PROMPT = """You are Cukai Bot, a Malaysian tax advisory assistant for cukai.ai.
+
+Answer ONLY using the CONTEXT provided below plus the conversation history. The
+CONTEXT may include: the user's own account profile (name, TIN, active
+business/entity — treat this as authoritative first-party account data, not an
+uploaded document), their uploaded receipts/documents, and Malaysian tax-law
+reference material. If the context doesn't contain enough information to
+answer confidently, say so plainly rather than guessing.
+
+Rules:
+- Be concise and specific. Reference concrete figures/dates from the context when relevant.
+- Always mention the general Malaysian tax rule/section if it's present in the context.
+- Never fabricate a section number, ruling number, or amount that isn't in the context.
+- Remind the user, when appropriate, to verify with a licensed tax agent or LHDN directly.
+
+Formatting:
+- Write in plain, well-organized prose and short paragraphs, the way you'd
+  explain it out loud to someone — not as a reference document.
+- Avoid heavy markdown structure: no "###" headings, and don't break the
+  answer into many bolded sub-sections. A normal answer should read as a
+  few flowing paragraphs, not a formatted document.
+- Only use light markdown where it genuinely helps: "**bold**" for a handful
+  of the most important terms or figures (not entire clauses), and a simple
+  "- " bulleted list only when there are 3+ distinct items that are easier
+  to scan as a list (e.g. a set of conditions or required documents). Do not
+  nest bullets or mix multiple heading levels.
+"""
+
+
+def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -> Optional[str]:
+  """
+  Fetch the user's own Postgres profile (Person) and, if one is active, their
+  business Entity, and format it as a short block of facts the chat LLM can
+  answer identity/profile questions from (e.g. "what is my name?", "what's my
+  TIN?", "what's my business's SSM number?").
+
+  This exists because _generate_chat_answer's CONTEXT was built *only* from
+  mongo.vector_search() results — the user's uploaded documents and tax-law
+  reference chunks. That's the right source for "how much did I earn from
+  MIXTURE OF EXPERTS", but a Form EA or bank statement chunk has no reason to
+  contain the user's name, so a question like "what is my name?" always came
+  back empty even though the name is sitting right there in Postgres. This
+  queries the same Person/Entity tables _serialize_person()/_serialize_entity()
+  already expose over the REST API, just reused here for the chat prompt.
+
+  Returns None (not an empty string) when there's no Person row at all, so
+  the caller can distinguish "nothing to add" from "profile exists but every
+  field happens to be blank" — see the callsite in the chat endpoint.
+
+  Deliberately NOT reusing _serialize_person()'s full field list: this only
+  surfaces fields worth grounding a conversational answer in (name, IC/TIN,
+  contact, marital/dependant status relevant to reliefs, and each entity's
+  business details). Bank account number and full correspondence address are
+  left out — they're the kind of sensitive-but-answer-irrelevant fields that
+  don't need to ride along in every single LLM prompt just because they
+  exist on the record.
+
+  Lists every entity the person owns (a person can have multiple businesses
+  registered), not only the one currently selected in the UI — otherwise a
+  question like "what businesses do I have?" or "how many entities do I
+  own?" has no way to be answered, the same gap "what is my name?" had
+  before this function existed. The currently-active entity_id (if any) is
+  still flagged separately so the model can tell "my businesses in general"
+  apart from "the business I'm currently looking at".
+  """
+  # Cast to int for the query — user_id arrives as a string from the request
+  # body (see _verify_entity_owned's docstring on the same int/str mismatch),
+  # while Person.id is a real Integer primary key.
+  try:
+    person_id = int(user_id)
+  except (TypeError, ValueError):
+    return None
+
+  person = db.query(models.Person).filter(models.Person.id == person_id).first()
+  if not person:
+    return None
+
+  lines = ["The following is the user's own profile on file (from their account, not an uploaded document):"]
+  if person.full_name:
+    lines.append(f"- Full name: {person.full_name}")
+  if person.identification_no:
+    lines.append(f"- IC/identification no.: {person.identification_no}")
+  if person.personal_tin:
+    lines.append(f"- Personal TIN: {person.personal_tin}")
+  if person.marital_status:
+    lines.append(f"- Marital status: {person.marital_status}")
+    if person.marital_status != "single" and person.spouse_name:
+      lines.append(f"- Spouse name: {person.spouse_name}")
+  if person.number_of_children:
+    lines.append(f"- Number of children: {person.number_of_children}")
+  if person.correspondence_city or person.correspondence_state:
+    lines.append(f"- Location: {person.correspondence_city or ''} {person.correspondence_state or ''}".strip())
+
+  # List every entity the person owns, not just the one currently selected —
+  # a person can register multiple businesses (see models.Entity.person_id
+  # being a plain one-to-many FK), and the chat should be able to answer
+  # questions about all of them, not only whichever one happens to be active
+  # in the UI right now.
+  if person.entities:
+    lines.append(f"- Businesses/entities on file ({len(person.entities)} total):")
+    for entity in person.entities:
+      is_active = entity_id is not None and entity.id == entity_id
+      marker = " [currently active in this conversation]" if is_active else ""
+      lines.append(f"  - {entity.name or '(unnamed)'} — type: {entity.entity_type}{marker}")
+      if entity.business_activity:
+        lines.append(f"    Business activity: {entity.business_activity}")
+      if entity.ssm_no:
+        lines.append(f"    SSM registration no.: {entity.ssm_no}")
+      if entity.tin:
+        lines.append(f"    Business TIN: {entity.tin}")
+
+  # lines always has at least the header — that alone isn't useful context,
+  # so require at least one real fact before returning a block.
+  return "\n".join(lines) if len(lines) > 1 else None
+
+
+def _generate_chat_answer(
+  question: str, history: list[dict], context_chunks: list[dict], person_context: Optional[str] = None,
+) -> str:
+  """
+  Step 4 of the loop — Gemini generation grounded in retrieved Mongo context
+  + the user's own Postgres profile (person_context, see
+  _person_context_block) + Postgres chat history + the current question.
+  Reuses the same ChatGoogleGenerativeAI pattern as pipeline.py's
+  classify_and_extract_with_llm.
+
+  Note on query contextualization (step 2 in the team's diagram): the
+  original diagram rewrites e.g. "what does it eat?" into "what do cats eat?"
+  using a separate lightweight LLM call before embedding the query. This build
+  embeds the raw question directly to avoid an extra per-message LLM
+  round-trip — an intentional MVP simplification (see the original planning
+  conversation). Add a rewrite step here first if the bot starts losing track
+  of pronouns/follow-ups across turns.
+  """
+  from langchain_google_genai import ChatGoogleGenerativeAI
+  from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+
+  api_key = os.getenv("GEMINI_API_KEY")
+  if not api_key:
+    raise EnvironmentError("GEMINI_API_KEY is not set.")
+
+  llm = ChatGoogleGenerativeAI(
+    model="gemini-3.1-flash-lite",
+    api_key=api_key,
+    temperature=0.2,
+    convert_system_message_to_human=True,
+  )
+
+  if context_chunks:
+    context_block = "\n".join(f"- {c.get('text', '')}" for c in context_chunks)
+  else:
+    context_block = "(No relevant documents or tax-law references were found for this question.)"
+
+  # Prepend the Postgres profile block (name, TIN, active entity, etc.) ahead
+  # of the document-chunk context, when there is one — see
+  # _person_context_block()'s docstring for why this exists as a second,
+  # separate context source rather than folding it into the Mongo query.
+  if person_context:
+    context_block = f"{person_context}\n\n{context_block}"
+
+  messages = [SystemMessage(content=CHAT_SYSTEM_PROMPT + f"\n\nCONTEXT:\n{context_block}")]
+  for turn in history[-CHAT_HISTORY_TURN_LIMIT:]:
+    if turn["role"] == "user":
+      messages.append(HumanMessage(content=turn["content"]))
+    else:
+      messages.append(AIMessage(content=turn["content"]))
+  messages.append(HumanMessage(content=question))
+
+  response = llm.invoke(messages)
+  raw = response.content
+  if isinstance(raw, list):
+    return "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw).strip()
+  return str(raw).strip() if raw is not None else ""
+
+
+# Stable, human-browsable landing page to fall back to when a direct PDF
+# sourceUrl 404s — LHDN rotates its direct-download PDF links under
+# random-token /media/<token>/ paths without redirecting the old ones (see
+# the note on ACT-53's source_url in seed_external_resources.py), so a
+# hardcoded direct link can go stale at any time with no warning. This page
+# has been stable for years and reliably loads in a browser, unlike raw PDF
+# GETs which some LHDN CDN paths appear to gate behind referer/session
+# checks. Kept in sync with seed_external_resources.FALLBACK_INDEX_URL.
+_EXTERNAL_RESOURCE_FALLBACK_URL = "https://www.hasil.gov.my/perundangan/akta/"
+
+
+def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
+  """Shape MongoDB chunks into the CitationCard format the frontend already
+  renders (tag/title/snippet/verified/sourceUrl) — see CitationCard in
+  CukaiBot.jsx. sourceUrl is only populated for external_resource chunks
+  (real LHDN PDFs) — the frontend's link-out button hides itself when absent.
+
+  Also adds two fields the frontend can use but doesn't have to:
+    - pageNumber: the 1-indexed PDF page this chunk came from, when known
+      (see seed_external_resources.py's page-tracking extraction). None for
+      chunks ingested before that tracking existed, or for non-PDF sources.
+    - fallbackUrl: a stable index-page link to offer if sourceUrl 404s, since
+      direct LHDN PDF links can rot without warning (see the module-level
+      note above). Always present for external_resource chunks even when
+      sourceUrl itself is fine, so the frontend has something to fall back
+      to without a second round-trip.
+  """
+  citations = []
+  for c in chunks:
+    source = c.get("source")
+    source_url = None
+    page_number = None
+    fallback_url = None
+    if source == "external_resource":
+      tag = c.get("reference_no") or c.get("resource_type", "REFERENCE").upper()
+      title = c.get("title") or c.get("category") or "Official reference"
+      source_url = c.get("source_url")
+      page_number = c.get("page_number")
+      # "#page=N" is the de-facto PDF open-parameter most browsers/viewers
+      # honor (Chrome, Firefox, Edge, Adobe Reader) to jump straight to a
+      # given page — cheap, standard, no extra request needed.
+      if source_url and page_number:
+        source_url = f"{source_url}#page={page_number}"
+      fallback_url = _EXTERNAL_RESOURCE_FALLBACK_URL
+    elif source == "tax_law":
+      tag, title = "TAX LAW", c.get("category") or "Reference material"
+    else:
+      tag = f"YA{c['year_of_assessment']}" if c.get("year_of_assessment") else "DOCUMENT"
+      title = c.get("category") or "Your document"
+    citations.append({
+      "tag": tag,
+      "title": title,
+      "snippet": c.get("text", ""),
+      "verified": f"Similarity {round(c['score'] * 100)}%" if c.get("score") is not None else None,
+      "sourceUrl": source_url,
+      "pageNumber": page_number,
+      "fallbackUrl": fallback_url,
+    })
+  return citations
+
+
+@app.get("/api/chat/sessions")
+def list_chat_sessions(
+  user_id:   str            = Query(..., description="Owner of the sessions."),
+  entity_id: Optional[int] = Query(default=None),
+  db: Session = Depends(get_db),
+):
+  """List a user's chat sessions (most recently updated first), optionally
+  scoped to one entity — mirrors getAllEntities-style listing elsewhere."""
+  _verify_entity_owned(db, user_id, entity_id)
+  q = db.query(ChatSession).filter(ChatSession.user_id == user_id)
+  if entity_id is not None:
+    q = q.filter(ChatSession.entity_id == entity_id)
+  sessions = q.order_by(ChatSession.updated_at.desc()).all()
+  return [
+    {
+      "sessionId": s.session_id,
+      "entityId": s.entity_id,
+      "title": s.title,
+      "createdAt": s.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+      "updatedAt": s.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    for s in sessions
+  ]
+
+
+@app.get("/api/chat/{session_id}/history")
+def get_chat_history(
+  session_id: str,
+  user_id:    str = Query(..., description="Owner of the session."),
+  db: Session = Depends(get_db),
+):
+  """Fetch the full message history for one session, ordered oldest→newest —
+  what CukaiBot.jsx's getInitialMessagesForEntity should be replaced with."""
+  session = db.query(ChatSession).filter(
+    ChatSession.session_id == session_id, ChatSession.user_id == user_id,
+  ).first()
+  if not session:
+    raise HTTPException(status_code=404, detail="Chat session not found.")
+
+  messages = (
+    db.query(ChatMessage)
+    .filter(ChatMessage.session_id == session_id)
+    .order_by(ChatMessage.created_at.asc())
+    .all()
+  )
+  return {
+    "sessionId": session.session_id,
+    "entityId": session.entity_id,
+    "messages": [
+      {
+        "id": m.id,
+        "role": m.role,
+        "text": m.content,
+        "citations": m.citations,
+      }
+      for m in messages
+    ],
+  }
+
+
+@app.post("/api/chat", status_code=200)
+def post_chat_message(
+  payload:  dict,
+  db: Session = Depends(get_db),
+):
+  """
+  The main retrieval-chat endpoint (steps 1–5 of the loop).
+
+  Request body:
+    { "message": str, "user_id": str, "entity_id": int|null, "session_id": str|null }
+  session_id is optional — a new session is created automatically on first
+  message, exactly like starting a new WhatsApp thread.
+
+  Response:
+    { "session_id", "message": {id, role, text, citations} }
+  """
+  message   = (payload.get("message") or "").strip()
+  user_id   = payload.get("user_id")
+  entity_id = payload.get("entity_id")
+  session_id = payload.get("session_id")
+
+  if not message:
+    raise HTTPException(status_code=422, detail="message is required.")
+  if not user_id:
+    raise HTTPException(status_code=422, detail="user_id is required.")
+  _verify_entity_owned(db, user_id, entity_id)
+
+  # ── Resolve or create the session ──────────────────────────────────────
+  session = None
+  if session_id:
+    session = db.query(ChatSession).filter(
+      ChatSession.session_id == session_id, ChatSession.user_id == user_id,
+    ).first()
+    if not session:
+      raise HTTPException(status_code=404, detail="Chat session not found.")
+  if session is None:
+    session_id = uuid.uuid4().hex
+    session = ChatSession(
+      session_id=session_id,
+      user_id=user_id,
+      entity_id=entity_id,
+      title=message[:80],
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+
+  # ── Step 1: fetch PostgreSQL session history ─────────────────────────────
+  history_rows = (
+    db.query(ChatMessage)
+    .filter(ChatMessage.session_id == session.session_id)
+    .order_by(ChatMessage.created_at.desc())
+    .limit(CHAT_HISTORY_TURN_LIMIT)
+    .all()
+  )
+  history = [{"role": m.role, "content": m.content} for m in reversed(history_rows)]
+
+  # Persist the user's message immediately, so it's saved even if generation
+  # below fails partway through.
+  user_msg = ChatMessage(session_id=session.session_id, user_id=user_id, role="user", content=message)
+  db.add(user_msg)
+  db.commit()
+  db.refresh(user_msg)
+
+  # ── Steps 2–3: (contextualization skipped, see _generate_chat_answer) +
+  #    embed the question and run MongoDB Atlas vector search. One call now
+  #    covers everything — the user's own documents, hand-written tax_law
+  #    summaries, and official external_resource PDF chunks all live in the
+  #    same document_chunks collection (see mongo.py's module docstring).
+  context_chunks: list[dict] = []
+  try:
+    query_vector = embed_text(message, task_type="retrieval_query")
+    context_chunks = mongo.vector_search(
+      query_embedding=query_vector,
+      user_id=user_id,
+      entity_id=entity_id,
+      top_k=CHAT_VECTOR_TOP_K,
+    )
+  except Exception as e:
+    logger.warning(f"[Chat] Vector search failed for session {session.session_id}: {e}")
+
+  # ── Step 3b: fetch the user's own Postgres profile (name, TIN, active
+  #    entity, etc.) so identity/profile questions can be answered even when
+  #    no uploaded document happens to mention them — see
+  #    _person_context_block()'s docstring for the "what is my name?" case
+  #    this fixes. Best-effort: a lookup failure here shouldn't break the
+  #    document-grounded half of the answer.
+  person_context: Optional[str] = None
+  try:
+    person_context = _person_context_block(db, user_id, entity_id)
+  except Exception as e:
+    logger.warning(f"[Chat] Person profile lookup failed for session {session.session_id}: {e}")
+
+  # ── Step 4: generate the answer ──────────────────────────────────────────
+  try:
+    answer_text = _generate_chat_answer(message, history, context_chunks, person_context)
+    if not answer_text:
+      raise ValueError("empty response")
+  except Exception as e:
+    logger.error(f"[Chat] Generation failed for session {session.session_id}: {e}")
+    answer_text = (
+      "Sorry, I couldn't generate a response just now. Please try again in a moment, "
+      "or rephrase your question."
+    )
+
+  citations = _chunks_to_citations(context_chunks)
+
+  # ── Step 5: save the assistant reply and respond ────────────────────────
+  assistant_msg = ChatMessage(
+    session_id=session.session_id,
+    user_id=user_id,
+    role="assistant",
+    content=answer_text,
+    citations=citations or None,
+  )
+  db.add(assistant_msg)
+  session.updated_at = datetime.datetime.now(datetime.timezone.utc)
+  db.commit()
+  db.refresh(assistant_msg)
+
+  return {
+    "sessionId": session.session_id,
+    "message": {
+      "id": assistant_msg.id,
+      "role": "assistant",
+      "text": assistant_msg.content,
+      "citations": citations,
+    },
+  }
+
+
+@app.delete("/api/chat/{session_id}")
+def delete_chat_session(
+  session_id: str,
+  user_id:    str = Query(..., description="Owner of the session."),
+  db: Session = Depends(get_db),
+):
+  """Delete a session and all its messages (cascade via ChatSession.messages
+  relationship) — backs the frontend's existing "Clear Chat" button."""
+  session = db.query(ChatSession).filter(
+    ChatSession.session_id == session_id, ChatSession.user_id == user_id,
+  ).first()
+  if not session:
+    raise HTTPException(status_code=404, detail="Chat session not found.")
+  db.delete(session)
+  db.commit()
+  return {"message": f"Chat session {session_id} deleted.", "session_id": session_id}

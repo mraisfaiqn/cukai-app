@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { getAllEntities } from '../services/api';
+import ReactMarkdown from 'react-markdown';
+import { getAllEntities, getChatSessions, getChatHistory, sendChatMessage, deleteChatSession } from '../services/api';
 import cukaiBot from '../assets/cukaibot-icon.png';
 // import { jsPDF } from 'jspdf';
 
@@ -84,16 +85,42 @@ const FileTextIcon = () => (
   </svg>
 );
 
+// Sidebar-toggle icon: a rectangle with a vertical divider near the left edge,
+// the same "panel" glyph most chat apps (including Claude's own sidebar
+// toggle) use — familiar enough that it doesn't need a text label next to it.
+const PanelLeftIcon = ({ className = 'h-4 w-4' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <line x1="9" y1="3" x2="9" y2="21" />
+  </svg>
+);
+
+const PlusIcon = ({ className = 'h-4 w-4' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="12" y1="5" x2="12" y2="19" />
+    <line x1="5" y1="12" x2="19" y2="12" />
+  </svg>
+);
+
+const TrashIcon = ({ className = 'h-3.5 w-3.5' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    <line x1="10" y1="11" x2="10" y2="17" />
+    <line x1="14" y1="11" x2="14" y2="17" />
+  </svg>
+);
+
+const MessageSquareIcon = ({ className = 'h-4 w-4' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+  </svg>
+);
+
 // ── Mock conversation data ───────────────────────────────────────────────────
-// Keyed by entity ID so switching entities swaps the conversation, the same
-// way a real chat-history endpoint will be scoped once the backend exists.
-// Entities with no seeded conversation simply fall through to the empty/
-// welcome state (see getInitialMessagesForEntity below) — this is the same
-// fallback a real fetch would hit for a brand-new entity with no history yet.
-//
-// TODO(backend): once a chat endpoint exists, replace getInitialMessagesForEntity
-// with something like `await API.getChatHistory(userId, entityId)`, called from
-// the same useEffect that already re-runs on activeEntity?.id below.
+// No longer wired up — kept as reference/fallback. The real conversation now
+// comes from GET /api/chat/{session_id}/history via getChatHistory() in the
+// component below, backed by ChatSession/ChatMessage in Postgres.
 
 const suggestedPrompts = [
   'Can I claim broadband as a business expense?',
@@ -137,25 +164,144 @@ function getInitialMessagesForEntity(entityId) {
   return MOCK_MESSAGES_BY_ENTITY[entityId] || [];
 }
 
+// ── Sidebar helpers ──────────────────────────────────────────────────────────
+
+/** Same relative-time convention already used in InsightsInbox.jsx, reused
+ * here so timestamps read consistently across the app. */
+function timeAgo(iso) {
+  const diffMs = Date.now() - new Date(iso);
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 60) return `${Math.max(mins, 1)}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+/**
+ * Buckets sessions into the same "Today / Yesterday / Previous 7 Days /
+ * Older" groups Claude's own sidebar uses, based on each session's
+ * updatedAt (so a session you just replied in jumps back to "Today" rather
+ * than staying pinned to when it was first created). Sessions arrive
+ * pre-sorted most-recent-first from getChatSessions(), and that order is
+ * preserved within each bucket.
+ */
+function groupSessionsByRecency(sessions) {
+  const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+  const today = startOfDay(new Date());
+  const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
+  const weekAgo = new Date(today); weekAgo.setDate(weekAgo.getDate() - 7);
+
+  const groups = [
+    { label: 'Today', items: [] },
+    { label: 'Yesterday', items: [] },
+    { label: 'Previous 7 days', items: [] },
+    { label: 'Older', items: [] },
+  ];
+  for (const s of sessions) {
+    const updated = startOfDay(s.updatedAt);
+    if (updated.getTime() === today.getTime()) groups[0].items.push(s);
+    else if (updated.getTime() === yesterday.getTime()) groups[1].items.push(s);
+    else if (updated > weekAgo) groups[2].items.push(s);
+    else groups[3].items.push(s);
+  }
+  return groups.filter((g) => g.items.length > 0);
+}
+
 // ── Sub-components ───────────────────────────────────────────────────────────
 
+/**
+ * Renders markdown text (bold, bullet lists, paragraphs) using the same
+ * typographic scale the plain <p> tags used before, so switching this in
+ * doesn't change the overall look — it just stops showing raw "**"/"##"/"- "
+ * characters to the user. The backend's CHAT_SYSTEM_PROMPT now asks Gemini
+ * for lightly-formatted prose rather than heavy markdown structure (see
+ * main.py), so this only needs to handle a handful of element types.
+ */
+function MarkdownText({ text, className = '' }) {
+  return (
+    <div className={`markdown-body ${className}`}>
+      <ReactMarkdown
+        components={{
+          p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+          strong: ({ children }) => <strong className="font-semibold text-headings">{children}</strong>,
+          ul: ({ children }) => <ul className="mb-2 ml-4 list-disc space-y-1 last:mb-0">{children}</ul>,
+          ol: ({ children }) => <ol className="mb-2 ml-4 list-decimal space-y-1 last:mb-0">{children}</ol>,
+          li: ({ children }) => <li>{children}</li>,
+          // Headings collapse to bold inline text rather than large heading
+          // sizes — CHAT_SYSTEM_PROMPT discourages "###" now, but this keeps
+          // any that slip through from blowing up the chat bubble's layout.
+          h1: ({ children }) => <p className="mb-2 font-semibold text-headings last:mb-0">{children}</p>,
+          h2: ({ children }) => <p className="mb-2 font-semibold text-headings last:mb-0">{children}</p>,
+          h3: ({ children }) => <p className="mb-2 font-semibold text-headings last:mb-0">{children}</p>,
+          a: ({ children, href }) => (
+            <a href={href} target="_blank" rel="noopener noreferrer" className="text-primary underline">
+              {children}
+            </a>
+          ),
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 function CitationCard({ citation }) {
+  const [sourceFailed, setSourceFailed] = useState(false);
+  // window.open() can't tell us whether the tab it opened actually loaded
+  // (cross-origin, so no error event reaches this page) — so rather than
+  // silently failing on a stale LHDN link, mark it "unavailable" the first
+  // time it's clicked and offer the stable index-page fallback right away
+  // for the next click. Simple and honest given the constraint, rather than
+  // pretending we can detect a 404 in real time.
+  const handleOpenSource = () => {
+    const opened = window.open(citation.sourceUrl, '_blank', 'noopener,noreferrer');
+    if (!opened) {
+      setSourceFailed(true);
+    }
+  };
+
   return (
     <div className="rounded-xl border border-border bg-surface p-4 shadow-sm">
       <div className="mb-2 flex items-start justify-between gap-2">
         <span className="inline-flex items-center rounded-full bg-headings px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
           {citation.tag}
         </span>
-        <button className="text-muted transition-colors hover:text-primary">
-          <ExternalLinkIcon />
-        </button>
+        {citation.sourceUrl && (
+          <button
+            className="text-muted transition-colors hover:text-primary"
+            onClick={handleOpenSource}
+            title={citation.pageNumber ? `Open source document (page ${citation.pageNumber})` : 'Open source document'}
+          >
+            <ExternalLinkIcon />
+          </button>
+        )}
       </div>
       <p className="text-sm font-semibold text-headings">{citation.title}</p>
+      {citation.pageNumber && (
+        <p className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">Page {citation.pageNumber}</p>
+      )}
       <p className="mt-1.5 font-mono text-xs leading-relaxed text-muted">{citation.snippet}</p>
       {citation.verified && (
         <div className="mt-3 flex items-center gap-1.5 border-t border-border pt-2.5">
           <CheckCircleIcon />
           <span className="text-xs font-medium text-primary">{citation.verified}</span>
+        </div>
+      )}
+      {(sourceFailed || (!citation.sourceUrl && citation.fallbackUrl)) && citation.fallbackUrl && (
+        <div className="mt-2.5 border-t border-border pt-2.5">
+          <p className="text-[11px] text-muted">
+            Direct link unavailable —{' '}
+            <button
+              className="text-primary underline"
+              onClick={() => window.open(citation.fallbackUrl, '_blank', 'noopener,noreferrer')}
+            >
+              search the official LHDN index instead
+            </button>
+            .
+          </p>
         </div>
       )}
     </div>
@@ -180,7 +326,7 @@ function AssistantMessage({ message }) {
       </div>
 
       <div className="flex-1 space-y-3">
-        <p className="text-xs leading-relaxed text-[#334155]">{message.text}</p>
+        <MarkdownText text={message.text} className="text-xs leading-relaxed text-[#334155]" />
 
         {message.structured && (
           <div className="rounded-xl border border-border bg-surface shadow-sm overflow-hidden">
@@ -240,6 +386,115 @@ function TypingIndicator() {
   );
 }
 
+// ── Chat history sidebar ─────────────────────────────────────────────────────
+// Claude-style collapsible left sidebar: lists this entity's chat sessions
+// (from Postgres via getChatSessions), grouped by recency, with a "new chat"
+// action and a per-row delete. Collapses to a slim icon rail rather than
+// disappearing entirely, so the toggle stays reachable — mirrors how
+// Claude's own sidebar collapse behaves.
+
+function ChatHistorySidebar({
+  isOpen, onToggle, sessions, isLoading, activeSessionId, onSelectSession, onNewChat, onDeleteSession,
+}) {
+  const grouped = groupSessionsByRecency(sessions);
+
+  // Collapsed rail: just the toggle and a "new chat" icon button, both still
+  // reachable with one click — collapsing shouldn't strand the user.
+  if (!isOpen) {
+    return (
+      <div className="hidden lg:flex w-14 shrink-0 h-full flex-col items-center gap-2 rounded-2xl border border-border bg-surface py-3 shadow-sm">
+        <button
+          onClick={onToggle}
+          title="Show chat history"
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-muted transition-colors hover:bg-slate-50 hover:text-headings"
+        >
+          <PanelLeftIcon />
+        </button>
+        <button
+          onClick={onNewChat}
+          title="New chat"
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-muted transition-colors hover:bg-slate-50 hover:text-headings"
+        >
+          <PlusIcon />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="hidden lg:flex lg:flex-col w-64 shrink-0 h-full min-h-0 rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
+      {/* Header: title + collapse toggle */}
+      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-3 shrink-0">
+        <span className="text-sm font-bold text-headings">Chat history</span>
+        <button
+          onClick={onToggle}
+          title="Hide chat history"
+          className="flex h-7 w-7 items-center justify-center rounded-lg text-muted transition-colors hover:bg-slate-50 hover:text-headings"
+        >
+          <PanelLeftIcon className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* New chat button */}
+      <div className="px-3 pt-3 shrink-0">
+        <button
+          onClick={onNewChat}
+          className="flex w-full items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-semibold text-headings shadow-sm transition-colors hover:bg-slate-50"
+        >
+          <PlusIcon className="h-3.5 w-3.5" />
+          New chat
+        </button>
+      </div>
+
+      {/* Session list */}
+      <div className="flex-1 overflow-y-auto min-h-0 px-2 py-3 space-y-4">
+        {isLoading ? (
+          <p className="px-2 text-xs text-muted">Loading…</p>
+        ) : grouped.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-2 px-3 py-8 text-center">
+            <MessageSquareIcon className="h-6 w-6 text-slate-300" />
+            <p className="text-xs text-muted">No conversations yet. Ask a question to start one.</p>
+          </div>
+        ) : (
+          grouped.map((group) => (
+            <div key={group.label}>
+              <p className="px-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-muted">{group.label}</p>
+              <div className="space-y-0.5">
+                {group.items.map((s) => {
+                  const isActive = s.sessionId === activeSessionId;
+                  return (
+                    <div
+                      key={s.sessionId}
+                      onClick={() => onSelectSession(s.sessionId)}
+                      className={`group flex items-center gap-1.5 rounded-lg px-2 py-2 cursor-pointer transition-colors ${
+                        isActive ? 'bg-primary-tint' : 'hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className={`truncate text-xs font-medium ${isActive ? 'text-primary' : 'text-headings'}`}>
+                          {s.title || 'New conversation'}
+                        </p>
+                        <p className="truncate text-[10px] text-muted">{timeAgo(s.updatedAt)}</p>
+                      </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onDeleteSession(s.sessionId); }}
+                        title="Delete conversation"
+                        className="shrink-0 rounded-md p-1 text-slate-300 opacity-0 transition-all hover:bg-critical-bg hover:text-critical group-hover:opacity-100"
+                      >
+                        <TrashIcon />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Component ───────────────────────────────────────────────────────────
 
 function CukaiBot() {
@@ -248,6 +503,21 @@ function CukaiBot() {
   const [isTyping, setIsTyping] = useState(false);
   const [activeCitations, setActiveCitations] = useState([]);
   const [activeEntity, setActiveEntity] = useState(null);
+  // Backend-issued chat session id — null until the first message is sent
+  // (or until an existing session is resolved for this entity), mirroring
+  // how a WhatsApp thread gets its ID on its first message.
+  const [sessionId, setSessionId] = useState(null);
+
+  // ── Chat history sidebar state ─────────────────────────────────────────
+  const [sessions, setSessions] = useState([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  // Defaults open on desktop, same as Claude's own sidebar; persisted so a
+  // returning user's collapse preference sticks across visits/reloads.
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    const stored = localStorage.getItem('cukaiChatSidebarOpen');
+    return stored === null ? true : stored === 'true';
+  });
+
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -277,14 +547,66 @@ function CukaiBot() {
 
   // Load the conversation for the active entity whenever it changes, so
   // switching entities swaps the chat history instead of carrying over the
-  // previous entity's conversation. Mock-data today; swap for a real fetch
-  // (e.g. API.getChatHistory(userId, activeEntity.id)) once the chat backend
-  // exists — the effect shape stays the same.
+  // previous entity's conversation. This page doesn't yet persist "the last
+  // session_id used for entity X" anywhere the way activeEntityId is
+  // persisted, so switching entities starts a fresh session — the first
+  // message sent against the new entity creates it. Existing sessions can
+  // still be resumed by whatever surface passes a sessionId in via
+  // `?session=` (see the URL-param read below).
   useEffect(() => {
-    const entityMessages = getInitialMessagesForEntity(activeEntity?.id);
-    setMessages(entityMessages);
-    const lastWithCitations = [...entityMessages].reverse().find(m => m.citations);
-    setActiveCitations(lastWithCitations?.citations || []);
+    const params = new URLSearchParams(window.location.search);
+    const paramSessionId = params.get('session');
+    const userId = localStorage.getItem('userId');
+
+    if (!paramSessionId || !userId) {
+      setMessages([]);
+      setActiveCitations([]);
+      setSessionId(null);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const history = await getChatHistory(paramSessionId, userId);
+        if (cancelled) return;
+        setSessionId(history.sessionId);
+        setMessages(history.messages || []);
+        const lastWithCitations = [...(history.messages || [])].reverse().find(m => m.citations?.length);
+        setActiveCitations(lastWithCitations?.citations || []);
+      } catch (_) {
+        if (cancelled) return;
+        // Session id was invalid/stale/not owned by this user — fall back to
+        // the same empty/welcome state a brand-new entity would show.
+        setMessages([]);
+        setActiveCitations([]);
+        setSessionId(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeEntity?.id]);
+
+  // Load the sidebar's session list for the active entity, and reload it
+  // whenever the entity changes — mirrors the message-history effect above,
+  // so switching entities swaps both the conversation AND the sidebar list
+  // together rather than leaving a stale list from the previous entity.
+  async function refreshSessions() {
+    const userId = localStorage.getItem('userId');
+    if (!userId) { setSessions([]); return; }
+    setSessionsLoading(true);
+    try {
+      const list = await getChatSessions(userId, activeEntity?.id ?? null);
+      setSessions(list || []);
+    } catch (_) {
+      setSessions([]);
+    } finally {
+      setSessionsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refreshSessions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEntity?.id]);
 
   useEffect(() => {
@@ -293,9 +615,12 @@ function CukaiBot() {
     }
   }, [messages]);
 
-  function handleSend(text) {
+  async function handleSend(text) {
     const trimmed = (text || inputValue).trim();
     if (!trimmed) return;
+
+    const userId = localStorage.getItem('userId');
+    if (!userId) return;
 
     const userMsg = { id: Date.now(), role: 'user', text: trimmed };
     setMessages((prev) => [...prev, userMsg]);
@@ -303,26 +628,128 @@ function CukaiBot() {
     setIsTyping(true);
     setActiveCitations([]);
 
-    setTimeout(() => {
+    try {
+      const res = await sendChatMessage(trimmed, userId, activeEntity?.id ?? null, sessionId);
+      // First message of a brand-new conversation returns a freshly created
+      // session_id — remember it so every subsequent message in this tab
+      // continues the same thread instead of spawning a new one each time.
+      if (res.sessionId && res.sessionId !== sessionId) {
+        setSessionId(res.sessionId);
+        const params = new URLSearchParams(window.location.search);
+        params.set('session', res.sessionId);
+        window.history.replaceState(null, '', `${window.location.pathname}?${params}`);
+      }
       const botMsg = {
-        id: Date.now() + 1,
+        id: res.message.id,
         role: 'assistant',
-        text: `Based on LHDN's current guidelines, here is what you need to know regarding your question about "${trimmed}". Under the Income Tax Act 1967 and relevant Public Rulings, there are specific rules and limitations that apply. Please consult a licensed tax agent to verify your specific circumstances before filing.`,
-        citations: [
-          { tag: 'ITA 1967', title: 'Section 33(1)', snippet: '"...deductions shall be allowed for all outgoings and expenses wholly and exclusively incurred during that period..."', verified: 'Verified against 2024 Gazette' },
-          { tag: 'PUBLIC RULING', title: 'PR No. 4/2023', snippet: 'Guidelines on deductibility of expenses for businesses under the self-assessment system.' },
-        ],
+        text: res.message.text,
+        citations: res.message.citations || [],
       };
-      setIsTyping(false);
       setMessages((prev) => [...prev, botMsg]);
       setActiveCitations(botMsg.citations);
-    }, 1800);
+      // Sidebar list needs refreshing either way: a brand-new session must
+      // now appear in it, and an existing one's title/updatedAt (used for
+      // the "Today" grouping and sort order) has just changed too.
+      refreshSessions();
+    } catch (err) {
+      const errMsg = {
+        id: Date.now() + 1,
+        role: 'assistant',
+        text: "Sorry, something went wrong reaching Cukai Bot. Please try again in a moment.",
+      };
+      setMessages((prev) => [...prev, errMsg]);
+    } finally {
+      setIsTyping(false);
+    }
   }
 
-  function handleClear() {
+  async function handleClear() {
+    const userId = localStorage.getItem('userId');
+    if (sessionId && userId) {
+      deleteChatSession(sessionId, userId).catch(() => {});
+    }
     setMessages([]);
     setActiveCitations([]);
     setInputValue('');
+    setSessionId(null);
+    const params = new URLSearchParams(window.location.search);
+    params.delete('session');
+    const qs = params.toString();
+    window.history.replaceState(null, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+    // The header's "Clear Chat" button deletes the current session outright
+    // (existing behavior, unchanged) — remove it from the sidebar list too
+    // rather than waiting for the next natural refresh.
+    setSessions((prev) => prev.filter((s) => s.sessionId !== sessionId));
+  }
+
+  // Sidebar "New chat" button: unlike handleClear, this does NOT delete the
+  // current session — it just deselects it, so the conversation the person
+  // was just in still shows up in the sidebar to come back to. A fresh
+  // session is only actually created once they send their first message
+  // (same as any brand-new conversation — see handleSend).
+  function handleNewChat() {
+    setMessages([]);
+    setActiveCitations([]);
+    setInputValue('');
+    setSessionId(null);
+    const params = new URLSearchParams(window.location.search);
+    params.delete('session');
+    const qs = params.toString();
+    window.history.replaceState(null, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+  }
+
+  // Sidebar row click: load that session's full history and make it active,
+  // the same way resuming via a `?session=` URL param already works (see
+  // the history-loading effect above) — just triggered by a click instead
+  // of a page load.
+  async function handleSelectSession(targetSessionId) {
+    if (targetSessionId === sessionId) return;
+    const userId = localStorage.getItem('userId');
+    if (!userId) return;
+    try {
+      const history = await getChatHistory(targetSessionId, userId);
+      setSessionId(history.sessionId);
+      setMessages(history.messages || []);
+      const lastWithCitations = [...(history.messages || [])].reverse().find((m) => m.citations?.length);
+      setActiveCitations(lastWithCitations?.citations || []);
+      const params = new URLSearchParams(window.location.search);
+      params.set('session', history.sessionId);
+      window.history.replaceState(null, '', `${window.location.pathname}?${params}`);
+    } catch (_) {
+      // Stale/deleted session clicked from a list that hasn't refreshed yet
+      // — drop it from the sidebar rather than leaving a dead entry.
+      setSessions((prev) => prev.filter((s) => s.sessionId !== targetSessionId));
+    }
+  }
+
+  // Sidebar row's trash icon: deletes ANY session in the list, not just the
+  // currently open one (that's the difference from handleClear, which only
+  // ever acts on the active session). If the deleted session happens to be
+  // the one currently open, also clear the main view so it doesn't keep
+  // showing a conversation that no longer exists.
+  async function handleDeleteSessionFromSidebar(targetSessionId) {
+    const userId = localStorage.getItem('userId');
+    if (!userId) return;
+    setSessions((prev) => prev.filter((s) => s.sessionId !== targetSessionId));
+    if (targetSessionId === sessionId) {
+      handleNewChat();
+    }
+    try {
+      await deleteChatSession(targetSessionId, userId);
+    } catch (_) {
+      // Deletion failed server-side after we'd already optimistically
+      // removed it from view — refresh from the server to reconcile rather
+      // than leaving the sidebar showing a session that's actually still there.
+      refreshSessions();
+    }
+  }
+
+  function toggleSidebar() {
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      localStorage.setItem('cukaiChatSidebarOpen', String(next));
+      return next;
+    });
   }
 
   // ── Export the current chat session to a downloadable PDF ──────────────────
@@ -429,6 +856,18 @@ function CukaiBot() {
 
         {/* ── Master Split Layout Area ── */}
         <div className="flex flex-1 gap-6 min-h-0 overflow-hidden">
+
+          {/* ── Chat History Sidebar (collapsible) ── */}
+          <ChatHistorySidebar
+            isOpen={sidebarOpen}
+            onToggle={toggleSidebar}
+            sessions={sessions}
+            isLoading={sessionsLoading}
+            activeSessionId={sessionId}
+            onSelectSession={handleSelectSession}
+            onNewChat={handleNewChat}
+            onDeleteSession={handleDeleteSessionFromSidebar}
+          />
 
           {/* ── Left Column: Interactive Chat Stream Area ── */}
           <div className="flex-1 flex flex-col h-full min-w-0 rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">

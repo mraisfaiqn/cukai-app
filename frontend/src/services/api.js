@@ -310,3 +310,51 @@ export const updateInsightState = async (insightId, state, reason = null, userId
   const { data } = await api.patch(`/api/insights/${insightId}/state`, body, { params });
   return data;
 };
+
+// ── CukaiBot chat ────────────────────────────────────────────────────────────
+// Backs the retrieval-chat loop: PostgreSQL session history + MongoDB vector
+// search + Gemini generation. session_id is optional on the first message —
+// the backend creates one automatically and returns it, the same way a new
+// WhatsApp thread gets an ID on its first message.
+
+/**
+ * List a user's chat sessions, optionally scoped to one entity, most
+ * recently updated first. Returns an array of
+ * { sessionId, entityId, title, createdAt, updatedAt }.
+ */
+export const getChatSessions = async (userId, entityId = null) => {
+  const params = { user_id: userId };
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.get('/api/chat/sessions', { params });
+  return data;
+};
+
+/**
+ * Fetch the full message history for one chat session, oldest first.
+ * Returns { sessionId, entityId, messages: [{id, role, text, citations}] }.
+ */
+export const getChatHistory = async (sessionId, userId) => {
+  const { data } = await api.get(`/api/chat/${sessionId}/history`, { params: { user_id: userId } });
+  return data;
+};
+
+/**
+ * Send a chat message and get back the assistant's reply.
+ * Pass `sessionId = null` to start a new session — the response's
+ * `sessionId` should then be stored (e.g. in state) and passed on
+ * subsequent calls to keep the same thread.
+ * Returns { sessionId, message: {id, role, text, citations} }.
+ */
+export const sendChatMessage = async (message, userId, entityId = null, sessionId = null) => {
+  const body = { message, user_id: userId };
+  if (entityId)  body.entity_id  = entityId;
+  if (sessionId) body.session_id = sessionId;
+  const { data } = await api.post('/api/chat', body);
+  return data;
+};
+
+/** Permanently delete a chat session and all its messages. */
+export const deleteChatSession = async (sessionId, userId) => {
+  const { data } = await api.delete(`/api/chat/${sessionId}`, { params: { user_id: userId } });
+  return data;
+};

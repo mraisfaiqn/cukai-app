@@ -24,6 +24,9 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions, EasyOcrOption
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
+from embeddings import chunk_text, embed_texts
+import mongo as mongo_store
+
 load_dotenv()
 
 logger = logging.getLogger("uvicorn.error")
@@ -2022,6 +2025,74 @@ def build_extracted_data(
   }
 
 
+def build_rag_summary_text(document: "Document") -> str:
+  """
+  Build the short, clean natural-language summary that gets embedded for RAG
+  retrieval — e.g. "Category: Business Expense, Office Supplies, RM150,
+  dated 2026-03-04, vendor ABC Sdn Bhd." This is deliberately NOT the raw
+  extracted_content (which is noisy OCR text); a clean summary embeds and
+  matches user questions far better than raw receipt text does.
+  """
+  data = document.extracted_data or {}
+  parts = [f"Category: {document.category or 'Unclassified'}"]
+  if data.get("vendor"):
+    parts.append(f"Vendor: {data['vendor']}")
+  if data.get("amount") is not None:
+    parts.append(f"Amount: RM{data['amount']}")
+  if data.get("date"):
+    parts.append(f"Date: {data['date']}")
+  if document.year_of_assessment:
+    parts.append(f"Year of Assessment: {document.year_of_assessment}")
+  if data.get("ita_section"):
+    parts.append(f"ITA Section: {data['ita_section']}")
+  if document.tax_status:
+    parts.append(f"Tax status: {document.tax_status}")
+  if data.get("note"):
+    parts.append(f"Note: {data['note']}")
+  return ". ".join(parts)
+
+
+def embed_document_for_rag(document: "Document") -> None:
+  """
+  Ingestion-side RAG hook: turn a newly classified document into one or more
+  embedded chunks in MongoDB so CukaiBot's chat retrieval can find it later.
+
+  Called once, right after a document finishes classification and its
+  extracted_data is committed to Postgres (see run_document_pipeline below).
+  Failures here are logged and swallowed rather than raised — a chatbot
+  indexing failure should never fail the underlying document upload/
+  classification the user is actually waiting on.
+  """
+  try:
+    summary_text = build_rag_summary_text(document)
+    if not summary_text.strip():
+      return
+
+    chunks = chunk_text(summary_text)
+    if not chunks:
+      return
+
+    vectors = embed_texts(chunks, task_type="retrieval_document")
+
+    for chunk, vector in zip(chunks, vectors):
+      mongo_store.insert_chunk(
+        text=chunk,
+        embedding=vector,
+        user_id=document.user_id,
+        entity_id=document.entity_id,
+        source="document",
+        doc_id=document.id,
+        year_of_assessment=document.year_of_assessment,
+        category=document.category,
+      )
+
+    logger.info(f"[Pipeline] Embedded {len(chunks)} chunk(s) for Document ID {document.id} into MongoDB.")
+  except Exception as e:
+    # Mirrors the "never take down the main upload flow" principle already
+    # used elsewhere in this pipeline (e.g. insight generation failures).
+    logger.error(f"[Pipeline] RAG embedding failed for Document ID {document.id}: {e}")
+
+
 # ─── Main pipeline ─────────────────────────────────────────────────────────────
 def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
   db: Session = db_session_factory()
@@ -2189,6 +2260,10 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
     document.year_of_assessment = ya_int
     document.extracted_data     = extracted_data
     db.commit()
+
+    # ── RAG ingestion — embed this document's summary into MongoDB so
+    #    CukaiBot's chat retrieval can find it later. Non-fatal on failure. ──
+    embed_document_for_rag(document)
 
     # ── If this is a filed Form B, upsert a FormBProfile record ──────────
     if category == "Q1 — Filed Form B (Prior Year)":
