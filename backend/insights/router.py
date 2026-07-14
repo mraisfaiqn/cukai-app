@@ -45,11 +45,12 @@ import models
 from models import CapitalAsset, Document, FormBProfile
 from database import SessionLocal
 from insights.engine import (
-    get_locked_year_pairs, is_assessment_year_locked, run_insight_engine,
+    get_locked_year_pairs, is_assessment_year_locked, queue_insight_run,
+    run_insight_engine,
 )
-from insights.models import Insight, InsightRun
+from insights.models import Insight, InsightRun, InsightRunChange
 from insights.schemas import (
-    InsightFeedOut, InsightOut, InsightRunRequestOut, InsightStateUpdate,
+    InsightFeedOut, InsightOut, InsightRunOut, InsightRunRequestOut, InsightStateUpdate,
     serialize_insight, serialize_run,
 )
 from tax_rules import TAX_RULES_VERSION
@@ -143,13 +144,18 @@ def _wake_expired_snoozes(db: Session, background_tasks: BackgroundTasks,
     db.commit()
 
     for (ent, ya), types in rerun_types.items():
-        background_tasks.add_task(
-            run_insight_engine,
+        run_id, created = queue_insight_run(
             user_id, ent, "stale_wake", SessionLocal,
             assessment_year=ya,
             only_insight_types=sorted(types),
             initial_logs=rerun_logs[(ent, ya)],
         )
+        if created:
+            background_tasks.add_task(
+                run_insight_engine,
+                user_id, ent, "stale_wake", SessionLocal,
+                assessment_year=ya, run_id=run_id,
+            )
 
 
 @router.get("", response_model=InsightFeedOut)
@@ -183,15 +189,38 @@ def get_insights(
     run_q = db.query(InsightRun).filter(InsightRun.user_id == user_id)
     if entity_id is not None:
         run_q = run_q.filter(InsightRun.entity_id == entity_id)
-    last_run = run_q.order_by(InsightRun.ran_at.desc(), InsightRun.id.desc()).first()
+    last_run = run_q.order_by(InsightRun.queued_at.desc(), InsightRun.id.desc()).first()
+    run_changes = []
+    if last_run:
+        run_changes = db.query(InsightRunChange).filter(
+            InsightRunChange.run_id == last_run.id,
+        ).order_by(InsightRunChange.id.asc()).all()
 
     return InsightFeedOut(
         insights=[
             serialize_insight(i, is_locked=((i.entity_id, i.assessment_year) in locked_pairs))
             for i in insights
         ],
-        lastRun=serialize_run(last_run) if last_run else None,
+        lastRun=serialize_run(last_run, run_changes) if last_run else None,
     )
+
+
+@router.get("/runs/{run_id}", response_model=InsightRunOut)
+def get_insight_run(
+    run_id: int,
+    user_id: int = Query(..., description="Owner of the run."),
+    db: Session = Depends(get_db),
+):
+    run = db.query(InsightRun).filter(
+        InsightRun.id == run_id,
+        InsightRun.user_id == user_id,
+    ).first()
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Insight run ID {run_id} not found.")
+    changes = db.query(InsightRunChange).filter(
+        InsightRunChange.run_id == run.id,
+    ).order_by(InsightRunChange.id.asc()).all()
+    return serialize_run(run, changes)
 
 
 @router.patch("/{insight_id}/state", response_model=InsightOut)
@@ -264,13 +293,25 @@ def trigger_insight_run(
     BackgroundTasks) with its own DB session — the request never blocks on
     rule evaluation or the digest's Gemini call."""
     _verify_entity_owned(db, user_id, entity_id)
-    background_tasks.add_task(
-        run_insight_engine, user_id, entity_id, "manual_refresh", SessionLocal,
-        assessment_year=assessment_year,
+    ya = assessment_year or date.today().year
+    run_id, created = queue_insight_run(
+        user_id, entity_id, "manual_refresh", SessionLocal,
+        assessment_year=ya,
     )
+    if run_id is None:
+        raise HTTPException(status_code=503, detail="Could not queue the insight engine run.")
+    if created:
+        background_tasks.add_task(
+            run_insight_engine, user_id, entity_id, "manual_refresh", SessionLocal,
+            assessment_year=ya, run_id=run_id,
+        )
     return InsightRunRequestOut(
-        message="Insight engine run queued.",
+        message="Insight engine run queued." if created else "Joined an existing queued insight run.",
         trigger="manual_refresh",
+        runId=run_id,
+        status="queued",
+        assessmentYear=ya,
+        coalesced=not created,
     )
 
 
@@ -520,9 +561,13 @@ def generate_test_data(
     db.commit()
 
     # ── Run the engine SYNCHRONOUSLY (test aid) and return the cards ────────
-    run_insight_engine(
+    run_id, _ = queue_insight_run(
         user_id, entity_id, "test_data_seed", SessionLocal,
         assessment_year=ya,
+    )
+    run_insight_engine(
+        user_id, entity_id, "test_data_seed", SessionLocal,
+        assessment_year=ya, run_id=run_id,
     )
 
     generated = db.query(Insight).filter(

@@ -69,12 +69,16 @@ def _queue_insight_refresh(user_id, entity_id, trigger: str, *assessment_years) 
   # Deferred import — main.py imports pipeline.py, pipeline.py invokes the
   # engine, and the engine imports main at call time; a top-level import here
   # would be circular. Same pattern as pipeline.py's tail trigger.
-  from insights.engine import run_insight_engine
+  from insights.engine import queue_insight_run, run_insight_engine
   for ya in years:
-    _pipeline_executor.submit(
-      run_insight_engine, user_id, entity_id, trigger, SessionLocal,
-      assessment_year=ya,
+    run_id, created = queue_insight_run(
+      user_id, entity_id, trigger, SessionLocal, assessment_year=ya,
     )
+    if created:
+      _pipeline_executor.submit(
+        run_insight_engine, user_id, entity_id, trigger, SessionLocal,
+        assessment_year=ya, run_id=run_id,
+      )
 
 
 def _requeue_interrupted_documents() -> None:
@@ -110,53 +114,36 @@ def _requeue_interrupted_documents() -> None:
     db.close()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-  # ── Startup ──
-  init_db()
-  os.makedirs(STORAGE_DIR, exist_ok=True)
-  app.mount("/files", StaticFiles(directory=STORAGE_DIR), name="stored_documents")
-  _requeue_interrupted_documents()
-  try:
-    yield
-  finally:
-    # ── Shutdown ── stop accepting new pipeline work and wind the pool down.
-    _pipeline_executor.shutdown(wait=False, cancel_futures=True)
+def _requeue_interrupted_insight_runs() -> None:
+  """Resume durable queued/running insight jobs after a process restart."""
+  from insights.engine import run_insight_engine
+  from insights.models import InsightRun
 
-
-STORAGE_DIR = "./stored_documents"
-MAX_BATCH_FILES = 10
-MAX_BATCH_BYTES = 100 * 1024 * 1024  # 100 MB
-
-
-def _requeue_interrupted_documents() -> None:
-  """Re-queue documents left mid-flight by a previous process (status
-  'processing' or 'pending'). Without this, a restart during OCR leaves a
-  document stuck forever, since the retry endpoint only accepts 'failed'.
-  Runs once at startup, before the app serves traffic."""
   db = SessionLocal()
   try:
-    stuck = db.query(Document).filter(Document.status.in_(["processing", "pending"])).all()
-    requeued = orphaned = 0
-    for doc in stuck:
-      if doc.file_path and os.path.isfile(doc.file_path):
-        doc.status = "pending"
-        db.commit()
-        _pipeline_executor.submit(run_document_pipeline, doc.id, doc.file_path, SessionLocal)
-        requeued += 1
-      else:
-        doc.status = "failed"
-        doc.extracted_data = {
-          "error_message": "Processing was interrupted and the stored file is no "
-                           "longer available. Please re-upload."
-        }
-        db.commit()
-        orphaned += 1
-    if requeued or orphaned:
-      logger.info(f"[Startup] Re-queued {requeued} interrupted document(s); "
-                  f"marked {orphaned} orphaned as failed.")
+    pending = db.query(InsightRun).filter(
+      InsightRun.status.in_(["queued", "running"]),
+      InsightRun.assessment_year.isnot(None),
+    ).order_by(InsightRun.id.asc()).all()
+    for run in pending:
+      if run.status == "running":
+        run.status = "queued"
+        run.started_at = None
+        run.logs = list(run.logs or []) + [
+          "Previous process stopped while this run was active; queued again at startup."
+        ]
+    db.commit()
+
+    for run in pending:
+      _pipeline_executor.submit(
+        run_insight_engine,
+        run.user_id, run.entity_id, run.trigger, SessionLocal,
+        assessment_year=run.assessment_year, run_id=run.id,
+      )
+    if pending:
+      logger.info(f"[Startup] Re-queued {len(pending)} interrupted insight run(s).")
   except Exception as e:
-    logger.error(f"[Startup] Failed to re-queue interrupted documents: {e}")
+    logger.error(f"[Startup] Failed to re-queue interrupted insight runs: {e}")
     db.rollback()
   finally:
     db.close()
@@ -169,12 +156,12 @@ async def lifespan(app: FastAPI):
   os.makedirs(STORAGE_DIR, exist_ok=True)
   app.mount("/files", StaticFiles(directory=STORAGE_DIR), name="stored_documents")
   _requeue_interrupted_documents()
+  _requeue_interrupted_insight_runs()
   try:
     yield
   finally:
     # ── Shutdown ── stop accepting new pipeline work and wind the pool down.
     _pipeline_executor.shutdown(wait=False, cancel_futures=True)
-
 
 # slowapi = a rate limiting library
 limiter = Limiter(key_func=get_remote_address)

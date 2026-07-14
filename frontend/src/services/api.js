@@ -312,6 +312,14 @@ export const runInsightEngine = async (userId, entityId = null, assessmentYear =
   return data;
 };
 
+/** Fetch one durable analysis run, including lifecycle timestamps and changes. */
+export const getInsightRun = async (runId, userId) => {
+  const { data } = await api.get(`/api/insights/runs/${runId}`, {
+    params: { user_id: userId },
+  });
+  return data;
+};
+
 /**
  * Fetch the structured Form B data extracted from a previously filed return.
  * Pass entityId to scope to a specific business entity (each entity keeps its
