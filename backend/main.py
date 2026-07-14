@@ -112,12 +112,16 @@ def _queue_insight_refresh(user_id, entity_id, trigger: str, *assessment_years) 
   # Deferred import — main.py imports pipeline.py, pipeline.py invokes the
   # engine, and the engine imports main at call time; a top-level import here
   # would be circular. Same pattern as pipeline.py's tail trigger.
-  from insights.engine import run_insight_engine
+  from insights.engine import queue_insight_run, run_insight_engine
   for ya in years:
-    _pipeline_executor.submit(
-      run_insight_engine, user_id, entity_id, trigger, SessionLocal,
-      assessment_year=ya,
+    run_id, created = queue_insight_run(
+      user_id, entity_id, trigger, SessionLocal, assessment_year=ya,
     )
+    if created:
+      _pipeline_executor.submit(
+        run_insight_engine, user_id, entity_id, trigger, SessionLocal,
+        assessment_year=ya, run_id=run_id,
+      )
 
 
 def _requeue_interrupted_documents() -> None:
@@ -153,6 +157,41 @@ def _requeue_interrupted_documents() -> None:
     db.close()
 
 
+def _requeue_interrupted_insight_runs() -> None:
+  """Resume durable queued/running insight jobs after a process restart."""
+  from insights.engine import run_insight_engine
+  from insights.models import InsightRun
+
+  db = SessionLocal()
+  try:
+    pending = db.query(InsightRun).filter(
+      InsightRun.status.in_(["queued", "running"]),
+      InsightRun.assessment_year.isnot(None),
+    ).order_by(InsightRun.id.asc()).all()
+    for run in pending:
+      if run.status == "running":
+        run.status = "queued"
+        run.started_at = None
+        run.logs = list(run.logs or []) + [
+          "Previous process stopped while this run was active; queued again at startup."
+        ]
+    db.commit()
+
+    for run in pending:
+      _pipeline_executor.submit(
+        run_insight_engine,
+        run.user_id, run.entity_id, run.trigger, SessionLocal,
+        assessment_year=run.assessment_year, run_id=run.id,
+      )
+    if pending:
+      logger.info(f"[Startup] Re-queued {len(pending)} interrupted insight run(s).")
+  except Exception as e:
+    logger.error(f"[Startup] Failed to re-queue interrupted insight runs: {e}")
+    db.rollback()
+  finally:
+    db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
   # ── Startup ──
@@ -160,6 +199,7 @@ async def lifespan(app: FastAPI):
   os.makedirs(STORAGE_DIR, exist_ok=True)
   app.mount("/files", StaticFiles(directory=STORAGE_DIR), name="stored_documents")
   _requeue_interrupted_documents()
+  _requeue_interrupted_insight_runs()
   # Best-effort: verify/create the MongoDB Atlas vector search index used by
   # CukaiBot's RAG retrieval (one index on the one document_chunks
   # collection, which holds user receipts and external_resource PDF chunks
@@ -175,7 +215,6 @@ async def lifespan(app: FastAPI):
   finally:
     # ── Shutdown ── stop accepting new pipeline work and wind the pool down.
     _pipeline_executor.shutdown(wait=False, cancel_futures=True)
-
 
 # slowapi = a rate limiting library
 limiter = Limiter(key_func=get_remote_address)

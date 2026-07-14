@@ -100,7 +100,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
 from models import FormBProfile
-from insights.models import Insight, InsightRun
+from insights.models import Insight, InsightRun, InsightRunChange
 from tax_rules import TAX_RULES_VERSION
 
 logger = logging.getLogger("uvicorn.error")
@@ -354,12 +354,14 @@ class TaxInsightEngine:
                  entity_id: Optional[int], trigger: str,
                  assessment_year: Optional[int] = None,
                  only_insight_types: Optional[Iterable[str]] = None,
-                 initial_logs: Optional[list[str]] = None):
+                 initial_logs: Optional[list[str]] = None,
+                 run_id: Optional[int] = None):
         self.session_factory = session_factory
         self.user_id = user_id            # Integer — matches Person.id
         self.doc_user_id = str(user_id)   # Documents store user_id as String(128)
         self.entity_id = entity_id
         self.trigger = trigger
+        self.run_id = run_id
         self.today = date.today()
         # The TAX year under analysis — from the triggering document, never
         # the wall clock. Out-of-range/absent values fall back to the current
@@ -377,6 +379,9 @@ class TaxInsightEngine:
         else:
             self.only_types = None
         self.logs: list[str] = list(initial_logs or [])
+        # Collected only after successful persistence transactions, then written
+        # atomically beside the completed run heartbeat.
+        self.change_events: list[dict] = []
 
     def _type_enabled(self, insight_type: str) -> bool:
         return self.only_types is None or insight_type in self.only_types
@@ -1334,7 +1339,46 @@ class TaxInsightEngine:
         return " ".join(parts)
 
     # ── Phase 3: persistence (fresh session, advisory-locked, retried) ──────
-    def _persist_once(self, cards: list[dict], housekeeping: bool) -> tuple[int, int, int]:
+    @staticmethod
+    def _json_value(value):
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()
+        return value
+
+    @classmethod
+    def _row_snapshot(cls, row: Insight) -> dict:
+        return {
+            "id": row.id,
+            "state": row.state,
+            "severity": row.severity,
+            "title": row.title,
+            "body": row.body,
+            "rmImpact": float(row.rm_impact) if row.rm_impact is not None else None,
+            "deadlineDate": cls._json_value(row.deadline_date),
+            "signals": list(row.signals or []),
+            "sourceDocumentIds": list(row.source_document_ids or []),
+        }
+
+    @classmethod
+    def _card_snapshot(cls, card: dict, state: str = "new") -> dict:
+        return {
+            "state": state,
+            "severity": card["severity"],
+            "title": card["title"],
+            "body": card["body"],
+            "rmImpact": float(card["rm_impact"]) if card["rm_impact"] is not None else None,
+            "deadlineDate": cls._json_value(card["deadline_date"]),
+            "signals": list(card["signals"] or []),
+            "sourceDocumentIds": list(card["source_document_ids"] or []),
+        }
+
+    @staticmethod
+    def _impact_delta(before: Optional[float], after: Optional[float]) -> Optional[float]:
+        if before is None and after is None:
+            return None
+        return round(float(after or 0) - float(before or 0), 2)
+
+    def _persist_once(self, cards: list[dict], housekeeping: bool) -> tuple[int, int, int, int]:
         """One attempt at a write transaction. Everything below happens in a
         single transaction on a session opened here and closed here:
 
@@ -1358,6 +1402,7 @@ class TaxInsightEngine:
 
         db = self.session_factory()
         try:
+            attempt_changes: list[dict] = []
             # 1 — advisory locks (transaction-scoped: released on commit/rollback)
             lock_values = sorted({self._scope_string(), *keys})
             for value in lock_values:
@@ -1374,10 +1419,7 @@ class TaxInsightEngine:
                     Insight.assessment_year == self.ya,
                 ).all()
                 for row in rows:
-                    existing[row.dedupe_key] = {
-                        "state": row.state,
-                        "rm_impact": float(row.rm_impact) if row.rm_impact is not None else None,
-                    }
+                    existing[row.dedupe_key] = self._row_snapshot(row)
 
             # 3 — atomic upserts (rule-version stamped)
             created = updated = 0
@@ -1428,20 +1470,41 @@ class TaxInsightEngine:
                         "updated_at": now,
                     },
                 )
-                db.execute(stmt)
-                if c["dedupe_key"] in existing:
-                    updated += 1
-                else:
+                insight_id = db.execute(
+                    stmt.returning(Insight.__table__.c.id)
+                ).scalar_one()
+                old = existing.get(c["dedupe_key"])
+                if old is None:
                     created += 1
+                    after = self._card_snapshot(c)
+                    attempt_changes.append({
+                        "insight_id": insight_id,
+                        "change_type": "created",
+                        "impact_delta": self._impact_delta(None, after["rmImpact"]),
+                        "before_data": None,
+                        "after_data": after,
+                    })
+                else:
+                    after = self._card_snapshot(c, state=old["state"])
+                    comparable_old = {k: v for k, v in old.items() if k != "id"}
+                    if comparable_old != after:
+                        updated += 1
+                        attempt_changes.append({
+                            "insight_id": insight_id,
+                            "change_type": "updated",
+                            "impact_delta": self._impact_delta(old["rmImpact"], after["rmImpact"]),
+                            "before_data": comparable_old,
+                            "after_data": after,
+                        })
 
-            resolved = 0
+            resolved = reopened = 0
             if housekeeping:
                 # 4a — reopen dismissed/actioned insights whose impact moved > threshold
                 for c in cards:
                     old = existing.get(c["dedupe_key"])
                     if not old or old["state"] not in ("dismissed", "actioned"):
                         continue
-                    if self._impact_changed_significantly(old["rm_impact"], c["rm_impact"]):
+                    if self._impact_changed_significantly(old["rmImpact"], c["rm_impact"]):
                         db.query(Insight).filter(
                             Insight.dedupe_key == c["dedupe_key"],
                             Insight.assessment_year == self.ya,
@@ -1453,8 +1516,17 @@ class TaxInsightEngine:
                             "updated_at": now,
                         }, synchronize_session=False)
                         self.logs.append(
-                            f"reopened {c['dedupe_key']}: rm_impact {old['rm_impact']} → {c['rm_impact']}"
+                            f"reopened {c['dedupe_key']}: rm_impact {old['rmImpact']} → {c['rm_impact']}"
                         )
+                        reopened += 1
+                        after = self._card_snapshot(c, state="new")
+                        attempt_changes.append({
+                            "insight_id": old["id"],
+                            "change_type": "reopened",
+                            "impact_delta": self._impact_delta(old["rmImpact"], after["rmImpact"]),
+                            "before_data": {k: v for k, v in old.items() if k != "id"},
+                            "after_data": after,
+                        })
 
                 # Scoped re-runs restrict housekeeping to their own types so
                 # they can never wake or resolve unrelated cards.
@@ -1496,15 +1568,26 @@ class TaxInsightEngine:
                     stale_q = self._entity_scope(stale_q)
                     if keys:
                         stale_q = stale_q.filter(Insight.dedupe_key.notin_(keys))
-                    resolved = stale_q.update({
-                        "state": "actioned",
-                        "resolved_note": "Resolved automatically — the underlying condition no longer applies.",
-                        "stale": False,
-                        "updated_at": now,
-                    }, synchronize_session=False)
+                    stale_rows = stale_q.all()
+                    resolved = len(stale_rows)
+                    for row in stale_rows:
+                        before = self._row_snapshot(row)
+                        row.state = "actioned"
+                        row.resolved_note = "Resolved automatically — the underlying condition no longer applies."
+                        row.stale = False
+                        row.updated_at = now
+                        after = {**before, "state": "actioned"}
+                        attempt_changes.append({
+                            "insight_id": row.id,
+                            "change_type": "resolved",
+                            "impact_delta": None,
+                            "before_data": {k: v for k, v in before.items() if k != "id"},
+                            "after_data": {k: v for k, v in after.items() if k != "id"},
+                        })
 
             db.commit()
-            return created, updated, resolved
+            self.change_events.extend(attempt_changes)
+            return created, updated, resolved, reopened
         except Exception:
             db.rollback()
             raise
@@ -1516,7 +1599,7 @@ class TaxInsightEngine:
             return query.filter(Insight.entity_id == self.entity_id)
         return query.filter(Insight.entity_id.is_(None))
 
-    def _persist_with_retry(self, cards: list[dict], housekeeping: bool) -> tuple[int, int, int]:
+    def _persist_with_retry(self, cards: list[dict], housekeeping: bool) -> tuple[int, int, int, int]:
         """Jittered exponential backoff around the write transaction for
         transient lock contention / serialization failures. Each attempt uses
         a brand-new session (the failed one is already closed). This is the
@@ -1554,26 +1637,54 @@ class TaxInsightEngine:
             return new != 0
         return abs(new - old) / abs(old) > REOPEN_IMPACT_CHANGE_PCT
 
-    def _record_run(self, status: str, docs_analysed: int = 0, signals_found: int = 0,
-                    created: int = 0, updated: int = 0, resolved: int = 0) -> None:
+    def _record_run(self, status: str, documents_in_scope: int = 0,
+                    insights_matched: int = 0, evidence_signals: int = 0,
+                    created: int = 0, updated: int = 0, resolved: int = 0,
+                    reopened: int = 0) -> None:
         """Write the run heartbeat in its own short session — the third,
         independent commit point. The audit trail survives even when one (or
         both) pipeline commits failed."""
         db = self.session_factory()
         try:
-            db.add(InsightRun(
-                user_id=self.user_id,
-                entity_id=self.entity_id,
-                trigger=self.trigger,
-                status=status,
-                ran_at=datetime.now(timezone.utc),
-                documents_analysed=docs_analysed,
-                signals_found=signals_found,
-                insights_created=created,
-                insights_updated=updated,
-                insights_resolved=resolved,
-                logs=self.logs or None,
-            ))
+            now = datetime.now(timezone.utc)
+            run = db.query(InsightRun).filter(InsightRun.id == self.run_id).first() if self.run_id else None
+            if run is None:
+                # Compatibility for direct callers that have not moved to
+                # queue_insight_run yet. New production paths always supply an ID.
+                run = InsightRun(
+                    user_id=self.user_id,
+                    entity_id=self.entity_id,
+                    assessment_year=self.ya,
+                    trigger=self.trigger,
+                    requested_triggers=[self.trigger],
+                    status="running",
+                    queued_at=now,
+                    started_at=now,
+                )
+                db.add(run)
+                db.flush()
+                self.run_id = run.id
+
+            run.status = status
+            run.completed_at = now
+            run.ran_at = now
+            run.documents_in_scope = documents_in_scope
+            run.insights_matched = insights_matched
+            run.evidence_signals = evidence_signals
+            run.insights_created = created
+            run.insights_updated = updated
+            run.insights_resolved = resolved
+            run.insights_reopened = reopened
+            # Legacy aliases keep the current frontend/API operational.
+            run.documents_analysed = documents_in_scope
+            run.signals_found = insights_matched
+            run.logs = self.logs or None
+
+            if self.change_events:
+                db.add_all([
+                    InsightRunChange(run_id=run.id, **event)
+                    for event in self.change_events
+                ])
             db.commit()
         except Exception as e:
             logger.error(f"[Insights] Could not record run row for user={self.user_id}: {e}")
@@ -1599,17 +1710,17 @@ class TaxInsightEngine:
             )
             self.logs.append(msg)
             logger.info(f"[Insights] {msg} (user={self.user_id}, entity={self.entity_id})")
-            self._record_run(status="completed")
+            self._record_run(status="skipped")
             return
 
         summary = facts["summary"]
         cy = facts["cy"]
-        docs_analysed = cy.get("documentCount") or 0
+        documents_in_scope = cy.get("documentCount") or 0
 
         # ── PIPELINE A — deterministic rules, committed FIRST and alone ─────
         # The 5 core insight types, each backed by one or two rule functions.
         cards_a: list[dict] = []
-        a_created = a_updated = a_resolved = 0
+        a_created = a_updated = a_resolved = a_reopened = 0
         pipeline_a_ok = True
         if summary is not None:
             rules: list[tuple[str, Callable[[], list[dict]]]] = [
@@ -1646,7 +1757,7 @@ class TaxInsightEngine:
             # summary actually loaded — otherwise cards_a is empty because the
             # FACTS are missing, not because every condition cleared, and the
             # auto-resolve pass would wrongly mass-resolve the whole scope.
-            a_created, a_updated, a_resolved = self._persist_with_retry(
+            a_created, a_updated, a_resolved, a_reopened = self._persist_with_retry(
                 cards_a, housekeeping=summary is not None)
         except Exception as e:
             pipeline_a_ok = False
@@ -1660,7 +1771,7 @@ class TaxInsightEngine:
         # A Gemini timeout / 429 / persist failure here can only lose the
         # digest; Pipeline A's results are already committed above.
         cards_b: list[dict] = []
-        b_created = b_updated = 0
+        b_created = b_updated = b_reopened = 0
         if summary is not None and self._type_enabled("digest"):
             try:
                 cards_b = self._build_digest(summary, cy, cards_a)
@@ -1672,7 +1783,8 @@ class TaxInsightEngine:
                     # Commit point 2: digest only. housekeeping=False — the wake/
                     # auto-resolve passes already ran (and committed) with
                     # Pipeline A, and digests are never auto-resolved anyway.
-                    b_created, b_updated, _ = self._persist_with_retry(cards_b, housekeeping=False)
+                    b_created, b_updated, _, b_reopened = self._persist_with_retry(
+                        cards_b, housekeeping=False)
                 except Exception as e:
                     self.logs.append(f"pipeline B persist failed ({type(e).__name__}): {e}")
                     logger.error(
@@ -1683,18 +1795,23 @@ class TaxInsightEngine:
         # ── Run heartbeat — commit point 3, independent of both pipelines ───
         self._record_run(
             status="completed" if pipeline_a_ok else "failed",
-            docs_analysed=docs_analysed,
-            signals_found=len(cards_a) + len(cards_b),
+            documents_in_scope=documents_in_scope,
+            insights_matched=len(cards_a) + len(cards_b),
+            evidence_signals=sum(
+                len(card.get("signals") or []) for card in (cards_a + cards_b)
+            ),
             created=a_created + b_created,
             updated=a_updated + b_updated,
             resolved=a_resolved,
+            reopened=a_reopened + b_reopened,
         )
         logger.info(
             f"[Insights] Run complete for scope {self._scope_string()} trigger={self.trigger}"
             + (f" (scoped to {sorted(self.only_types)})" if self.only_types else "")
-            + f": {docs_analysed} documents → {len(cards_a) + len(cards_b)} signals "
+            + f": {documents_in_scope} documents in scope → "
+            f"{len(cards_a) + len(cards_b)} insights matched "
             f"({a_created + b_created} created, {a_updated + b_updated} updated, "
-            f"{a_resolved} auto-resolved)"
+            f"{a_resolved} auto-resolved, {a_reopened + b_reopened} reopened)"
         )
 
 
@@ -1719,9 +1836,97 @@ def _scope_run_lock(user_id, entity_id, ya) -> threading.Lock:
         return _SCOPE_RUN_LOCKS.setdefault((user_id, entity_id, ya), threading.Lock())
 
 
+def queue_insight_run(user_id, entity_id, trigger: str, db_session_factory,
+                      assessment_year=None, only_insight_types=None,
+                      initial_logs=None) -> tuple[Optional[int], bool]:
+    """Create or reuse one queued run for a (user, entity, YA) scope.
+
+    Returns ``(run_id, created)``. A queued row is coalesced; a currently
+    running row is not, because document changes that land after its fact
+    snapshot need one follow-up run. The PostgreSQL advisory lock makes the
+    check-and-create safe across threads and worker processes.
+    """
+    try:
+        uid = int(user_id)
+        ya = int(assessment_year) if assessment_year is not None else date.today().year
+    except (TypeError, ValueError):
+        logger.warning(
+            f"[Insights] Cannot queue run: invalid user_id={user_id!r} or "
+            f"assessment_year={assessment_year!r}."
+        )
+        return None, False
+    if not 2000 <= ya <= 2100:
+        logger.warning(f"[Insights] Cannot queue run: assessment year {ya} is out of range.")
+        return None, False
+
+    requested_types = (
+        sorted(set(only_insight_types) & set(ENGINE_MANAGED_TYPES))
+        if only_insight_types else None
+    )
+    db = db_session_factory()
+    try:
+        scope = f"queue:u{uid}:e{entity_id if entity_id is not None else '-'}:ya{ya}"
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:k)"),
+            {"k": _advisory_lock_key(scope)},
+        )
+        queued_q = db.query(InsightRun).filter(
+            InsightRun.user_id == uid,
+            InsightRun.assessment_year == ya,
+            InsightRun.status == "queued",
+        )
+        queued_q = (
+            queued_q.filter(InsightRun.entity_id == entity_id)
+            if entity_id is not None
+            else queued_q.filter(InsightRun.entity_id.is_(None))
+        )
+        queued = queued_q.order_by(InsightRun.id.asc()).first()
+        if queued:
+            triggers = list(queued.requested_triggers or [queued.trigger])
+            if trigger not in triggers:
+                triggers.append(trigger)
+            queued.requested_triggers = triggers
+
+            # NULL means full run. Otherwise merge two scoped stale-wake runs.
+            if queued.requested_insight_types is not None:
+                if requested_types is None:
+                    queued.requested_insight_types = None
+                else:
+                    queued.requested_insight_types = sorted(
+                        set(queued.requested_insight_types) | set(requested_types)
+                    )
+            if initial_logs:
+                queued.logs = list(queued.logs or []) + [str(line) for line in initial_logs]
+            db.commit()
+            return queued.id, False
+
+        now = datetime.now(timezone.utc)
+        queued = InsightRun(
+            user_id=uid,
+            entity_id=entity_id,
+            assessment_year=ya,
+            trigger=trigger,
+            requested_triggers=[trigger],
+            requested_insight_types=requested_types,
+            status="queued",
+            queued_at=now,
+            logs=[str(line) for line in (initial_logs or [])] or None,
+        )
+        db.add(queued)
+        db.commit()
+        db.refresh(queued)
+        return queued.id, True
+    except Exception as e:
+        logger.error(f"[Insights] Could not queue run for user={user_id}: {e}", exc_info=True)
+        db.rollback()
+        return None, False
+    finally:
+        db.close()
+
+
 def run_insight_engine(user_id, entity_id, trigger: str, db_session_factory,
                        assessment_year=None, only_insight_types=None,
-                       initial_logs=None) -> None:
+                       initial_logs=None, run_id=None) -> Optional[int]:
     """Fire an engine run for one (user, entity, assessment_year) scope,
     optionally restricted to specific insight types (scoped re-run after a
     rule-version mismatch on snooze wake). Never raises — callers include the
@@ -1733,40 +1938,79 @@ def run_insight_engine(user_id, entity_id, trigger: str, db_session_factory,
         uid = int(user_id)
     except (TypeError, ValueError):
         logger.warning(f"[Insights] Skipping run: user_id '{user_id}' is not numeric.")
-        return
+        return None
 
-    engine = None
-    try:
-        engine = TaxInsightEngine(
-            db_session_factory, uid, entity_id, trigger,
+    if run_id is None:
+        run_id, created = queue_insight_run(
+            uid, entity_id, trigger, db_session_factory,
             assessment_year=assessment_year,
             only_insight_types=only_insight_types,
             initial_logs=initial_logs,
         )
-        # engine.ya is the constructor-resolved year (incl. the current-year
-        # fallback), so the lock key is exact for every trigger path.
-        with _scope_run_lock(uid, entity_id, engine.ya):
+        if run_id is None or not created:
+            return run_id
+
+    # Read the durable queue row before waiting on the process-local scope lock.
+    # A follow-up run remains visibly "queued" until the preceding run releases.
+    db = db_session_factory()
+    try:
+        queued = db.query(InsightRun).filter(InsightRun.id == run_id).first()
+        if not queued:
+            logger.warning(f"[Insights] Queued run ID {run_id} no longer exists.")
+            return None
+        uid = queued.user_id
+        entity_id = queued.entity_id
+        assessment_year = queued.assessment_year
+    finally:
+        db.close()
+
+    engine = None
+    try:
+        with _scope_run_lock(uid, entity_id, assessment_year):
+            db = db_session_factory()
+            try:
+                queued = db.query(InsightRun).filter(InsightRun.id == run_id).first()
+                if not queued or queued.status != "queued":
+                    return run_id
+                queued.status = "running"
+                queued.started_at = datetime.now(timezone.utc)
+                db.commit()
+                trigger = queued.trigger
+                only_insight_types = queued.requested_insight_types
+                initial_logs = list(queued.logs or [])
+            finally:
+                db.close()
+
+            engine = TaxInsightEngine(
+                db_session_factory, uid, entity_id, trigger,
+                assessment_year=assessment_year,
+                only_insight_types=only_insight_types,
+                initial_logs=initial_logs,
+                run_id=run_id,
+            )
             engine.run()
+        return run_id
     except Exception as e:
         logger.error(f"[Insights] Engine run failed for user={user_id}: {e}", exc_info=True)
         if engine is not None:
             engine.logs.append(f"engine run failed ({type(e).__name__}): {e}")
             engine._record_run(status="failed")
         else:
-            # Constructor itself failed — record with a throwaway engine-less write
             db = db_session_factory()
             try:
-                db.add(InsightRun(
-                    user_id=uid,
-                    entity_id=entity_id,
-                    trigger=trigger,
-                    status="failed",
-                    ran_at=datetime.now(timezone.utc),
-                    logs=[f"engine construction failed ({type(e).__name__}): {e}"],
-                ))
+                failed = db.query(InsightRun).filter(InsightRun.id == run_id).first()
+                if failed:
+                    now = datetime.now(timezone.utc)
+                    failed.status = "failed"
+                    failed.completed_at = now
+                    failed.ran_at = now
+                    failed.logs = list(failed.logs or []) + [
+                        f"engine construction failed ({type(e).__name__}): {e}"
+                    ]
                 db.commit()
             except Exception as inner:
                 logger.error(f"[Insights] Could not record failed run for user={user_id}: {inner}")
                 db.rollback()
             finally:
                 db.close()
+        return run_id

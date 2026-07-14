@@ -6,9 +6,10 @@ Tables:
                  atomically on (dedupe_key, assessment_year) so re-running the
                  engine updates the card's numbers in place instead of
                  duplicating it.
-  insight_runs — one row per engine execution; powers the "Last analysed X ago ·
-                 trigger: ... · N documents → M signals" heartbeat line, and
-                 carries the audit trail for skipped (locked-YA) analyses.
+  insight_runs — one durable queued/running/terminal job per analysis request;
+                 powers the inbox heartbeat and carries truthful scope/card/
+                 evidence counters plus the audit trail for skipped runs.
+  insight_run_changes — deterministic before/after events produced by a run.
 
 Design notes:
   - user_id / entity_id are Integer FKs matching Person.id / Entity.id exactly
@@ -50,6 +51,8 @@ VALID_INSIGHT_TYPES = (
 VALID_SEVERITIES = ("deadline", "action_required", "suggested", "info")
 VALID_STATES = ("new", "read", "dismissed", "actioned")
 VALID_GENERATED_BY = ("rule_template", "llm")
+VALID_RUN_STATUSES = ("queued", "running", "completed", "failed", "skipped")
+VALID_RUN_CHANGE_TYPES = ("created", "updated", "resolved", "reopened")
 
 
 class Insight(Base):
@@ -133,10 +136,35 @@ class InsightRun(Base):
     user_id   = Column(Integer, ForeignKey("persons.id", ondelete="CASCADE"), nullable=False, index=True)
     entity_id = Column(Integer, ForeignKey("entities.id", ondelete="SET NULL"), nullable=True, index=True)
 
-    trigger = Column(String(50), nullable=False)   # document_classified | manual_refresh
-    status  = Column(String(20), nullable=False, default="completed")
-    ran_at  = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    # Every run belongs to one tax Year of Assessment. It is nullable only so
+    # pre-migration heartbeat rows can be retained without inventing a year.
+    assessment_year = Column(Integer, nullable=True, index=True)
 
+    trigger = Column(String(50), nullable=False)   # primary/user-facing trigger
+    # All triggers folded into this queued run (e.g. a ten-file batch). Kept as
+    # structured data so coalescing never loses the audit trail.
+    requested_triggers = Column(JSONB, nullable=True)
+    # NULL means a full run; a list means a stale-wake run restricted to these
+    # insight types. Multiple queued stale wakes merge their lists.
+    requested_insight_types = Column(JSONB, nullable=True)
+
+    status       = Column(String(20), nullable=False, default="queued")
+    queued_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    started_at   = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    # Backward-compatible timestamp consumed by the current frontend. For new
+    # rows this is set when the run completes; queued_at is the queue timestamp.
+    ran_at       = Column(DateTime, nullable=True)
+
+    # Truthful counters. These deliberately distinguish the year snapshot,
+    # matched cards, and the raw evidence facts attached to those cards.
+    documents_in_scope = Column(Integer, nullable=False, default=0)
+    insights_matched   = Column(Integer, nullable=False, default=0)
+    evidence_signals   = Column(Integer, nullable=False, default=0)
+    insights_reopened  = Column(Integer, nullable=False, default=0)
+
+    # Legacy aliases retained during the API transition. New code writes them
+    # with the equivalent corrected values so older clients do not break.
     documents_analysed = Column(Integer, nullable=False, default=0)
     signals_found      = Column(Integer, nullable=False, default=0)
     insights_created   = Column(Integer, nullable=False, default=0)
@@ -150,6 +178,41 @@ class InsightRun(Base):
     logs = Column(JSONB, nullable=True)
 
     __table_args__ = (
-        CheckConstraint("status IN ('completed', 'failed')", name="ck_insight_run_status"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed', 'skipped')",
+            name="ck_insight_run_status",
+        ),
+        CheckConstraint(
+            "assessment_year IS NULL OR (assessment_year >= 2000 AND assessment_year <= 2100)",
+            name="ck_insight_run_ya_range",
+        ),
         Index("ix_insight_run_user_entity", "user_id", "entity_id"),
+        Index(
+            "ix_insight_run_scope_status",
+            "user_id", "entity_id", "assessment_year", "status",
+        ),
+    )
+
+
+class InsightRunChange(Base):
+    """One deterministic change made visible by an insight-engine run."""
+
+    __tablename__ = "insight_run_changes"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    run_id     = Column(Integer, ForeignKey("insight_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    insight_id = Column(Integer, ForeignKey("insights.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    change_type = Column(String(20), nullable=False)
+    impact_delta = Column(Numeric, nullable=True)
+    before_data  = Column(JSONB, nullable=True)
+    after_data   = Column(JSONB, nullable=True)
+    created_at   = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint(
+            "change_type IN ('created', 'updated', 'resolved', 'reopened')",
+            name="ck_insight_run_change_type",
+        ),
+        Index("ix_insight_run_change_run_type", "run_id", "change_type"),
     )
