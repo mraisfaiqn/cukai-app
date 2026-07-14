@@ -1,0 +1,482 @@
+"""
+seed_external_resources.py — download real, official Malaysian tax-law
+source documents (LHDN Public Rulings, the Income Tax Act 1967, e-Invoice
+Guidelines), extract their text, chunk and embed them, and store the result
+across both databases:
+
+  PostgreSQL (ExternalResource table) — the catalog: what document is this,
+    where did it come from, when was it downloaded/embedded, is it current
+    or superseded. One row per source document.
+
+  MongoDB (document_chunks collection, source="external_resource") — the
+    actual embedded text chunks used for RAG retrieval, keyed back to their
+    ExternalResource row via external_resource_id. Lives in the SAME
+    collection as user receipts (source="document") and hand-written
+    tax_law summaries (source="tax_law") — see mongo.py's module docstring
+    for why one collection holds all three rather than splitting them apart.
+
+This is the "download real documents from the internet and index them"
+counterpart to seed_tax_law.py's hand-written summaries — same end goal
+(give CukaiBot real material to retrieve for general tax-law questions),
+different sourcing method (verbatim official text vs. curated summary).
+Everything gets searched together at chat time via a single
+mongo.vector_search() call.
+
+Usage:
+  cd backend
+  python seed_external_resources.py                 # download + ingest anything not yet done
+  python seed_external_resources.py --refresh PR-4-2015   # re-download + re-embed one resource
+  python seed_external_resources.py --list           # show catalog status, no downloads
+
+Downloaded PDFs are cached in backend/external_resources_cache/ so re-runs
+don't re-download unchanged files — only re-parses/re-embeds if the chunks
+are missing from Mongo.
+"""
+
+import argparse
+import logging
+import os
+import sys
+from datetime import date, datetime, timezone
+
+import requests
+from dotenv import load_dotenv
+from pypdf import PdfReader
+
+load_dotenv()
+
+import mongo
+from database import SessionLocal, init_db
+from models import ExternalResource
+from embeddings import chunk_text, embed_texts
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger("seed_external_resources")
+
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "external_resources_cache")
+
+# Real, verified, publicly downloadable LHDN documents — see the reference_no
+# field for a stable identifier used for --refresh and de-duplication.
+# `category` groups the document by the topic it's meant to help answer,
+# matching seed_tax_law.py's 10-question set where relevant.
+#
+# All 7 URLs below were individually fetched and confirmed live (July 2026).
+# Two of them — PR-4-2015 and PR-6-2015 — were previously thought to be
+# unavailable: their only known copies were on phl.hasil.gov.my, a legacy
+# LHDN subdomain that is now down. It turned out LHDN had in fact re-hosted
+# both (along with the others) on the current www.hasil.gov.my/wp-content/
+# uploads/ CDN, just under a different path pattern than the /media/ one
+# used for newer Public Rulings — they just hadn't been re-linked from the
+# public Public Rulings index page yet at the time of the original check.
+EXTERNAL_RESOURCES = [
+  {
+    "reference_no": "ACT-53",
+    "resource_type": "act",
+    # NOTE (verified July 2026): LHDN moved this off the old wp-content/
+    # uploads/ path — that URL now 404s. The current live copy sits under a
+    # random-token /media/ path that LHDN can rotate again without notice
+    # (this is why FALLBACK_INDEX_URL below exists — see its docstring).
+    "title": "Income Tax Act 1967 (Act 53)",
+    "category": "Primary Legislation — Sections 33 & 39 (General Deductions)",
+    "source_url": "https://www.hasil.gov.my/wp-content/uploads/20240521-akta-cukai-pendapatan-1967-akta-53.pdf",
+    "date_issued": "2024-05-21",
+  },
+  {
+    "reference_no": "PR-4-2015",
+    "resource_type": "public_ruling",
+    "title": "Entertainment Expense",
+    "category": "Entertainment Expense Deduction (50%/100% split)",
+    "source_url": "https://www.hasil.gov.my/wp-content/uploads/PR_4_2015.pdf",
+    "date_issued": "2015-07-29",
+  },
+  {
+    "reference_no": "PR-6-2015",
+    "resource_type": "public_ruling",
+    "title": "Qualifying Expenditure And Computation Of Capital Allowances",
+    "category": "Capital Allowance Rates",
+    "source_url": "https://www.hasil.gov.my/wp-content/uploads/PR_6_2015.pdf",
+    "date_issued": "2015-08-27",
+  },
+  {
+    "reference_no": "PR-6-2022",
+    "resource_type": "public_ruling",
+    "title": "Accelerated Capital Allowance",
+    "category": "Capital Allowance Rates — ICT/Accelerated",
+    "source_url": "https://www.hasil.gov.my/wp-content/uploads/pr_6_2022.pdf",
+    "date_issued": "2022-12-22",
+  },
+  {
+    "reference_no": "PR-7-2025",
+    "resource_type": "public_ruling",
+    "title": "Taxation Of A Resident Individual Part 1 - Gifts Or Contributions And Allowable Deductions",
+    "category": "Personal Reliefs — Medical (Parents), Lifestyle",
+    "source_url": "https://www.hasil.gov.my/wp-content/uploads/pr-7-2025.pdf",
+    "date_issued": "2025-12-05",
+  },
+  {
+    "reference_no": "PR-8-2025",
+    "resource_type": "public_ruling",
+    "title": "Tax Treatment for Micro, Small and Medium Companies",
+    "category": "SME Preferential Tax Rate",
+    "source_url": "https://www.hasil.gov.my/wp-content/uploads/pr-8-2025-tax-treatment-for-micro-small-and-medium-companies.pdf",
+    "date_issued": "2025-12-22",
+  },
+  {
+    "reference_no": "EINV-GUIDE-4-7",
+    "resource_type": "guideline",
+    "title": "e-Invoice Guideline (Version 4.7)",
+    "category": "e-Invoicing Phases & Requirements",
+    "source_url": "https://www.hasil.gov.my/wp-content/uploads/IRBM-e-Invoice-Guideline.pdf",
+    "date_issued": "2026-07-07",
+  },
+]
+
+# Some official guideline PDFs run to 100+ pages of largely procedural detail
+# (API specs, XML schemas) that would dilute retrieval quality if embedded
+# whole. For those, only a specific page range is ingested — the range
+# covering the implementation-timeline/phases section relevant to the target
+# questions. Omitted from this dict = ingest the whole document.
+PAGE_RANGES = {
+  "EINV-GUIDE-4-7": (1, 41),  # implementation timeline, overview, and validation sections;
+                              # excludes Appendix 1-3 (raw field/org lists) and Glossary
+}
+
+# LHDN hosts every direct-download PDF under a random-token /media/<token>/
+# path that it rotates without redirecting the old link (this is exactly
+# what happened to ACT-53's source_url above — the wp-content/uploads/ path
+# that used to work now 404s). A direct source_url can go stale at any time
+# with no warning, so every citation that points at one also carries this
+# human-browsable index page as a fallback: it's stable (same URL structure
+# for years) and, unlike the direct PDF links, reliably loads in a browser.
+# Frontend usage: if a click on sourceUrl 404s, the citation UI can offer
+# this as "search the LHDN legislation index instead" rather than a dead end.
+FALLBACK_INDEX_URL = "https://www.hasil.gov.my/perundangan/akta/"
+
+
+def download_pdf(url: str, dest_path: str) -> None:
+  """Download a PDF to dest_path. Raises on non-200 or network failure —
+  callers should catch and record the failure on the ExternalResource row
+  rather than letting one bad download crash the whole ingestion run."""
+  response = requests.get(url, timeout=60, headers={"User-Agent": "Mozilla/5.0 (cukai.ai RAG ingestion)"})
+  response.raise_for_status()
+  os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+  with open(dest_path, "wb") as f:
+    f.write(response.content)
+
+
+def extract_pdf_text(pdf_path: str, page_range: tuple[int, int] | None = None) -> str:
+  """
+  Extract text from a PDF using pypdf. If page_range is given (1-indexed,
+  inclusive), only those pages are extracted — used for PAGE_RANGES entries
+  above to avoid embedding hundreds of pages of procedural/schema detail
+  that isn't useful for chat retrieval.
+
+  Kept as-is (returns a single joined string, no page info) for anything
+  that still just wants the plain text. extract_pdf_pages() below is the
+  page-aware counterpart used by ingest_resource() so citations can link to
+  the correct page — see that function's docstring for why a parallel
+  function was added rather than changing this one's return type.
+  """
+  reader = PdfReader(pdf_path)
+  start, end = (page_range[0] - 1, page_range[1]) if page_range else (0, len(reader.pages))
+  end = min(end, len(reader.pages))
+
+  parts = []
+  for i in range(start, end):
+    text = reader.pages[i].extract_text() or ""
+    if text.strip():
+      parts.append(text)
+  return "\n\n".join(parts)
+
+
+def extract_pdf_pages(pdf_path: str, page_range: tuple[int, int] | None = None) -> list[tuple[int, str]]:
+  """
+  Extract text from a PDF page-by-page, keeping each page's 1-indexed page
+  number attached to its text — unlike extract_pdf_text(), which joins
+  every page into one big string and loses that information.
+
+  Returns a list of (page_number, page_text) tuples, one per non-blank page,
+  in document order. page_number is 1-indexed to match how PDF viewers and
+  the "#page=N" URL fragment (used later to deep-link citations) count
+  pages, so no off-by-one translation is needed at the call site.
+
+  This is what lets a chunk built later from this page's text know which
+  page it came from — see build_page_lookup() for how a chunk's character
+  offset in the joined text gets mapped back to one of these page numbers.
+  """
+  reader = PdfReader(pdf_path)
+  start, end = (page_range[0] - 1, page_range[1]) if page_range else (0, len(reader.pages))
+  end = min(end, len(reader.pages))
+
+  pages = []
+  for i in range(start, end):
+    text = reader.pages[i].extract_text() or ""
+    if text.strip():
+      pages.append((i + 1, text))  # 1-indexed page number
+  return pages
+
+
+def join_pages_with_offsets(pages: list[tuple[int, str]]) -> tuple[str, list[tuple[int, int]]]:
+  """
+  Join per-page text (from extract_pdf_pages) into one string using the same
+  "\\n\\n".join(...) separator extract_pdf_text() uses — so chunk_text() sees
+  identical input either way and chunking behavior doesn't change — while
+  also recording, for each page, the character offset in the joined string
+  where that page's text starts.
+
+  Returns (joined_text, offsets) where offsets is a list of
+  (start_offset, page_number) tuples in ascending order of start_offset.
+  build_page_lookup() below turns this into a fast "which page is character
+  N in?" lookup.
+  """
+  parts = []
+  offsets = []
+  cursor = 0
+  for i, (page_number, text) in enumerate(pages):
+    offsets.append((cursor, page_number))
+    parts.append(text)
+    cursor += len(text)
+    if i < len(pages) - 1:
+      cursor += 2  # length of the "\n\n" separator join() will insert
+  return "\n\n".join(parts), offsets
+
+
+def page_for_offset(offsets: list[tuple[int, int]], char_offset: int) -> int | None:
+  """
+  Given the (start_offset, page_number) list from join_pages_with_offsets(),
+  return which page a given character offset in the joined text falls on.
+  Returns None if offsets is empty (e.g. extraction produced no pages).
+
+  Uses a simple linear scan rather than bisect — offsets is at most a few
+  hundred entries even for the full Income Tax Act, and this only runs once
+  per chunk during ingestion, not on the hot chat-query path.
+  """
+  if not offsets:
+    return None
+  page_number = offsets[0][1]
+  for start_offset, pn in offsets:
+    if start_offset > char_offset:
+      break
+    page_number = pn
+  return page_number
+
+
+def ingest_resource(entry: dict, db, force: bool = False) -> None:
+  """
+  Download (if needed), extract, chunk, embed, and store one external
+  resource. Updates its ExternalResource row throughout so progress/failure
+  is visible in Postgres even if the process is interrupted partway through
+  a long run.
+  """
+  reference_no = entry["reference_no"]
+  row = db.query(ExternalResource).filter(ExternalResource.reference_no == reference_no).first()
+  if row is None:
+    date_issued = entry.get("date_issued")
+    if isinstance(date_issued, str):
+      date_issued = date.fromisoformat(date_issued)
+    row = ExternalResource(
+      reference_no=reference_no,
+      resource_type=entry["resource_type"],
+      title=entry["title"],
+      category=entry["category"],
+      source_url=entry["source_url"],
+      date_issued=date_issued,
+      status="pending",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+  if row.status == "embedded" and not force:
+    # `row.status` is only a cached belief, not a live fact — it's set once
+    # at the end of a successful run (see the end of this function) and
+    # nothing keeps it in sync if the Mongo collection is later dropped,
+    # cleared, or partially deleted outside this script (e.g. `db.document_
+    # chunks.deleteMany({})` in a Mongo shell, or restoring an older Mongo
+    # snapshot without also resetting Postgres). Trusting the flag alone
+    # would silently skip re-ingestion and leave the resource with zero
+    # retrievable chunks — no error, just quietly missing from every future
+    # chat answer. So before skipping, check Mongo itself, which is the
+    # actual source of truth for what's retrievable.
+    actual_chunk_count = mongo.count_chunks_for_external_resource(row.id)
+    if actual_chunk_count > 0:
+      logger.info(f"  Skipping {reference_no} — already embedded ({actual_chunk_count} chunks). Use --refresh to redo.")
+      return
+    logger.warning(
+      f"  {reference_no} is marked 'embedded' in Postgres but has 0 chunks in Mongo "
+      f"(collection likely dropped/cleared outside this script) — re-ingesting automatically."
+    )
+    # Fall through to the same ingestion path --refresh takes. `force` stays
+    # False here on purpose: this resource still needs a full re-embed, but
+    # other resources in the same run that are genuinely still embedded
+    # shouldn't be forced to re-download/re-embed just because this one
+    # drifted — force is a per-CLI-invocation flag, this drift check is
+    # per-resource and shouldn't escalate into a blanket --refresh.
+
+  cache_path = os.path.join(CACHE_DIR, f"{reference_no}.pdf")
+
+  try:
+    # ── Download (skip if already cached, unless forced) ────────────────
+    if force or not os.path.isfile(cache_path):
+      logger.info(f"  Downloading {reference_no} from {entry['source_url']} ...")
+      download_pdf(entry["source_url"], cache_path)
+    row.local_path = cache_path
+    row.status = "downloaded"
+    row.downloaded_at = datetime.now(timezone.utc)
+    db.commit()
+
+    # ── Extract text (page-by-page, so each chunk can be traced back to a
+    #    page — see extract_pdf_pages()/join_pages_with_offsets() docstrings
+    #    for why this replaces the old "extract_pdf_text() -> one big
+    #    string" approach that made page_number impossible to compute) ─────
+    page_range = PAGE_RANGES.get(reference_no)
+    pages = extract_pdf_pages(cache_path, page_range)
+    text, page_offsets = join_pages_with_offsets(pages)
+    if not text.strip():
+      raise ValueError("No extractable text found in PDF (may be scanned/image-only).")
+
+    # ── Chunk + embed ────────────────────────────────────────────────────
+    chunks = chunk_text(text)
+
+    # For each chunk, find its starting character offset in the joined
+    # `text` and map that back to a source page number via page_offsets.
+    # find() from a running cursor (rather than text.index each time) keeps
+    # this correct even if the exact same sentence repeats verbatim
+    # elsewhere in the document (e.g. a boilerplate phrase reused across
+    # sections) — each chunk is looked up starting from where the previous
+    # one was found, so occurrences are matched in document order.
+    chunk_page_numbers: list[int | None] = []
+    search_cursor = 0
+    for chunk in chunks:
+      # chunk_text() strips each chunk, so search for a normalized/whitespace
+      # -insensitive match isn't needed: `chunk` is a verbatim substring of
+      # `text` (post-strip), except right at start=0 where .strip() may have
+      # trimmed leading text — find() still locates it correctly either way.
+      found_at = text.find(chunk, search_cursor)
+      if found_at == -1:
+        # Extremely defensive fallback: shouldn't happen since every chunk
+        # is built as a literal slice of `text`, but if it ever does, don't
+        # crash the whole ingestion run over a page-number lookup.
+        found_at = search_cursor
+      chunk_page_numbers.append(page_for_offset(page_offsets, found_at))
+      search_cursor = found_at + 1  # allow overlapping chunks to re-match
+
+    # How many chunks (if any) survived a previous partial run before it
+    # hit a 429 that exhausted all retries? If this resource is mid-way
+    # through ingestion (status="downloaded", some chunks already in Mongo
+    # from a prior attempt), pick up from where it left off instead of
+    # re-embedding and re-inserting chunks that already succeeded — this
+    # matters most for large documents like the Income Tax Act 1967, where
+    # a failure at chunk 900 of 1102 would otherwise mean redoing 900 calls.
+    already_inserted = 0
+    if force:
+      deleted = mongo.delete_chunks_for_external_resource(row.id)
+      if deleted:
+        logger.info(f"  Removed {deleted} old chunk(s) before re-ingesting.")
+    else:
+      already_inserted = mongo.count_chunks_for_external_resource(row.id)
+      if already_inserted:
+        logger.info(f"  Resuming — {already_inserted} chunk(s) already embedded from a previous run.")
+
+    remaining_chunks = chunks[already_inserted:]
+    if not remaining_chunks:
+      logger.info(f"  All {len(chunks)} chunk(s) already embedded, nothing to do.")
+    else:
+      logger.info(
+        f"  Extracted {len(text)} chars -> {len(chunks)} chunk(s) total, "
+        f"{len(remaining_chunks)} remaining. Embedding..."
+      )
+
+      # chunk_page_numbers was computed above against the full `chunks`
+      # list; slice it the same way remaining_chunks was sliced so index i
+      # below still lines up after a resumed (partial) run.
+      remaining_page_numbers = chunk_page_numbers[already_inserted:]
+
+      def _on_chunk_embedded(i: int, vector: list[float]) -> None:
+        # Insert immediately rather than waiting for the whole batch, so
+        # progress survives a later chunk's failure. Runs inside
+        # embed_texts()'s loop, right after each individual embed succeeds.
+        mongo.insert_chunk(
+          text=remaining_chunks[i],
+          embedding=vector,
+          source="external_resource",
+          external_resource_id=row.id,
+          resource_type=row.resource_type,
+          reference_no=row.reference_no,
+          title=row.title,
+          category=row.category,
+          source_url=row.source_url,
+          page_number=remaining_page_numbers[i],
+        )
+
+      embed_texts(remaining_chunks, task_type="retrieval_document", on_chunk_done=_on_chunk_embedded)
+
+    row.status = "embedded"
+    row.chunk_count = len(chunks)
+    row.embedded_at = datetime.now(timezone.utc)
+    row.error_message = None
+    db.commit()
+    logger.info(f"  Done — {reference_no}: {len(chunks)} chunk(s) embedded.")
+
+  except Exception as e:
+    # Even on failure, record how far we got — count_chunks_for_external_resource
+    # will show a re-run how many chunks can be skipped next time.
+    row.status = "failed"
+    row.error_message = str(e)[:2000]
+    db.commit()
+    inserted_so_far = mongo.count_chunks_for_external_resource(row.id)
+    logger.error(
+      f"  FAILED {reference_no}: {e}\n"
+      f"  {inserted_so_far} chunk(s) were embedded before the failure and are "
+      f"kept — re-running without --refresh will resume from there."
+    )
+
+
+def list_catalog(db) -> None:
+  rows = db.query(ExternalResource).order_by(ExternalResource.reference_no).all()
+  if not rows:
+    print("No external resources in the catalog yet. Run without --list to ingest.")
+    return
+  print(f"{'REFERENCE':<16} {'STATUS':<12} {'CHUNKS':<8} TITLE")
+  print("-" * 90)
+  for r in rows:
+    print(f"{r.reference_no or '-':<16} {r.status:<12} {str(r.chunk_count or 0):<8} {r.title}")
+
+
+def main():
+  parser = argparse.ArgumentParser(description="Download and ingest official Malaysian tax-law reference documents.")
+  parser.add_argument("--refresh", metavar="REFERENCE_NO", help="Re-download and re-embed one resource by reference_no.")
+  parser.add_argument("--list", action="store_true", help="Show catalog status without downloading anything.")
+  args = parser.parse_args()
+
+  init_db()  # ensure external_resources table exists
+  db = SessionLocal()
+
+  try:
+    if args.list:
+      list_catalog(db)
+      return
+
+    if args.refresh:
+      entry = next((e for e in EXTERNAL_RESOURCES if e["reference_no"] == args.refresh), None)
+      if not entry:
+        print(f"Unknown reference_no '{args.refresh}'. Known: {[e['reference_no'] for e in EXTERNAL_RESOURCES]}")
+        sys.exit(1)
+      logger.info(f"Refreshing {args.refresh}...")
+      ingest_resource(entry, db, force=True)
+      return
+
+    logger.info(f"Ingesting {len(EXTERNAL_RESOURCES)} external resource(s)...\n")
+    for entry in EXTERNAL_RESOURCES:
+      logger.info(f"[{entry['reference_no']}] {entry['title']}")
+      ingest_resource(entry, db, force=False)
+      print()
+
+    list_catalog(db)
+
+  finally:
+    db.close()
+
+
+if __name__ == "__main__":
+  main()
