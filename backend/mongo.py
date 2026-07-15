@@ -46,6 +46,15 @@ used by any of the three sources; most are None on any given chunk:
     "reference_no": "PR-4-2015", "title": "Entertainment Expense",
     "source_url": "https://...", "page_number": None,
 
+    # source_url/file_type are also populated for source="document" chunks
+    # (via pipeline.py's embed_document_for_rag) so CukaiBot can preview a
+    # user's own uploaded receipt in-page instead of only citing it by name:
+    #   "source_url": "/files/<uuid>_<original filename>",  # relative — the
+    #        backend's own /files/ static mount, NOT an external LHDN link.
+    #        Frontend prefixes this with its API base URL, same as
+    #        fileBasename elsewhere (see main.py's _serialize_doc).
+    #   "file_type": "pdf" | "image" | "excel",  # which renderer to use
+
     "created_at": "2026-07-11T08:00:00Z",
   }
 
@@ -102,15 +111,32 @@ def get_chunks_collection() -> Collection:
 
 def ensure_vector_index() -> None:
   """
-  Create the Atlas Vector Search index if it doesn't already exist. Safe to
-  call on every startup (mirrors init_db() in database.py) — Atlas returns
-  the existing index rather than erroring on a duplicate name, but we still
-  guard with a name check to avoid a noisy API call on every restart.
+  Create the Atlas Vector Search index if it doesn't already exist, or patch
+  it in place if it's missing a filter field this code now relies on. Safe
+  to call on every startup (mirrors init_db() in database.py).
 
   Requires an Atlas cluster (M10+, or a free/shared tier that supports Search).
   This is a no-op on plain self-hosted MongoDB — Atlas Vector Search is an
   Atlas-only feature, and $vectorSearch calls will fail without it.
+
+  Why the "patch in place" half exists: Atlas rejects any field named in a
+  $vectorSearch `filter` clause that isn't explicitly declared as a
+  type:"filter" field in the index definition — it does NOT silently ignore
+  an un-indexed filter, it errors the whole aggregation ("Path 'source'
+  needs to be indexed as filter"). When `source` was added as a filter
+  parameter to vector_search() (for search_user_and_reference_chunks()'s
+  split search), any Atlas cluster that already had this index from before
+  that change started failing 100% of vector searches, since the old
+  `if VECTOR_INDEX_NAME in existing: return` here meant the index was never
+  touched again after its first creation. Detecting a missing required
+  field and calling update_search_index() closes that gap for good — the
+  next filter field added later won't require a manual Atlas Console visit
+  either. Atlas rebuilds the index in the background on update; the OLD
+  index keeps serving queries the whole time, so this is safe to run on
+  every startup with no query downtime.
   """
+  REQUIRED_FILTER_FIELDS = {"user_id", "entity_id", "resource_type", "source"}
+
   try:
     client = get_mongo_client()
     db = client[MONGO_DB_NAME]
@@ -125,34 +151,61 @@ def ensure_vector_index() -> None:
       logger.info(f"[Mongo] Created collection {MONGO_DB_NAME}.{MONGO_COLLECTION_NAME}.")
 
     collection = get_chunks_collection()
-    existing = {idx["name"] for idx in collection.list_search_indexes()}
-    if VECTOR_INDEX_NAME in existing:
+    definition = {
+      "fields": [
+        {
+          "type": "vector",
+          "path": "embedding",
+          "numDimensions": EMBEDDING_DIMENSIONS,
+          "similarity": "cosine",
+        },
+        {"type": "filter", "path": "user_id"},
+        {"type": "filter", "path": "entity_id"},
+        {"type": "filter", "path": "resource_type"},
+        {"type": "filter", "path": "source"},
+      ]
+    }
+
+    existing_index = next(
+      (idx for idx in collection.list_search_indexes() if idx["name"] == VECTOR_INDEX_NAME), None,
+    )
+
+    if existing_index is None:
+      collection.create_search_index({
+        "name": VECTOR_INDEX_NAME,
+        "type": "vectorSearch",
+        "definition": definition,
+      })
+      logger.info(f"[Mongo] Created vector search index '{VECTOR_INDEX_NAME}' on "
+                  f"{MONGO_DB_NAME}.{MONGO_COLLECTION_NAME}.")
       return
 
-    collection.create_search_index({
-      "name": VECTOR_INDEX_NAME,
-      "type": "vectorSearch",
-      "definition": {
-        "fields": [
-          {
-            "type": "vector",
-            "path": "embedding",
-            "numDimensions": EMBEDDING_DIMENSIONS,
-            "similarity": "cosine",
-          },
-          {"type": "filter", "path": "user_id"},
-          {"type": "filter", "path": "entity_id"},
-          {"type": "filter", "path": "resource_type"},
-        ]
-      },
-    })
-    logger.info(f"[Mongo] Created vector search index '{VECTOR_INDEX_NAME}' on "
-                f"{MONGO_DB_NAME}.{MONGO_COLLECTION_NAME}.")
+    # Index already exists — check whether it's missing any filter field
+    # this code now depends on. latestDefinition is what list_search_indexes()
+    # actually returns the field list under (queuedDefinition would reflect
+    # an update already in flight, so latestDefinition is the one to compare
+    # against for "does the LIVE index support this filter yet").
+    existing_fields = {
+      f.get("path") for f in existing_index.get("latestDefinition", {}).get("fields", [])
+      if f.get("type") == "filter"
+    }
+    missing = REQUIRED_FILTER_FIELDS - existing_fields
+    if not missing:
+      return
+
+    logger.info(
+      f"[Mongo] Vector search index '{VECTOR_INDEX_NAME}' is missing filter "
+      f"field(s) {sorted(missing)} — updating it in place (Atlas rebuilds in "
+      f"the background; the current index keeps serving queries until the "
+      f"new one is ready)."
+    )
+    collection.update_search_index(VECTOR_INDEX_NAME, definition)
+    logger.info(f"[Mongo] Requested update for vector search index '{VECTOR_INDEX_NAME}'.")
   except PyMongoError as e:
-    # Non-fatal: log and continue. A missing index means vector_search() will
-    # return no results (or error) until it's created manually in Atlas, but
-    # it shouldn't take the whole API down at startup.
-    logger.warning(f"[Mongo] Could not verify/create vector search index: {e}")
+    # Non-fatal: log and continue. A missing/stale index means vector_search()
+    # will return no results (or error) until it's created/updated manually
+    # in Atlas, but it shouldn't take the whole API down at startup.
+    logger.warning(f"[Mongo] Could not verify/create/update vector search index: {e}")
 
 
 def insert_chunk(
@@ -171,13 +224,14 @@ def insert_chunk(
   title: Optional[str] = None,
   source_url: Optional[str] = None,
   page_number: Optional[int] = None,
+  file_type: Optional[str] = None,
 ) -> str:
   """
   Insert one embedded chunk. Returns the inserted _id as a string.
 
   One function now covers all three chunk kinds — pass only the fields
   relevant to the source you're inserting; the rest default to None:
-    - source="document"          (pipeline.py):          user_id, entity_id, doc_id, year_of_assessment, category
+    - source="document"          (pipeline.py):          user_id, entity_id, doc_id, year_of_assessment, category, source_url, file_type
     - source="tax_law"            (seed_tax_law.py):       category, topic
     - source="external_resource"  (seed_external_resources.py): external_resource_id, resource_type, reference_no, title, source_url
 
@@ -186,6 +240,15 @@ def insert_chunk(
   duplicating entries. `external_resource_id`/`reference_no` serve the same
   de-dupe/resume purpose for seed_external_resources.py. Document chunks
   (source="document") use doc_id as their natural de-dupe key instead.
+
+  `source_url`/`file_type` are shared across two chunk kinds with different
+  meanings: for source="external_resource" source_url is an absolute link to
+  a real LHDN PDF. For source="document" (pipeline.py's
+  embed_document_for_rag), source_url is instead a relative `/files/<basename>`
+  path into this backend's own static mount, and file_type ("pdf" | "image" |
+  "excel") tells the frontend which in-page renderer to use — this lets
+  CukaiBot preview a user's own uploaded document inline instead of only
+  citing it by name, without a second Postgres round-trip.
   """
   from datetime import datetime, timezone
 
@@ -212,6 +275,7 @@ def insert_chunk(
     "title": title,
     "source_url": source_url,
     "page_number": page_number,
+    "file_type": file_type,
 
     "created_at": datetime.now(timezone.utc),
   })
@@ -250,13 +314,40 @@ def count_chunks_for_external_resource(external_resource_id: int) -> int:
   return collection.count_documents({"external_resource_id": external_resource_id})
 
 
+def update_source_url_for_external_resource(external_resource_id: int, new_source_url: str) -> int:
+  """
+  Patch source_url on every existing chunk for one external resource,
+  without touching text/embedding/page_number — i.e. correct a citation link
+  without re-downloading, re-chunking, or re-embedding anything.
+
+  Exists because LHDN (and similar sources) sometimes rotate a document's
+  hosting URL without changing the document itself (see the ACT-53 URL
+  fix in seed_external_resources.py's EXTERNAL_RESOURCES catalog) — a full
+  delete_chunks_for_external_resource() + re-ingest would re-run the
+  embedding API over every chunk (1000+ calls for a document the size of
+  the Income Tax Act) just to change one string field that's identical
+  across all of them. seed_external_resources.py's --fix-url flag uses this
+  instead for that case.
+
+  Returns the number of chunks updated.
+  """
+  collection = get_chunks_collection()
+  result = collection.update_many(
+    {"external_resource_id": external_resource_id},
+    {"$set": {"source_url": new_source_url}},
+  )
+  return result.modified_count
+
+
 def vector_search(
   query_embedding: list[float],
   user_id: Optional[str],
   entity_id: Optional[int] = None,
   resource_type: Optional[str] = None,
+  source: Optional[str] = None,
   top_k: int = 5,
   num_candidates: int = 100,
+  min_score: Optional[float] = 0.72,
 ) -> list[dict]:
   """
   Run MongoDB Atlas's $vectorSearch aggregation, pre-filtered by user_id
@@ -273,7 +364,23 @@ def vector_search(
   when this filter is active, so only pass it when you specifically want to
   search official documents alone.
 
-  Returns up to top_k chunks, each with a similarity `score` attached.
+  `source`, when given, narrows results to one top-level source type
+  ("document" | "tax_law" | "external_resource"). This is the filter
+  search_user_and_reference_chunks() below uses to run the user's own
+  documents and the shared law corpus as two separate searches — see that
+  function's docstring for why a single pooled top_k across both is
+  structurally biased against the user's own (much smaller) document set.
+
+  `min_score` drops any result below this cosine-similarity score (Atlas
+  reports cosine scores already mapped to 0-1, where 1.0 is identical and
+  ~0.5 is unrelated/orthogonal) before returning. This exists because
+  $vectorSearch's `limit` is a ceiling on how many results to return, not a
+  relevance bar — it will always return top_k nearest neighbors even when
+  none of them clear a reasonable bar for genuine relevance. Pass None to
+  disable filtering (e.g. for diagnostics where every raw match is wanted).
+
+  Returns up to top_k chunks (fewer, or none, if fewer than top_k clear
+  min_score), each with a similarity `score` attached.
   """
   collection = get_chunks_collection()
 
@@ -285,6 +392,8 @@ def vector_search(
     owner_filter = {"$and": [owner_filter, {"$or": [{"entity_id": entity_id}, {"entity_id": None}]}]}
   if resource_type is not None:
     owner_filter = {"$and": [owner_filter, {"resource_type": resource_type}]}
+  if source is not None:
+    owner_filter = {"$and": [owner_filter, {"source": source}]}
 
   pipeline = [
     {
@@ -310,13 +419,100 @@ def vector_search(
         "title": 1,
         "source_url": 1,
         "page_number": 1,
+        "file_type": 1,
         "score": {"$meta": "vectorSearchScore"},
       }
     },
   ]
+
+  # $vectorSearch has no native "only above this score" option — Atlas
+  # computes the score via the $meta projection stage above, so the
+  # threshold has to be applied as a post-filter on the returned documents
+  # rather than inside the search stage itself.
+  if min_score is not None:
+    pipeline.append({"$match": {"score": {"$gte": min_score}}})
 
   try:
     return list(collection.aggregate(pipeline))
   except PyMongoError as e:
     logger.error(f"[Mongo] Vector search failed: {e}")
     return []
+
+
+def search_user_and_reference_chunks(
+  query_embedding: list[float],
+  user_id: Optional[str],
+  entity_id: Optional[int] = None,
+  search_documents: bool = True,
+  search_law: bool = True,
+  user_top_k: int = 3,
+  reference_top_k: int = 3,
+  num_candidates: int = 100,
+  min_score: Optional[float] = 0.72,
+) -> list[dict]:
+  """
+  Search the user's own uploaded documents (source="document") and the
+  shared law/reference corpus (source in "tax_law"/"external_resource") as
+  two SEPARATE $vectorSearch calls, then merge and re-sort by score —
+  instead of one pooled vector_search() call across everything.
+
+  Why this exists: a single pooled top_k search is structurally biased
+  toward whichever source has more chunks indexed, regardless of which one
+  actually answers the question. The full Income Tax Act alone chunks into
+  several hundred entries; a single user's uploaded Form EA might produce a
+  handful. Both "document" and "external_resource" chunks can legitimately
+  score high on a query like "what is my total income?" — the Form EA
+  because it has the actual number, Act 53 because "total income" is a
+  defined term used throughout the statute — but the Act's sheer chunk
+  volume gives it many more chances to be one of the nearest neighbors in a
+  single pooled top_k, even when the user's own document is the better
+  answer. A plain min_score threshold doesn't fix this either, since the
+  Act's matches can be genuinely strong on vocabulary overlap without being
+  the right answer to what was actually asked.
+
+  Running the two pools separately guarantees the user's own documents get
+  a fair, undiluted shot at their own top_k slots, and are never crowded out
+  just because the law corpus is orders of magnitude larger. Results are
+  merged and sorted by score (descending) for the caller, so this is a
+  drop-in swap for a plain vector_search() call.
+
+  `search_documents`/`search_law` let the caller skip an entire pool rather
+  than just filtering its results after the fact — see
+  main.py._classify_and_maybe_answer(), which decides per-question whether
+  each pool is even worth querying (e.g. "what is my name?" needs neither;
+  "what is the Section 33 deduction limit?" needs law but not documents).
+  min_score alone can't achieve this: a user's own documents can score
+  respectably against almost any tax-related question just by sharing the
+  same narrow topic area, without actually answering what was asked, so a
+  threshold has no clean way to tell "on-topic but irrelevant" apart from
+  "the right answer" — skipping the pool outright when it isn't needed
+  avoids that problem entirely instead of trying to tune around it.
+  """
+  user_chunks = []
+  if search_documents:
+    user_chunks = vector_search(
+      query_embedding=query_embedding,
+      user_id=user_id,
+      entity_id=entity_id,
+      source="document",
+      top_k=user_top_k,
+      num_candidates=num_candidates,
+      min_score=min_score,
+    )
+
+  reference_chunks = []
+  if search_law:
+    for src in ("tax_law", "external_resource"):
+      reference_chunks.extend(vector_search(
+        query_embedding=query_embedding,
+        user_id=user_id,
+        entity_id=entity_id,
+        source=src,
+        top_k=reference_top_k,
+        num_candidates=num_candidates,
+        min_score=min_score,
+      ))
+
+  merged = user_chunks + reference_chunks
+  merged.sort(key=lambda c: c.get("score", 0), reverse=True)
+  return merged

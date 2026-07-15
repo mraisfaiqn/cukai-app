@@ -2025,6 +2025,19 @@ def build_extracted_data(
   }
 
 
+# Maps get_file_kind()'s extraction-pathway vocabulary ("document" | "image" |
+# "spreadsheet") onto the frontend's preview-renderer vocabulary ("pdf" |
+# "image" | "excel" — see CukaiAccount.jsx's apiDoc.fileType and
+# CukaiBot.jsx's DocumentPreviewModal). DOCUMENT_EXTENSIONS is PDF-only today,
+# so "document" always means "pdf" in practice, but the explicit map keeps
+# this from silently breaking if that ever changes.
+_FILE_KIND_TO_FRONTEND_TYPE = {
+  "document":   "pdf",
+  "image":      "image",
+  "spreadsheet": "excel",
+}
+
+
 def build_rag_summary_text(document: "Document") -> str:
   """
   Build the short, clean natural-language summary that gets embedded for RAG
@@ -2074,6 +2087,22 @@ def embed_document_for_rag(document: "Document") -> None:
 
     vectors = embed_texts(chunks, task_type="retrieval_document")
 
+    # Relative URL into this backend's own /files/ static mount (see main.py's
+    # STORAGE_DIR mount) — deliberately NOT an absolute host:port URL, so it
+    # keeps working across environments the same way fileBasename does for
+    # CukaiAccount.jsx's preview panel (frontend prefixes it with its own API
+    # base URL). Lets CitationCard open an in-page preview for a user's own
+    # document straight from the chunk, without a Postgres lookback.
+    source_url = None
+    file_type = None
+    if document.file_path:
+      basename = os.path.basename(document.file_path)
+      source_url = f"/files/{basename}"
+      try:
+        file_type = _FILE_KIND_TO_FRONTEND_TYPE.get(get_file_kind(document.file_path))
+      except ValueError:
+        file_type = None  # Unrecognized extension — preview button just won't render.
+
     for chunk, vector in zip(chunks, vectors):
       mongo_store.insert_chunk(
         text=chunk,
@@ -2084,6 +2113,8 @@ def embed_document_for_rag(document: "Document") -> None:
         doc_id=document.id,
         year_of_assessment=document.year_of_assessment,
         category=document.category,
+        source_url=source_url,
+        file_type=file_type,
       )
 
     logger.info(f"[Pipeline] Embedded {len(chunks)} chunk(s) for Document ID {document.id} into MongoDB.")

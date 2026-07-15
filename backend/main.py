@@ -1,6 +1,7 @@
 import asyncio
 import concurrent.futures
 import datetime
+import json
 import logging
 import os
 import re
@@ -1970,11 +1971,22 @@ def get_form_b_profile(
 
 
 # ── CukaiBot chat (RAG) ──────────────────────────────────────────────────────
-# Implements the 5-step retrieval-chat loop from the team's architecture
-# diagram: (1) fetch PostgreSQL session history → (2) [contextualization
-# skipped for this build — see note on _generate_chat_answer] → (3) MongoDB
-# Atlas $vectorSearch → (4) Gemini generation grounded in retrieved context +
-# history → (5) persist both turns to PostgreSQL and respond.
+# Implements the retrieval-chat loop from the team's architecture diagram:
+# (1) fetch PostgreSQL session history → (2) fetch the user's own Postgres
+# profile → (3) one combined Gemini call that classifies which retrieval
+# source(s) this message needs and, if neither is needed, answers directly
+# in that same call [contextualization step from the original diagram is
+# skipped for this build — see the note on _generate_chat_answer_with_retrieval]
+# → (4) MongoDB Atlas $vectorSearch, only when retrieval was flagged as
+# needed → (5) a second Gemini call generating the answer grounded in the
+# retrieved context + history, only reached on the retrieval path → (6)
+# persist both turns to PostgreSQL and respond.
+#
+# Gemini call count per turn: 1 call for profile/identity/small-talk/meta
+# questions (classify-and-answer combined, no retrieval); 2 calls when
+# document search, law search, or both are needed (classify, then generate
+# grounded on what was retrieved) — see _classify_and_maybe_answer()'s
+# docstring for why the second call can't be avoided in that case.
 #
 # Two databases, two different jobs (mirrors the comment already on
 # ChatSession/ChatMessage in models.py):
@@ -1983,7 +1995,27 @@ def get_form_b_profile(
 #                relevant to the current question, via vector similarity.
 
 CHAT_HISTORY_TURN_LIMIT = 20  # most recent messages pulled into the prompt
-CHAT_VECTOR_TOP_K        = 5
+
+# Split, not pooled, so the user's own (much smaller) set of uploaded
+# documents always gets a fair shot at its own slots, rather than being
+# crowded out by the much larger law/reference corpus in a single pooled
+# top_k — see mongo.search_user_and_reference_chunks()'s docstring for why
+# a single shared CHAT_VECTOR_TOP_K across everything was the actual bug
+# behind Act 53 showing up as a citation for personal questions like
+# "what is my total income?".
+CHAT_USER_DOC_TOP_K      = 5  # from the user's own uploaded documents
+CHAT_REFERENCE_TOP_K     = 5  # from EACH of tax_law / external_resource
+
+# Ceiling on the final MERGED result across all pools combined. Each pool
+# above (document / tax_law / external_resource) is allowed up to 5 of its
+# own so no single source is starved, but when a question needs several
+# pools at once (e.g. "document" + "external_resource") the merge can
+# otherwise hand back up to 15 chunks in one turn (5+5+5) — noisy for the
+# LLM prompt and overwhelming as a citation list in the UI. context_chunks
+# is already sorted by score (desc) by search_user_and_reference_chunks(),
+# so slicing to this cap keeps the single best CHAT_MAX_TOTAL_CITATIONS
+# chunks overall, regardless of which pool(s) they came from.
+CHAT_MAX_TOTAL_CITATIONS = 5
 
 CHAT_SYSTEM_PROMPT = """You are Cukai Bot, a Malaysian tax advisory assistant for cukai.ai.
 
@@ -2021,8 +2053,8 @@ def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -
   answer identity/profile questions from (e.g. "what is my name?", "what's my
   TIN?", "what's my business's SSM number?").
 
-  This exists because _generate_chat_answer's CONTEXT was built *only* from
-  mongo.vector_search() results — the user's uploaded documents and tax-law
+  This exists because _generate_chat_answer_with_retrieval's CONTEXT was
+  built *only* from mongo.vector_search() results — the user's uploaded documents and tax-law
   reference chunks. That's the right source for "how much did I earn from
   MIXTURE OF EXPERTS", but a Form EA or bank statement chunk has no reason to
   contain the user's name, so a question like "what is my name?" always came
@@ -2101,15 +2133,208 @@ def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -
   return "\n".join(lines) if len(lines) > 1 else None
 
 
-def _generate_chat_answer(
+# Structured output contract for _classify_and_maybe_answer — kept as a plain
+# dict shape (not a Pydantic model) to match this file's existing style for
+# small LLM-classification helpers (see pipeline.py's classify_and_extract_with_llm).
+#
+# This single prompt does UP TO THREE jobs in one Gemini call: (1) decides
+# which retrieval source(s), if any, the message needs; (2) when neither is
+# needed, writes the final answer directly in the same response; and (3),
+# only on a brand-new session's first message, also writes a short session
+# title. Folding titling in here — rather than a dedicated call after the
+# answer is generated — means a new session costs exactly the same number
+# of Gemini calls as an existing one (1 if answered directly, 2 if retrieval
+# is needed), instead of always paying one extra call just for being new.
+#
+# The trade-off: at this point in the turn there IS no answer yet (retrieval
+# hasn't run), so a title generated here is based on the QUESTION alone,
+# not the question+answer pair a dedicated post-hoc call could see. In
+# practice a tax question's topic is almost always clear from the question
+# by itself ("is entertainment deductible?" doesn't need the answer to be
+# titled "Entertainment Expense Deductibility") — a prior version of this
+# code used a separate post-answer call for exactly that reason, at the
+# cost of one extra Gemini call on every new session; see git history if
+# this trade-off ever needs revisiting.
+#
+# This collapses profile/identity/small-talk/meta questions (no retrieval
+# needed) down to a single Gemini call instead of two, since there's
+# nothing a second "generation" call could add once we already know no
+# document or law lookup applies: the model has every fact it needs
+# (person_context + history) right here.
+#
+# When retrieval IS needed, a second Gemini call is unavoidable — Mongo's
+# $vectorSearch has to run in between (we don't know what to search for
+# until this call tells us, and this call can't cite chunks that haven't
+# been fetched yet) — see _generate_chat_answer_with_retrieval() below for
+# that path.
+_CLASSIFY_AND_ANSWER_SYSTEM_PROMPT = """You are Cukai Bot, a Malaysian tax advisory assistant for cukai.ai. Before responding, you must first decide what kind of information the user's message needs.
+
+The chatbot has three possible information sources:
+1. The user's own uploaded documents (receipts, Form EA, bank statements, invoices) — needed for questions about the user's own specific financial data, amounts, transactions, or documents.
+2. Official Malaysian tax law/reference material (the Income Tax Act, Public Rulings, e-Invoice guidelines) — needed for questions about tax rules, deduction limits, definitions, rates, or how the law works in general.
+3. Neither — identity/profile questions the user's own account already answers directly (name, IC number, TIN, marital status, which businesses/entities they own), small talk, greetings, or meta questions about the chatbot itself.
+
+A single message can need BOTH document and law lookups at once (e.g. "is my broadband bill deductible under Section 33?" needs the user's actual bill AND the law on Section 33). Set both flags true in that case — do not force a single choice when both genuinely apply.
+
+When uncertain, prefer setting a flag to true rather than false — a citation the user didn't strictly need is a much smaller problem than answering a real tax question with no grounding at all.
+
+IMPORTANT — you do not have document or law context available in this step:
+- If EITHER flag is true, do NOT attempt to answer. Set "direct_answer" to null — the system will retrieve the right context and generate the grounded answer in a follow-up step.
+- Only if BOTH flags are false (this is a profile/identity/small-talk/meta question that needs no retrieval) should you write the actual answer now, using the CONTEXT block below (the user's own account profile, if provided) and the conversation history. Put that full answer in "direct_answer".
+
+When you do write a direct_answer, follow these rules:
+- Be concise and specific.
+- Never fabricate a fact, section number, ruling number, or amount that isn't in the CONTEXT or history.
+- Write in plain, well-organized prose — the way you'd explain it out loud, not as a reference document. Avoid heavy markdown; only use "**bold**" for a handful of key terms and "- " lists when there are 3+ distinct items.
+
+If, and only if, a line starting with "TITLE_REQUESTED:" appears below, also write a short session title in "session_title": 6 words or fewer, describing the TOPIC of the question (not a restatement of it as a question), plain title case, no quotation marks, no trailing period. If the question is small talk or too vague to summarize meaningfully, use exactly "New conversation". If no such line appears, set "session_title" to null.
+
+Return ONLY valid JSON matching this exact shape, no markdown fences, no preamble, no explanation:
+{"needs_document_search": true/false, "needs_law_search": true/false, "direct_answer": "..." or null, "session_title": "..." or null, "reasoning": "one short phrase"}
+"""
+
+
+def _classify_and_maybe_answer(
+  question: str, history: list[dict], person_context: Optional[str] = None,
+  generate_title: bool = False,
+) -> dict:
+  """
+  Single Gemini call (fast/cheap gemini-3.1-flash-lite, same as pipeline.py's
+  classify_and_extract_with_llm) that replaces the old
+  _classify_retrieval_need() + _generate_chat_answer() pair for the
+  no-retrieval case.
+
+  It asks Gemini to decide, in one shot, which retrieval source(s) (if any)
+  this message needs — instead of always running a fixed user_top_k=3 +
+  reference_top_k=2 split search regardless of what was asked — AND, when it
+  decides NEITHER source is needed, to write the final answer in that same
+  response. A personal/profile question like "what is my name?" doesn't
+  need any vector search at all (the answer lives in
+  _person_context_block's Postgres data), so there's no reason to spend a
+  second Gemini round-trip just to re-ask "now answer it" when the model
+  already had everything required to answer on the first pass.
+
+  When either needs_document_search or needs_law_search comes back true, the
+  caller MUST run retrieval and call _generate_chat_answer_with_retrieval()
+  for the actual answer — direct_answer is deliberately left null in that
+  case, since this call has no document/law context to draw from yet.
+
+  generate_title: pass True only for a brand-new session's first message —
+  see the module-level comment above _CLASSIFY_AND_ANSWER_SYSTEM_PROMPT for
+  why folding titling into THIS call (question-only, pre-retrieval) rather
+  than a dedicated post-answer call is the right trade-off: it keeps a new
+  session's total Gemini call count identical to an existing session's,
+  at the cost of the title not being informed by the eventual answer.
+
+  Returns a dict with:
+    - "needs_document_search" (bool)
+    - "needs_law_search" (bool)
+    - "direct_answer" (str | None) — populated only when both flags are False
+    - "session_title" (str | None) — populated only when generate_title=True
+    - "reasoning" (str, for logging/debugging only — never shown to the user)
+
+  Fails open on any error (LLM failure, malformed JSON): defaults to
+  {"needs_document_search": True, "needs_law_search": True, "direct_answer": None},
+  i.e. "search everything" — a stuck classifier should degrade to running
+  full retrieval rather than silently answering a real tax question with no
+  grounding at all. session_title falls back to None on failure too — the
+  caller (post_chat_message) already has its own truncated-message fallback
+  for the title, so a classifier hiccup never leaves a session untitled.
+  """
+  fail_open = {
+    "needs_document_search": True, "needs_law_search": True,
+    "direct_answer": None, "session_title": None,
+    "reasoning": "classification unavailable — defaulting to full search",
+  }
+
+  api_key = os.getenv("GEMINI_API_KEY")
+  if not api_key:
+    return fail_open
+
+  try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+
+    llm = ChatGoogleGenerativeAI(
+      model="gemini-3.1-flash-lite",
+      api_key=api_key,
+      temperature=0.0,
+      convert_system_message_to_human=True,
+    )
+
+    system_prompt = _CLASSIFY_AND_ANSWER_SYSTEM_PROMPT
+    if person_context:
+      system_prompt = f"{system_prompt}\n\nCONTEXT:\n{person_context}"
+    # The prompt only writes a session_title when this literal line is
+    # present — keeps every other (non-first, non-title) call's prompt
+    # byte-for-byte identical to before this change, and keeps the
+    # instruction data-driven (in the user-turn content) rather than a
+    # second hardcoded prompt variant to maintain.
+    if generate_title:
+      system_prompt = f"{system_prompt}\n\nTITLE_REQUESTED: yes, this is the first message of a new conversation."
+
+    messages = [SystemMessage(content=system_prompt)]
+    # A couple of turns of history are enough for the routing half of this
+    # decision (e.g. a one-word follow-up like "and Section 44?" needs the
+    # prior turn to know it's still a law question). Kept short rather than
+    # the full CHAT_HISTORY_TURN_LIMIT window since a direct_answer here only
+    # ever covers profile/small-talk turns, which don't need deep history.
+    for turn in history[-4:]:
+      if turn["role"] == "user":
+        messages.append(HumanMessage(content=turn["content"]))
+      else:
+        messages.append(AIMessage(content=turn["content"]))
+    messages.append(HumanMessage(content=question))
+
+    response = llm.invoke(messages)
+    raw = response.content
+    if isinstance(raw, list):
+      raw = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw)
+    raw = str(raw).strip() if raw is not None else ""
+
+    json_match = re.search(r"(\{.*\})", raw, re.DOTALL)
+    if json_match:
+      raw = json_match.group(1)
+
+    parsed = json.loads(raw)
+    needs_document_search = bool(parsed.get("needs_document_search", True))
+    needs_law_search = bool(parsed.get("needs_law_search", True))
+    direct_answer = parsed.get("direct_answer")
+    # Guard against the model writing an answer anyway despite a true flag —
+    # a direct_answer is only trustworthy (no fabricated grounding risk) when
+    # neither retrieval source was flagged as needed.
+    if needs_document_search or needs_law_search:
+      direct_answer = None
+    session_title = parsed.get("session_title")
+    session_title = str(session_title).strip('"\' ').strip()[:80] if (generate_title and session_title) else None
+    return {
+      "needs_document_search": needs_document_search,
+      "needs_law_search": needs_law_search,
+      "direct_answer": str(direct_answer).strip() if direct_answer else None,
+      "session_title": session_title,
+      "reasoning": str(parsed.get("reasoning", ""))[:200],
+    }
+  except Exception as e:
+    logger.warning(f"[Chat] Classify-and-answer call failed, defaulting to full search: {e}")
+    return fail_open
+
+
+def _generate_chat_answer_with_retrieval(
   question: str, history: list[dict], context_chunks: list[dict], person_context: Optional[str] = None,
 ) -> str:
   """
-  Step 4 of the loop — Gemini generation grounded in retrieved Mongo context
-  + the user's own Postgres profile (person_context, see
-  _person_context_block) + Postgres chat history + the current question.
-  Reuses the same ChatGoogleGenerativeAI pattern as pipeline.py's
-  classify_and_extract_with_llm.
+  The retrieval-grounded generation path — used only when
+  _classify_and_maybe_answer() determined that document search, law search,
+  or both are needed. Gemini call #2 for this turn (the one call that's
+  genuinely unavoidable): Mongo's $vectorSearch has to run in between the
+  classify call and this one, since we don't know what to retrieve until
+  classification tells us, and this call can't cite chunks that haven't
+  been fetched yet.
+
+  Grounded in retrieved Mongo context (context_chunks) + the user's own
+  Postgres profile (person_context, see _person_context_block) + Postgres
+  chat history + the current question. Reuses the same
+  ChatGoogleGenerativeAI pattern as pipeline.py's classify_and_extract_with_llm.
 
   Note on query contextualization (step 2 in the team's diagram): the
   original diagram rewrites e.g. "what does it eat?" into "what do cats eat?"
@@ -2174,10 +2399,11 @@ _EXTERNAL_RESOURCE_FALLBACK_URL = "https://www.hasil.gov.my/perundangan/akta/"
 def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
   """Shape MongoDB chunks into the CitationCard format the frontend already
   renders (tag/title/snippet/verified/sourceUrl) — see CitationCard in
-  CukaiBot.jsx. sourceUrl is only populated for external_resource chunks
-  (real LHDN PDFs) — the frontend's link-out button hides itself when absent.
+  CukaiBot.jsx. sourceUrl is populated for external_resource chunks (real
+  LHDN PDFs) AND for document chunks (a user's own uploaded receipt/invoice)
+  — the frontend's preview button hides itself when absent.
 
-  Also adds two fields the frontend can use but doesn't have to:
+  Also adds fields the frontend can use but doesn't have to:
     - pageNumber: the 1-indexed PDF page this chunk came from, when known
       (see seed_external_resources.py's page-tracking extraction). None for
       chunks ingested before that tracking existed, or for non-PDF sources.
@@ -2185,7 +2411,20 @@ def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
       direct LHDN PDF links can rot without warning (see the module-level
       note above). Always present for external_resource chunks even when
       sourceUrl itself is fine, so the frontend has something to fall back
-      to without a second round-trip.
+      to without a second round-trip. Never set for document chunks — those
+      are served by this same backend's /files/ mount, which doesn't rot the
+      way an external LHDN link can.
+    - isInternal: True for document chunks. Tells the frontend to render
+      sourceUrl as an in-page preview (embed/img, via the backend's own
+      /files/ static mount — see pipeline.py's embed_document_for_rag) rather
+      than window.open()-ing it like an external LHDN link. This is also why
+      document sourceUrl is intentionally a *relative* path (`/files/...`)
+      rather than absolute: the frontend prefixes it with its own API base
+      URL, same as fileBasename elsewhere (see _serialize_doc above), so this
+      keeps working across environments without hardcoding a host here.
+    - fileType: "pdf" | "image" | "excel" for document chunks, so the
+      frontend's preview modal knows which renderer to use without a second
+      Postgres lookback (mirrors CukaiAccount.jsx's doc.fileType).
   """
   citations = []
   for c in chunks:
@@ -2193,6 +2432,8 @@ def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
     source_url = None
     page_number = None
     fallback_url = None
+    is_internal = False
+    file_type = None
     if source == "external_resource":
       tag = c.get("reference_no") or c.get("resource_type", "REFERENCE").upper()
       title = c.get("title") or c.get("category") or "Official reference"
@@ -2209,6 +2450,9 @@ def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
     else:
       tag = f"YA{c['year_of_assessment']}" if c.get("year_of_assessment") else "DOCUMENT"
       title = c.get("category") or "Your document"
+      source_url = c.get("source_url")
+      file_type = c.get("file_type")
+      is_internal = bool(source_url)
     citations.append({
       "tag": tag,
       "title": title,
@@ -2217,6 +2461,8 @@ def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
       "sourceUrl": source_url,
       "pageNumber": page_number,
       "fallbackUrl": fallback_url,
+      "isInternal": is_internal,
+      "fileType": file_type,
     })
   return citations
 
@@ -2287,7 +2533,8 @@ def post_chat_message(
   db: Session = Depends(get_db),
 ):
   """
-  The main retrieval-chat endpoint (steps 1–5 of the loop).
+  The main retrieval-chat endpoint (steps 1–6 of the loop — see the module
+  header comment above for the full breakdown and Gemini call count).
 
   Request body:
     { "message": str, "user_id": str, "entity_id": int|null, "session_id": str|null }
@@ -2316,12 +2563,17 @@ def post_chat_message(
     ).first()
     if not session:
       raise HTTPException(status_code=404, detail="Chat session not found.")
+  is_new_session = session is None
   if session is None:
     session_id = uuid.uuid4().hex
     session = ChatSession(
       session_id=session_id,
       user_id=user_id,
       entity_id=entity_id,
+      # Fallback title in case classification (which also generates the
+      # real AI title for a new session — see the generate_title parameter
+      # on _classify_and_maybe_answer below) fails outright and returns
+      # session_title=None. Overwritten below once classification succeeds.
       title=message[:80],
     )
     db.add(session)
@@ -2345,50 +2597,98 @@ def post_chat_message(
   db.commit()
   db.refresh(user_msg)
 
-  # ── Steps 2–3: (contextualization skipped, see _generate_chat_answer) +
-  #    embed the question and run MongoDB Atlas vector search. One call now
-  #    covers everything — the user's own documents, hand-written tax_law
-  #    summaries, and official external_resource PDF chunks all live in the
-  #    same document_chunks collection (see mongo.py's module docstring).
-  context_chunks: list[dict] = []
-  try:
-    query_vector = embed_text(message, task_type="retrieval_query")
-    context_chunks = mongo.vector_search(
-      query_embedding=query_vector,
-      user_id=user_id,
-      entity_id=entity_id,
-      top_k=CHAT_VECTOR_TOP_K,
-    )
-  except Exception as e:
-    logger.warning(f"[Chat] Vector search failed for session {session.session_id}: {e}")
-
-  # ── Step 3b: fetch the user's own Postgres profile (name, TIN, active
-  #    entity, etc.) so identity/profile questions can be answered even when
-  #    no uploaded document happens to mention them — see
-  #    _person_context_block()'s docstring for the "what is my name?" case
-  #    this fixes. Best-effort: a lookup failure here shouldn't break the
-  #    document-grounded half of the answer.
+  # ── Step 2: fetch the user's own Postgres profile (name, TIN, active
+  #    entity, etc.) before classification, since the combined
+  #    classify-and-maybe-answer call below needs it immediately if it turns
+  #    out no retrieval is needed — see _person_context_block()'s docstring
+  #    for the "what is my name?" case this fixes. Best-effort: a lookup
+  #    failure here shouldn't break the rest of the turn.
   person_context: Optional[str] = None
   try:
     person_context = _person_context_block(db, user_id, entity_id)
   except Exception as e:
     logger.warning(f"[Chat] Person profile lookup failed for session {session.session_id}: {e}")
 
-  # ── Step 4: generate the answer ──────────────────────────────────────────
-  try:
-    answer_text = _generate_chat_answer(message, history, context_chunks, person_context)
-    if not answer_text:
-      raise ValueError("empty response")
-  except Exception as e:
-    logger.error(f"[Chat] Generation failed for session {session.session_id}: {e}")
-    answer_text = (
-      "Sorry, I couldn't generate a response just now. Please try again in a moment, "
-      "or rephrase your question."
-    )
+  # ── Step 3: classify what this question actually needs, and — in the same
+  #    Gemini call — answer directly if it turns out NEITHER retrieval source
+  #    is needed (e.g. "what is my name?", small talk, meta questions about
+  #    the bot). This collapses what used to be two separate Gemini calls
+  #    (classify, then generate) into one for that case. See
+  #    _classify_and_maybe_answer()'s docstring for why a fixed-shape search
+  #    (always 3 document + 2×2 reference chunks) kept surfacing citations
+  #    that didn't actually apply to what was asked, and why a direct answer
+  #    is only trustworthy once we know no retrieval was needed.
+  #
+  #    generate_title=is_new_session also gets this same call to write the
+  #    AI session title (question-only, since there's no answer yet) — see
+  #    the module comment above _CLASSIFY_AND_ANSWER_SYSTEM_PROMPT for why
+  #    folding it in here keeps a new session's total Gemini call count
+  #    equal to an existing session's, instead of always paying one extra
+  #    dedicated call just for being new.
+  classification = _classify_and_maybe_answer(message, history, person_context, generate_title=is_new_session)
+  logger.info(
+    f"[Chat] Retrieval classification for session {session.session_id}: "
+    f"documents={classification['needs_document_search']} "
+    f"law={classification['needs_law_search']} "
+    f"({classification['reasoning']})"
+  )
+  if is_new_session and classification.get("session_title"):
+    session.title = classification["session_title"]
+    db.commit()
+
+  context_chunks: list[dict] = []
+  needs_retrieval = classification["needs_document_search"] or classification["needs_law_search"]
+
+  if not needs_retrieval and classification["direct_answer"]:
+    # ── Fast path: one Gemini call total for this turn — no vector search,
+    #    no second generation call needed.
+    answer_text = classification["direct_answer"]
+  else:
+    # ── Step 4: embed the question and search only the pool(s) the
+    #    classification says are needed, as two SEPARATE pools when both are
+    #    needed — see mongo.search_user_and_reference_chunks()'s docstring. A
+    #    single pooled search across everything structurally favored the much
+    #    larger law corpus (hundreds of Act 53 chunks) over a user's own small
+    #    set of uploaded documents, even when the document was the better answer.
+    if needs_retrieval:
+      try:
+        query_vector = embed_text(message, task_type="retrieval_query")
+        context_chunks = mongo.search_user_and_reference_chunks(
+          query_embedding=query_vector,
+          user_id=user_id,
+          entity_id=entity_id,
+          search_documents=classification["needs_document_search"],
+          search_law=classification["needs_law_search"],
+          user_top_k=CHAT_USER_DOC_TOP_K,
+          reference_top_k=CHAT_REFERENCE_TOP_K,
+        )
+      except Exception as e:
+        logger.warning(f"[Chat] Vector search failed for session {session.session_id}: {e}")
+
+      # Already sorted by score (desc) — see search_user_and_reference_chunks().
+      # Cap AFTER merging, not by lowering the per-pool top_k, so a single
+      # pool (e.g. document) can still fill all 5 slots when the other pool
+      # comes back empty, instead of being pre-shrunk to a fixed sub-quota.
+      if len(context_chunks) > CHAT_MAX_TOTAL_CITATIONS:
+        context_chunks = context_chunks[:CHAT_MAX_TOTAL_CITATIONS]
+
+    # ── Step 5: generate the grounded answer — Gemini call #2 for this turn,
+    #    only incurred when retrieval was actually needed (or the classifier
+    #    failed open and defaulted to "search everything").
+    try:
+      answer_text = _generate_chat_answer_with_retrieval(message, history, context_chunks, person_context)
+      if not answer_text:
+        raise ValueError("empty response")
+    except Exception as e:
+      logger.error(f"[Chat] Generation failed for session {session.session_id}: {e}")
+      answer_text = (
+        "Sorry, I couldn't generate a response just now. Please try again in a moment, "
+        "or rephrase your question."
+      )
 
   citations = _chunks_to_citations(context_chunks)
 
-  # ── Step 5: save the assistant reply and respond ────────────────────────
+  # ── Step 6: save the assistant reply and respond ────────────────────────
   assistant_msg = ChatMessage(
     session_id=session.session_id,
     user_id=user_id,

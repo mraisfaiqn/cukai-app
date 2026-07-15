@@ -286,6 +286,24 @@ def ingest_resource(entry: dict, db, force: bool = False) -> None:
     db.add(row)
     db.commit()
     db.refresh(row)
+  else:
+    # The EXTERNAL_RESOURCES catalog entry (this file) is the source of
+    # truth for these fields, not whatever was in Postgres when the row was
+    # first created — without this sync, editing a stale source_url here
+    # (e.g. the ACT-53 URL fix, after LHDN rotated its /media/ path) would
+    # only ever take effect for a row that doesn't exist yet. An existing
+    # row would keep re-embedding chunks stamped with its old, cached
+    # row.source_url below forever, even under --refresh, since force=True
+    # only controls re-downloading/re-embedding — it never touched these
+    # metadata columns on an existing row.
+    date_issued = entry.get("date_issued")
+    if isinstance(date_issued, str):
+      date_issued = date.fromisoformat(date_issued)
+    row.title = entry["title"]
+    row.category = entry["category"]
+    row.source_url = entry["source_url"]
+    row.date_issued = date_issued
+    db.commit()
 
   if row.status == "embedded" and not force:
     # `row.status` is only a cached belief, not a live fact — it's set once
@@ -446,6 +464,17 @@ def list_catalog(db) -> None:
 def main():
   parser = argparse.ArgumentParser(description="Download and ingest official Malaysian tax-law reference documents.")
   parser.add_argument("--refresh", metavar="REFERENCE_NO", help="Re-download and re-embed one resource by reference_no.")
+  parser.add_argument(
+    "--fix-url", metavar="REFERENCE_NO",
+    help=(
+      "Patch only the source_url on an already-embedded resource's existing "
+      "chunks, using the source_url currently in EXTERNAL_RESOURCES below — "
+      "no re-download or re-embed. Use this instead of --refresh when only "
+      "the hosting URL changed (e.g. LHDN rotated a /media/ path) and the "
+      "document content itself is unchanged; --refresh would needlessly "
+      "re-run the embedding API over every chunk just to update one string."
+    ),
+  )
   parser.add_argument("--list", action="store_true", help="Show catalog status without downloading anything.")
   args = parser.parse_args()
 
@@ -455,6 +484,24 @@ def main():
   try:
     if args.list:
       list_catalog(db)
+      return
+
+    if args.fix_url:
+      entry = next((e for e in EXTERNAL_RESOURCES if e["reference_no"] == args.fix_url), None)
+      if not entry:
+        print(f"Unknown reference_no '{args.fix_url}'. Known: {[e['reference_no'] for e in EXTERNAL_RESOURCES]}")
+        sys.exit(1)
+      row = db.query(ExternalResource).filter(ExternalResource.reference_no == args.fix_url).first()
+      if not row:
+        print(f"'{args.fix_url}' hasn't been ingested yet — run without flags (or --refresh) first.")
+        sys.exit(1)
+      row.source_url = entry["source_url"]
+      db.commit()
+      updated = mongo.update_source_url_for_external_resource(row.id, entry["source_url"])
+      logger.info(
+        f"Patched source_url for {args.fix_url} -> {entry['source_url']} "
+        f"({updated} chunk(s) in Mongo, Postgres row updated)."
+      )
       return
 
     if args.refresh:

@@ -38,6 +38,16 @@ const ExternalLinkIcon = () => (
   </svg>
 );
 
+// Used instead of ExternalLinkIcon for citations of a user's own uploaded
+// document (isInternal:true) — signals "preview here" rather than "leaves
+// the page", since these open an in-page modal, not a new tab.
+const EyeIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
 const CheckCircleIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
@@ -248,19 +258,28 @@ function MarkdownText({ text, className = '' }) {
   );
 }
 
-function CitationCard({ citation }) {
-  const [sourceFailed, setSourceFailed] = useState(false);
-  // window.open() can't tell us whether the tab it opened actually loaded
-  // (cross-origin, so no error event reaches this page) — so rather than
-  // silently failing on a stale LHDN link, mark it "unavailable" the first
-  // time it's clicked and offer the stable index-page fallback right away
-  // for the next click. Simple and honest given the constraint, rather than
-  // pretending we can detect a 404 in real time.
+function CitationCard({ citation, onPreview }) {
+  // No click-based "did it work?" detection here on purpose. window.open()
+  // with 'noopener' set gives no trustworthy signal either way: some
+  // browsers return null even on a successful open (noopener deliberately
+  // drops the reference back), and there's no way to observe whether a
+  // cross-origin destination actually loaded or 404'd from this page.
+  // A previous version tried to infer failure from the return value and
+  // ended up flagging perfectly working links as broken. Instead, the
+  // fallback index link (when available) is just always shown as a small
+  // secondary option — accurate in every case, since it doesn't depend on
+  // guessing.
+  //
+  // isInternal citations (a user's own uploaded document, served from this
+  // backend's own /files/ mount — see main.py's _chunks_to_citations) skip
+  // all of that: there's no cross-origin uncertainty and no link rot to
+  // guard against, so these just open the in-page preview modal instead.
   const handleOpenSource = () => {
-    const opened = window.open(citation.sourceUrl, '_blank', 'noopener,noreferrer');
-    if (!opened) {
-      setSourceFailed(true);
+    if (citation.isInternal) {
+      onPreview?.(citation);
+      return;
     }
+    window.open(citation.sourceUrl, '_blank', 'noopener,noreferrer');
   };
 
   return (
@@ -273,9 +292,9 @@ function CitationCard({ citation }) {
           <button
             className="text-muted transition-colors hover:text-primary"
             onClick={handleOpenSource}
-            title={citation.pageNumber ? `Open source document (page ${citation.pageNumber})` : 'Open source document'}
+            title={citation.isInternal ? 'Preview document' : (citation.pageNumber ? `Open source document (page ${citation.pageNumber})` : 'Open source document')}
           >
-            <ExternalLinkIcon />
+            {citation.isInternal ? <EyeIcon /> : <ExternalLinkIcon />}
           </button>
         )}
       </div>
@@ -290,10 +309,10 @@ function CitationCard({ citation }) {
           <span className="text-xs font-medium text-primary">{citation.verified}</span>
         </div>
       )}
-      {(sourceFailed || (!citation.sourceUrl && citation.fallbackUrl)) && citation.fallbackUrl && (
+      {citation.fallbackUrl && (
         <div className="mt-2.5 border-t border-border pt-2.5">
           <p className="text-[11px] text-muted">
-            Direct link unavailable —{' '}
+            {citation.sourceUrl ? 'Link not opening?' : 'Direct link unavailable —'}{' '}
             <button
               className="text-primary underline"
               onClick={() => window.open(citation.fallbackUrl, '_blank', 'noopener,noreferrer')}
@@ -308,6 +327,88 @@ function CitationCard({ citation }) {
   );
 }
 
+// ─── Document Preview modal (for CitationCard's isInternal citations) ────────
+// A lighter-weight cousin of CukaiAccount.jsx's DocumentPreview slide-over:
+// same embed/img rendering approach and the same "prefix a relative /files/
+// path with the API base URL" trick, but read-only — no reclassify/archive/
+// delete footer, since this is opened from a chat citation, not the document
+// manager. citation.sourceUrl is already the relative path main.py's
+// _chunks_to_citations put on the chunk (see pipeline.py's
+// embed_document_for_rag), so no Postgres lookback is needed here at all.
+function DocumentPreviewModal({ citation, onClose }) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => { requestAnimationFrame(() => setVisible(true)); }, []);
+
+  const handleClose = () => { setVisible(false); setTimeout(onClose, 300); };
+
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const fileUrl = citation.sourceUrl ? `${API_URL}${citation.sourceUrl}` : null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={handleClose}>
+      <div className={`absolute inset-0 bg-black/40 transition-opacity duration-300 ${visible ? 'opacity-100' : 'opacity-0'}`} />
+      <div
+        className={`relative flex h-full max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-surface shadow-2xl transition-all duration-300 ease-out ${visible ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0'}`}
+        onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border px-5 py-3 bg-[#F8FAFC] shrink-0">
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-headings truncate">{citation.title}</p>
+            {citation.tag && <p className="text-[10px] text-muted mt-0.5">{citation.tag}</p>}
+          </div>
+          <button onClick={handleClose} className="text-[#94A3B8] hover:text-headings transition-colors shrink-0 ml-3">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+
+        {/* File preview area */}
+        <div className="flex-1 min-h-0 overflow-auto bg-[#E8EBEF]">
+          {!fileUrl ? (
+            <div className="flex h-full items-center justify-center text-center p-8">
+              <p className="text-xs text-[#94A3B8]">File preview not available.</p>
+            </div>
+          ) : citation.fileType === 'image' ? (
+            <div className="flex h-full items-center justify-center p-4">
+              <img
+                src={fileUrl}
+                alt={citation.title}
+                className="max-h-full max-w-full object-contain rounded-lg shadow-xl border border-border"
+                onError={e => { e.target.style.display = 'none'; }}
+              />
+            </div>
+          ) : citation.fileType === 'excel' ? (
+            <div className="flex h-full items-center justify-center p-8 text-center">
+              <div>
+                <svg className="mx-auto mb-3 h-12 w-12 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
+                  <line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><polyline points="10 9 9 9 8 9" />
+                </svg>
+                <p className="text-xs font-medium text-headings">{citation.title}</p>
+                <p className="text-[10px] text-muted mt-1">Spreadsheet files cannot be previewed in-browser.</p>
+                <a href={fileUrl} download
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white hover:bg-primary-hover transition-colors duration-150">
+                  <DownloadIcon />
+                  Download to view
+                </a>
+              </div>
+            </div>
+          ) : (
+            // Default to PDF rendering — file_type is "pdf" for the vast
+            // majority of uploaded receipts/invoices (DOCUMENT_EXTENSIONS is
+            // PDF-only, see pipeline.py), and an <embed> here degrades
+            // gracefully to a browser download prompt if it somehow isn't.
+            <embed src={fileUrl} type="application/pdf" className="w-full h-full" title={citation.title} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function EmptyCitationsPlaceholder() {
   return (
     <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border bg-slate-50/50 p-6 text-center">
@@ -317,16 +418,32 @@ function EmptyCitationsPlaceholder() {
   );
 }
 
-function AssistantMessage({ message }) {
+function AssistantMessage({ message, isActive, onSelectCitations }) {
+  const citationCount = message.citations?.length || 0;
   return (
-    <div className="flex gap-3">
+    <div className="flex gap-4">
       {/* Bot avatar */}
       <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border bg-primary-tint text-primary">
         <BotIcon className="h-6 w-6 object-contain" />
       </div>
 
-      <div className="flex-1 space-y-3">
-        <MarkdownText text={message.text} className="text-xs leading-relaxed text-[#334155]" />
+      <div className="flex-1 min-w-0 space-y-3">
+        <button
+          type="button"
+          onClick={() => onSelectCitations?.(message)}
+          title={citationCount ? 'View this reply\'s sources' : undefined}
+          className={`block w-[calc(100%+0.75rem)] rounded-xl px-3 py-2 -ml-3 text-left transition-colors ${
+            isActive ? 'bg-primary-tint/60 ring-1 ring-primary/30' : 'hover:bg-slate-50'
+          }`}
+        >
+          <MarkdownText text={message.text} className="text-xs leading-relaxed text-[#334155]" />
+          {citationCount > 0 && (
+            <span className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-medium text-muted">
+              <FileTextIcon className="h-3 w-3" />
+              {citationCount} source{citationCount === 1 ? '' : 's'}
+            </span>
+          )}
+        </button>
 
         {message.structured && (
           <div className="rounded-xl border border-border bg-surface shadow-sm overflow-hidden">
@@ -361,19 +478,26 @@ function AssistantMessage({ message }) {
   );
 }
 
-function UserMessage({ message }) {
+function UserMessage({ message, isActive, onSelectCitations }) {
   return (
     <div className="flex justify-end">
-      <div className="max-w-[75%] rounded-2xl rounded-tr-sm bg-headings px-4 py-3">
+      <button
+        type="button"
+        onClick={() => onSelectCitations?.(message)}
+        title="View sources for this question's reply"
+        className={`max-w-[75%] rounded-2xl rounded-tr-sm px-4 py-3 text-left transition-colors ${
+          isActive ? 'bg-headings ring-2 ring-primary/50' : 'bg-headings hover:bg-headings/90'
+        }`}
+      >
         <p className="text-xs leading-relaxed text-white">{message.text}</p>
-      </div>
+      </button>
     </div>
   );
 }
 
 function TypingIndicator() {
   return (
-    <div className="flex gap-3">
+    <div className="flex gap-4">
       <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border bg-primary-tint text-primary">
         <BotIcon className="h-6 w-6 object-contain" />
       </div>
@@ -502,7 +626,19 @@ function CukaiBot() {
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [activeCitations, setActiveCitations] = useState([]);
+  // Which assistant message's citations are currently shown in the side
+  // panel — lets the UI highlight "you're viewing message X's sources" and
+  // gives handleSelectCitations something to compare against. null when no
+  // message has been explicitly selected yet (falls back to the newest
+  // citation-bearing message, same as the old default behavior).
+  const [activeCitationsMessageId, setActiveCitationsMessageId] = useState(null);
   const [activeEntity, setActiveEntity] = useState(null);
+  // Which citation's document is currently open in the in-page preview
+  // modal (see DocumentPreviewModal below) — null when closed. Only ever
+  // set for citations with isInternal:true (a user's own uploaded document
+  // served from this backend's /files/ mount); external LHDN links still
+  // open in a new tab via CitationCard's existing window.open path.
+  const [previewCitation, setPreviewCitation] = useState(null);
   // Backend-issued chat session id — null until the first message is sent
   // (or until an existing session is resolved for this entity), mirroring
   // how a WhatsApp thread gets its ID on its first message.
@@ -561,6 +697,7 @@ function CukaiBot() {
     if (!paramSessionId || !userId) {
       setMessages([]);
       setActiveCitations([]);
+      setActiveCitationsMessageId(null);
       setSessionId(null);
       return;
     }
@@ -574,12 +711,14 @@ function CukaiBot() {
         setMessages(history.messages || []);
         const lastWithCitations = [...(history.messages || [])].reverse().find(m => m.citations?.length);
         setActiveCitations(lastWithCitations?.citations || []);
+        setActiveCitationsMessageId(lastWithCitations?.id ?? null);
       } catch (_) {
         if (cancelled) return;
         // Session id was invalid/stale/not owned by this user — fall back to
         // the same empty/welcome state a brand-new entity would show.
         setMessages([]);
         setActiveCitations([]);
+        setActiveCitationsMessageId(null);
         setSessionId(null);
       }
     })();
@@ -627,6 +766,7 @@ function CukaiBot() {
     setInputValue('');
     setIsTyping(true);
     setActiveCitations([]);
+    setActiveCitationsMessageId(null);
 
     try {
       const res = await sendChatMessage(trimmed, userId, activeEntity?.id ?? null, sessionId);
@@ -647,9 +787,13 @@ function CukaiBot() {
       };
       setMessages((prev) => [...prev, botMsg]);
       setActiveCitations(botMsg.citations);
+      setActiveCitationsMessageId(botMsg.id);
       // Sidebar list needs refreshing either way: a brand-new session must
-      // now appear in it, and an existing one's title/updatedAt (used for
-      // the "Today" grouping and sort order) has just changed too.
+      // now appear in it (already carrying its final AI-generated title —
+      // see main.py's post_chat_message, which resolves the title
+      // synchronously as part of the classification call before this
+      // response is even returned), and an existing one's updatedAt (used
+      // for the "Today" grouping and sort order) has just changed too.
       refreshSessions();
     } catch (err) {
       const errMsg = {
@@ -670,6 +814,7 @@ function CukaiBot() {
     }
     setMessages([]);
     setActiveCitations([]);
+    setActiveCitationsMessageId(null);
     setInputValue('');
     setSessionId(null);
     const params = new URLSearchParams(window.location.search);
@@ -690,6 +835,7 @@ function CukaiBot() {
   function handleNewChat() {
     setMessages([]);
     setActiveCitations([]);
+    setActiveCitationsMessageId(null);
     setInputValue('');
     setSessionId(null);
     const params = new URLSearchParams(window.location.search);
@@ -712,6 +858,7 @@ function CukaiBot() {
       setMessages(history.messages || []);
       const lastWithCitations = [...(history.messages || [])].reverse().find((m) => m.citations?.length);
       setActiveCitations(lastWithCitations?.citations || []);
+      setActiveCitationsMessageId(lastWithCitations?.id ?? null);
       const params = new URLSearchParams(window.location.search);
       params.set('session', history.sessionId);
       window.history.replaceState(null, '', `${window.location.pathname}?${params}`);
@@ -720,6 +867,27 @@ function CukaiBot() {
       // — drop it from the sidebar rather than leaving a dead entry.
       setSessions((prev) => prev.filter((s) => s.sessionId !== targetSessionId));
     }
+  }
+
+  // Message click handler (both UserMessage and AssistantMessage wire into
+  // this): shows THAT turn's own citations in the side panel, instead of
+  // always defaulting to only the newest response's. A user question has no
+  // citations of its own — it's answered by the very next assistant message
+  // in the array — so clicking a user bubble looks one slot ahead to find
+  // the reply it produced. Clicking an assistant message with no citations
+  // (e.g. a profile/small-talk answer that needed no retrieval — see
+  // _classify_and_maybe_answer's fast path) still selects it, correctly
+  // clearing the panel to empty for that turn rather than leaving a
+  // different turn's sources looking active.
+  function handleSelectCitations(clickedMessage) {
+    let target = clickedMessage;
+    if (clickedMessage.role === 'user') {
+      const idx = messages.findIndex((m) => m.id === clickedMessage.id);
+      target = idx !== -1 ? messages[idx + 1] : null;
+    }
+    if (!target || target.role !== 'assistant') return;
+    setActiveCitations(target.citations || []);
+    setActiveCitationsMessageId(target.id);
   }
 
   // Sidebar row's trash icon: deletes ANY session in the list, not just the
@@ -840,6 +1008,17 @@ function CukaiBot() {
   }
 
   const showEmptyState = messages.length === 0;
+  // Once a question has been asked, swap the static "Tax Advisory Assistant"
+  // header for this conversation's own title — same title shown in the
+  // sidebar (see main.py's post_chat_message, which generates it via the
+  // classification call for a brand-new session). Looked up from `sessions`
+  // rather than stored separately, since that list already carries every
+  // session's title and stays in sync via refreshSessions(). Falls back to
+  // the original static label whenever there's no active session yet (the
+  // empty/welcome state) or its title hasn't loaded/generated yet.
+  const activeSessionTitle = !showEmptyState
+    ? sessions.find((s) => s.sessionId === sessionId)?.title
+    : null;
 
   return (
     <main className="h-[calc(100vh-4.1rem)] bg-background font-body flex flex-col overflow-hidden">
@@ -878,8 +1057,10 @@ function CukaiBot() {
                 <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-tint">
                   <BotIcon className="h-6 w-6 object-contain" />
                 </div>
-                <div>
-                  <p className="text-sm font-bold text-headings">Tax Advisory Assistant</p>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-bold text-headings">
+                    {activeSessionTitle || 'Tax Advisory Assistant'}
+                  </p>
                   <p className="text-xs text-muted">Powered by LHDN 2024 Guidelines</p>
                 </div>
               </div>
@@ -930,11 +1111,24 @@ function CukaiBot() {
               )}
 
               {/* Active Messages List */}
-              {(messages || []).map((msg) =>
-                msg.role === 'user'
-                  ? <UserMessage key={msg.id} message={msg} />
-                  : <AssistantMessage key={msg.id} message={msg} />
-              )}
+              {(messages || []).map((msg, i) => {
+                if (msg.role === 'user') {
+                  // A user turn's "active" state mirrors its paired reply's
+                  // (the next message) — there's nothing citation-bearing on
+                  // the question itself to compare against directly.
+                  const reply = messages[i + 1];
+                  const isActive = !!reply && reply.role === 'assistant' && reply.id === activeCitationsMessageId;
+                  return <UserMessage key={msg.id} message={msg} isActive={isActive} onSelectCitations={handleSelectCitations} />;
+                }
+                return (
+                  <AssistantMessage
+                    key={msg.id}
+                    message={msg}
+                    isActive={msg.id === activeCitationsMessageId}
+                    onSelectCitations={handleSelectCitations}
+                  />
+                );
+              })}
 
               {isTyping && <TypingIndicator />}
               <div ref={messagesEndRef} />
@@ -996,13 +1190,17 @@ function CukaiBot() {
                 <BookIcon className="text-primary" />
                 <h2 className="text-sm font-bold text-headings">Active Citations</h2>
               </div>
-              <p className="mb-4 text-xs text-muted shrink-0">Sources referenced in the current response.</p>
+              <p className="mb-4 text-xs text-muted shrink-0">
+                {activeCitationsMessageId && activeCitationsMessageId !== messages[messages.length - 1]?.id
+                  ? 'Sources for the selected message below. Click any other message to switch.'
+                  : 'Sources referenced in the current response. Click an earlier message to view its sources.'}
+              </p>
 
               {/* Scrollable container strictly within the right panel */}
               <div className="flex-1 overflow-y-auto min-h-0 space-y-3 pr-1">
                 {(activeCitations || []).length > 0 ? (
                   activeCitations.map((citation, i) => (
-                    <CitationCard key={i} citation={citation} />
+                    <CitationCard key={i} citation={citation} onPreview={setPreviewCitation} />
                   ))
                 ) : (
                   <EmptyCitationsPlaceholder />
@@ -1021,6 +1219,10 @@ function CukaiBot() {
           </div>
         </div>
       </div>
+
+      {previewCitation && (
+        <DocumentPreviewModal citation={previewCitation} onClose={() => setPreviewCitation(null)} />
+      )}
     </main>
   );
 }
