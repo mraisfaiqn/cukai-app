@@ -303,6 +303,11 @@ function InsightCard({ insight, expanded, onToggle, onAction, onDismiss, onMarkD
           )}
 
           <span className="ml-auto flex items-center gap-1 text-[10px] text-muted">
+            {!isActive && !locked && (
+                <button onClick={(e) => { e.stopPropagation(); onRestore(insight.id); }} 
+                className="ml-1 text-[10px] font-bold underline hover:text-headings"> (Undo)
+                </button>
+              )}
             {timeAgo(insight.createdAt)}
             {isActive && (
               <span
@@ -561,7 +566,6 @@ function InsightsInbox() {
     setInsights(p => p.map(i => i.id === id ? { ...i, state: 'read', dismissReason: undefined, resolvedNote: undefined } : i));
     patchState(id, { state: 'read' });
     showToast('Restored to inbox');
-    setTab('active');
   };
   const toggleExpand = (insight) => {
     const opening = expandedId !== insight.id;
