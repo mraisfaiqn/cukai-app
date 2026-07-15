@@ -2357,6 +2357,26 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
 
     logger.info(f"[Pipeline] Document ID {doc_id} committed successfully.")
 
+    # ── Insight engine ───────────────────────────────────────────────────
+    # Recompute the user's insight feed now that a new document is classified.
+    # This whole pipeline already runs off the request thread (submitted to
+    # main._pipeline_executor at upload time), so the upload response was
+    # never blocked on it — the engine simply runs at the tail of the same
+    # background execution. Deferred import: insights.engine reaches back
+    # into main/pipeline at call time, so importing it at module top here
+    # would be circular. run_insight_engine never raises — an insight
+    # failure must not fail an already-committed document.
+    if document.user_id:
+      from insights.engine import run_insight_engine
+      # assessment_year comes from the DOCUMENT, not the wall clock: a 2025
+      # receipt uploaded in July 2026 must refresh the YA2025 feed, never
+      # pollute YA2026. The engine also enforces the per-YA amendment lock
+      # (filed Form B on record ⇒ analysis skipped, with an audit log entry).
+      run_insight_engine(
+        document.user_id, document.entity_id, "document_classified", db_session_factory,
+        assessment_year=document.year_of_assessment,
+      )
+
   except Exception as e:
     logger.error(f"[Pipeline Error] Document ID {doc_id}: {e}", exc_info=True)
     db.rollback()

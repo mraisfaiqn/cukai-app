@@ -33,6 +33,9 @@ from pipeline import (
   derive_document_role, derive_aggregation_state,
   APPORTIONED_CATEGORIES, resolve_deductible_pct,
 )
+# Registers the Insight/InsightRun tables on the shared Base (so init_db's
+# create_all picks them up) and provides the /api/insights endpoints.
+from insights.router import router as insights_router
 
 _pipeline_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="pipeline")
 
@@ -163,6 +166,8 @@ app.add_middleware(
   allow_methods=["*"],
   allow_headers=["*"],
 )
+
+app.include_router(insights_router)
 
 
 def get_db():
