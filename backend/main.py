@@ -24,6 +24,7 @@ from sqlalchemy import or_
 from database import init_db, SessionLocal
 import models
 from models import Document, FormBProfile, CapitalAsset
+from insights.models import Insight
 from capital_allowance import compute_capital_allowance_for_year
 from utils import parse_amount, money
 from pipeline import (
@@ -1101,6 +1102,17 @@ def delete_document(
   )
   if ca_deleted:
     logger.info(f"[Delete] Removed {ca_deleted} CapitalAsset row(s) linked to document ID {doc_id}.")
+
+  # Wipe out any Insight where the source_document_ids JSONB array contains this doc_id.
+  # Using .contains([doc_id]) ensures we match the PostgreSQL JSONB array logic correctly.
+  ins_deleted = (
+    db.query(Insight)
+    .filter(Insight.source_document_ids.contains([doc_id]))
+    .delete(synchronize_session=False)
+  )
+  if ins_deleted:
+    logger.info(f"[Delete] Removed {ins_deleted} Insight row(s) whose source was document ID {doc_id}.")
+  ######################################
 
   db.delete(doc)
   db.commit()
