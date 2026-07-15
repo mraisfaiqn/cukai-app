@@ -233,6 +233,33 @@ function groupSessionsByRecency(sessions) {
   return groups.filter((g) => g.items.length > 0);
 }
 
+// ── Last-active-session persistence ──────────────────────────────────────
+// Remembers which chat session was open, per entity, so navigating away to
+// another page and back resumes the same conversation instead of resetting
+// to the empty/welcome state — mirrors how localStorage('activeEntityId')
+// already persists the active entity across visits. Scoped per entity
+// (rather than one global key) because each entity has its own independent
+// conversation history — see ChatSession.entity_id and the surrounding
+// effects that reload messages when activeEntity changes.
+//
+// Deliberately NOT read as a fallback inside the `?session=` URL-param
+// effect below when the person has explicitly started a new chat: "New
+// chat" (handleNewChat) and "Clear Chat" (handleClear) both call
+// clearPersistedSessionId so a fresh/cleared conversation stays fresh next
+// time this page loads, rather than silently resurrecting the old session.
+function _sessionStorageKey(entityId) {
+  return `cukaiActiveSessionId:${entityId ?? 'none'}`;
+}
+function getPersistedSessionId(entityId) {
+  return localStorage.getItem(_sessionStorageKey(entityId));
+}
+function setPersistedSessionId(entityId, sessionId) {
+  localStorage.setItem(_sessionStorageKey(entityId), sessionId);
+}
+function clearPersistedSessionId(entityId) {
+  localStorage.removeItem(_sessionStorageKey(entityId));
+}
+
 // ── Sub-components ───────────────────────────────────────────────────────────
 
 /**
@@ -828,18 +855,22 @@ function CukaiBot() {
 
   // Load the conversation for the active entity whenever it changes, so
   // switching entities swaps the chat history instead of carrying over the
-  // previous entity's conversation. This page doesn't yet persist "the last
-  // session_id used for entity X" anywhere the way activeEntityId is
-  // persisted, so switching entities starts a fresh session — the first
-  // message sent against the new entity creates it. Existing sessions can
-  // still be resumed by whatever surface passes a sessionId in via
-  // `?session=` (see the URL-param read below).
+  // previous entity's conversation. Resolves which session to resume in
+  // priority order: an explicit `?session=` URL param first (e.g. a deep
+  // link from elsewhere in the app), then this entity's last-active session
+  // remembered in localStorage (see getPersistedSessionId) — so navigating
+  // away to another page and back resumes the same conversation instead of
+  // resetting to the empty/welcome state. If neither is present (or the
+  // person explicitly started a new chat — see handleNewChat/handleClear,
+  // which clear the persisted id), this falls through to the empty state.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const paramSessionId = params.get('session');
     const userId = localStorage.getItem('userId');
+    const entityId = activeEntity?.id ?? null;
+    const resumeSessionId = paramSessionId || getPersistedSessionId(entityId);
 
-    if (!paramSessionId || !userId) {
+    if (!resumeSessionId || !userId) {
       setMessages([]);
       setActiveCitations([]);
       setActiveCitationsMessageId(null);
@@ -850,21 +881,30 @@ function CukaiBot() {
     let cancelled = false;
     (async () => {
       try {
-        const history = await getChatHistory(paramSessionId, userId);
+        const history = await getChatHistory(resumeSessionId, userId);
         if (cancelled) return;
         setSessionId(history.sessionId);
         setMessages(history.messages || []);
         const lastWithCitations = [...(history.messages || [])].reverse().find(m => m.citations?.length);
         setActiveCitations(lastWithCitations?.citations || []);
         setActiveCitationsMessageId(lastWithCitations?.id ?? null);
+        // Keep the persisted id and URL in sync with whatever actually
+        // resolved — covers both "resumed from localStorage, URL didn't
+        // have it yet" and "resumed from URL, localStorage was stale/unset".
+        setPersistedSessionId(entityId, history.sessionId);
+        const nextParams = new URLSearchParams(window.location.search);
+        nextParams.set('session', history.sessionId);
+        window.history.replaceState(null, '', `${window.location.pathname}?${nextParams}`);
       } catch (_) {
         if (cancelled) return;
         // Session id was invalid/stale/not owned by this user — fall back to
-        // the same empty/welcome state a brand-new entity would show.
+        // the same empty/welcome state a brand-new entity would show, and
+        // stop remembering a session that no longer resolves.
         setMessages([]);
         setActiveCitations([]);
         setActiveCitationsMessageId(null);
         setSessionId(null);
+        clearPersistedSessionId(entityId);
       }
     })();
     return () => { cancelled = true; };
@@ -979,9 +1019,12 @@ function CukaiBot() {
       const res = await sendChatMessage(trimmed, userId, activeEntity?.id ?? null, sessionId);
       // First message of a brand-new conversation returns a freshly created
       // session_id — remember it so every subsequent message in this tab
-      // continues the same thread instead of spawning a new one each time.
+      // continues the same thread instead of spawning a new one each time,
+      // and persist it as this entity's active session so navigating away
+      // and back resumes it too (see getPersistedSessionId).
       if (res.sessionId && res.sessionId !== sessionId) {
         setSessionId(res.sessionId);
+        setPersistedSessionId(activeEntity?.id ?? null, res.sessionId);
         const params = new URLSearchParams(window.location.search);
         params.set('session', res.sessionId);
         window.history.replaceState(null, '', `${window.location.pathname}?${params}`);
@@ -1024,6 +1067,7 @@ function CukaiBot() {
     setActiveCitationsMessageId(null);
     setInputValue('');
     setSessionId(null);
+    clearPersistedSessionId(activeEntity?.id ?? null);
     const params = new URLSearchParams(window.location.search);
     params.delete('session');
     const qs = params.toString();
@@ -1038,13 +1082,18 @@ function CukaiBot() {
   // current session — it just deselects it, so the conversation the person
   // was just in still shows up in the sidebar to come back to. A fresh
   // session is only actually created once they send their first message
-  // (same as any brand-new conversation — see handleSend).
+  // (same as any brand-new conversation — see handleSend). Also clears the
+  // persisted "active session for this entity" (see getPersistedSessionId)
+  // so this explicit choice sticks: returning to this page later — even
+  // after navigating elsewhere in the app first — stays on the new-chat
+  // state instead of silently resuming the deselected conversation.
   function handleNewChat() {
     setMessages([]);
     setActiveCitations([]);
     setActiveCitationsMessageId(null);
     setInputValue('');
     setSessionId(null);
+    clearPersistedSessionId(activeEntity?.id ?? null);
     const params = new URLSearchParams(window.location.search);
     params.delete('session');
     const qs = params.toString();
@@ -1072,6 +1121,7 @@ function CukaiBot() {
       const lastWithCitations = [...(history.messages || [])].reverse().find((m) => m.citations?.length);
       setActiveCitations(lastWithCitations?.citations || []);
       setActiveCitationsMessageId(lastWithCitations?.id ?? null);
+      setPersistedSessionId(activeEntity?.id ?? null, history.sessionId);
       const params = new URLSearchParams(window.location.search);
       params.set('session', history.sessionId);
       window.history.replaceState(null, '', `${window.location.pathname}?${params}`);
