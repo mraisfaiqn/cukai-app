@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import ManageProfile from './ManageProfile';
-import { getPersonalDetails, updateProfile, getAllEntities, createEntity, updateEntity, deleteEntity } from '../../services/api';
+import { getPersonalDetails, updateProfile, getAllEntities, createEntity, updateEntity, deleteEntity, getTaxProfileSummary } from '../../services/api';
+import { currentFilingYear } from '../../data/formB';
 
 /**
  * Remap a backend Entity record to the shape ManageProfile expects.
@@ -61,6 +62,31 @@ function ManageAccount() {
     () => parseInt(localStorage.getItem('activeEntityId') || '0') || null
   );
 
+  // Document-derived tax profile summary for the Generate Forms panel — same
+  // endpoint Overview.jsx uses, scoped to the currently active entity and the
+  // current filing YA. Re-fetches whenever the active entity changes so the
+  // Form B draft updates when the user switches businesses.
+  const [taxSummary, setTaxSummary] = useState(null);
+  const [taxSummaryLoading, setTaxSummaryLoading] = useState(true);
+
+  useEffect(() => {
+    const userId = localStorage.getItem('userId');
+    if (!userId || !activeEntityId) {
+      setTaxSummaryLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setTaxSummaryLoading(true);
+    getTaxProfileSummary(currentFilingYear(), userId, activeEntityId)
+      .then((data) => { if (!cancelled) setTaxSummary(data); })
+      .catch((err) => {
+        console.error('Error fetching tax profile summary:', err);
+        if (!cancelled) setTaxSummary(null);
+      })
+      .finally(() => { if (!cancelled) setTaxSummaryLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeEntityId]);
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -73,8 +99,8 @@ function ManageAccount() {
         if (data) {
           setProfileData({
             fullName:                     data.fullName                     || '',
-            idType:                       data.idType                       || 'ic',
             identificationNo:             data.identificationNo             || '',
+            passportNo:                   data.passportNo                   || '',
             personalTin:                  data.personalTin                  || '',
             citizenship:                  data.citizenship                  || 'MYS',
             gender:                       data.gender                       || 'male',
@@ -83,6 +109,7 @@ function ManageAccount() {
             maritalEventDate:             data.maritalEventDate             || '',
             spouseName:                   data.spouseName                   || '',
             spouseIdNo:                   data.spouseIdNo                   || '',
+            spousePassportNo:             data.spousePassportNo             || '',
             spouseDob:                    data.spouseDob                    || '',
             assessmentType:               data.assessmentType               || 'separate',
             numberOfChildren:             String(data.numberOfChildren      || 0),
@@ -96,9 +123,15 @@ function ManageAccount() {
             refundMethod:                 data.refundMethod                 || 'bank',
             bankName:                     data.bankName                     || '',
             bankAccountNo:                data.bankAccountNo                || '',
+            duitnowIdType:                data.duitnowIdType                || 'ic',
+            employerTin:                  data.employerTin                  || '',
+            taxBorneByEmployer:           data.taxBorneByEmployer           || false,
+            carriesOnEcommerce:           data.carriesOnEcommerce           || false,
+            ecommerceModel:               data.ecommerceModel               || '',
             recordKeeping:                data.recordKeeping                ?? true,
             hasForeignAccounts:           data.hasForeignAccounts           || false,
             rpgtDisposal:                 data.rpgtDisposal                 || false,
+            disposalDeclared:             data.disposalDeclared             || false,
             hasDependentParents:          data.hasDependentParents          || false,
             hasEpfLifeInsurance:          data.hasEpfLifeInsurance          || false,
             hasEducationMedicalInsurance: data.hasEducationMedicalInsurance || false,
@@ -149,8 +182,8 @@ function ManageAccount() {
 
       const res = await updateProfile(userId, {
           fullName:                     updatedProfile.fullName,
-          idType:                       updatedProfile.idType,
           identificationNo:             updatedProfile.identificationNo,
+          passportNo:                   updatedProfile.passportNo,
           personalTin:                  updatedProfile.personalTin,
           citizenship:                  updatedProfile.citizenship,
           gender:                       updatedProfile.gender,
@@ -159,6 +192,7 @@ function ManageAccount() {
           maritalEventDate:             updatedProfile.maritalEventDate  || null,
           spouseName:                   updatedProfile.spouseName,
           spouseIdNo:                   updatedProfile.spouseIdNo,
+          spousePassportNo:             updatedProfile.spousePassportNo,
           spouseDob:                    updatedProfile.spouseDob         || null,
           assessmentType:               updatedProfile.assessmentType,
           numberOfChildren:             parseInt(updatedProfile.numberOfChildren || 0),
@@ -171,9 +205,15 @@ function ManageAccount() {
           refundMethod:                 updatedProfile.refundMethod,
           bankName:                     updatedProfile.bankName,
           bankAccountNo:                updatedProfile.bankAccountNo,
+          duitnowIdType:                updatedProfile.duitnowIdType,
+          employerTin:                  updatedProfile.employerTin,
+          taxBorneByEmployer:           updatedProfile.taxBorneByEmployer,
+          carriesOnEcommerce:           updatedProfile.carriesOnEcommerce,
+          ecommerceModel:               updatedProfile.ecommerceModel,
           recordKeeping:                updatedProfile.recordKeeping,
           hasForeignAccounts:           updatedProfile.hasForeignAccounts,
           rpgtDisposal:                 updatedProfile.rpgtDisposal,
+          disposalDeclared:             updatedProfile.disposalDeclared,
           hasDependentParents:          updatedProfile.hasDependentParents,
           hasEpfLifeInsurance:          updatedProfile.hasEpfLifeInsurance,
           hasEducationMedicalInsurance: updatedProfile.hasEducationMedicalInsurance,
@@ -210,6 +250,12 @@ function ManageAccount() {
       return false;
     } catch (err) {
       console.error('Error creating entity:', err);
+      // The backend rejects a name/SSM number that already exists on this
+      // profile with 409 — surface that exact message so the user knows why,
+      // instead of the generic "please try again" fallback.
+      if (err.response?.status === 409) {
+        return { error: err.response.data?.detail || 'Business already created under this profile.' };
+      }
       return false;
     }
   };
@@ -289,6 +335,8 @@ function ManageAccount() {
             onSaveEntity={handleSaveEntity}
             onDeleteEntity={handleDeleteEntity}
             onSwitchEntity={handleSwitchEntity}
+            taxSummary={taxSummary}
+            taxSummaryLoading={taxSummaryLoading}
           />
         </div>
       </div>

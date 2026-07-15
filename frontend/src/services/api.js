@@ -193,6 +193,15 @@ export const archiveDocument = async (docId, userId = null, entityId = null) => 
   return data;
 };
 
+/** Restore an archived document back to the main list (status: 'completed'). */
+export const unarchiveDocument = async (docId, userId = null, entityId = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.patch(`/api/documents/${docId}/unarchive`, {}, { params });
+  return data;
+};
+
 /**
  * Re-run OCR/classification on a previously failed document using the file
  * already stored on disk. Returns { document_id, status: 'pending' }.
@@ -324,3 +333,39 @@ export const getFormBProfile = async (year, userId = null, entityId = null) => {
   const { data } = await api.get(`/api/profile/form-b/${year}`, { params });
   return data;
 };
+
+// ── Insights ──────────────────────────────────────────────────────────────────
+// The AI insight feed is scoped to a user and (optionally) a single business
+// entity, exactly like documents and the tax profile summary. Pass the same
+// entityId used elsewhere (typically localStorage('activeEntityId')) so
+// switching entities returns that entity's own insights.
+
+/**
+ * Fetch the insight feed for a user, optionally scoped to one entity.
+ * Omit entityId to aggregate across all of the user's entities. `state`
+ * optionally filters by lifecycle (new | read | dismissed | actioned).
+ * Returns an array of insight rows (already shaped like the InsightsInbox card).
+ */
+// export const getInsights = async (userId = null, entityId = null, state = null) => {
+//   const params = {};
+//   if (userId)   params.user_id   = userId;
+//   if (entityId) params.entity_id = entityId;
+//   if (state)    params.state     = state;
+//   const { data } = await api.get('/api/insights', { params });
+//   return data;
+// };
+
+/**
+ * Transition a single insight's lifecycle state (read | dismissed | actioned).
+ * `reason` carries the dismiss reason for "dismiss with memory" so a later
+ * regeneration won't resurrect the card. Returns the updated insight row.
+ */
+// export const updateInsightState = async (insightId, state, reason = null, userId = null, entityId = null) => {
+//   const params = {};
+//   if (userId)   params.user_id   = userId;
+//   if (entityId) params.entity_id = entityId;
+//   const body = { state };
+//   if (reason !== null && reason !== undefined && reason !== '') body.reason = reason;
+//   const { data } = await api.patch(`/api/insights/${insightId}/state`, body, { params });
+//   return data;
+// };

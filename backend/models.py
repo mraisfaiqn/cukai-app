@@ -37,8 +37,12 @@ class Person(Base):
 
     # Personal details
     full_name         = Column(String)
-    id_type           = Column(String, default="ic")
-    identification_no = Column(String)
+    identification_no = Column(String)  # IC number
+    passport_no       = Column(String)  # Passport number — independent of
+                                         # identification_no, both optional.
+                                         # Form B shows whichever the user has
+                                         # actually entered, blank otherwise —
+                                         # no "which type is primary" concept.
     personal_tin      = Column(String)
     citizenship       = Column(String, default="MYS")
     gender            = Column(String)
@@ -49,6 +53,7 @@ class Person(Base):
     marital_event_date      = Column(Date)
     spouse_name             = Column(String)
     spouse_id_no            = Column(String)
+    spouse_passport_no      = Column(String)
     spouse_dob              = Column(Date)
     assessment_type         = Column(String)
     number_of_children      = Column(Integer, default=0)
@@ -60,14 +65,24 @@ class Person(Base):
     correspondence_postcode = Column(String)
     correspondence_city     = Column(String)
     correspondence_state    = Column(String)
-    refund_method           = Column(String, default="bank")
+    refund_method           = Column(String, default="bank")  # "bank" | "duitnow"
     bank_name               = Column(String)
     bank_account_no         = Column(String)
+    duitnow_id_type         = Column(String, default="ic")    # "ic" | "passport" — Form B D11a
+
+    # Other Particulars (Form B Part D) — manually entered here, or (for
+    # employer_tin) also populated from a Form EA upload once that pipeline
+    # wiring exists; not yet connected, see formB.js's dataGaps.
+    employer_tin           = Column(String)
+    tax_borne_by_employer  = Column(Boolean, default=False)
+    carries_on_ecommerce   = Column(Boolean, default=False)
+    ecommerce_model        = Column(String)  # one of ECOMMERCE_MODEL keys in formB.js
 
     # LHDN compliance flags
     record_keeping       = Column(Boolean, default=True)
     has_foreign_accounts = Column(Boolean, default=False)
     rpgt_disposal        = Column(Boolean, default=False)
+    disposal_declared    = Column(Boolean, default=False)  # Form B D12b — only meaningful when rpgt_disposal is True
 
     # Relief category flags — control which Part H questions appear during filing
     has_dependent_parents           = Column(Boolean, default=False)
