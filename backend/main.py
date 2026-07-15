@@ -27,6 +27,7 @@ from sqlalchemy import or_, func
 from database import init_db, SessionLocal
 import models
 from models import Document, FormBProfile, CapitalAsset, BreastfeedingEquipmentClaim, FinancialStatementProfile, Child, CP500Record, OneTimeReliefClaim, ChatSession, ChatMessage, ChatAttachment
+from insights.models import Insight
 from capital_allowance import compute_capital_allowance_for_year
 from carryforward import compute_multi_year_carryforward, MAX_LOSS_CARRYFORWARD_YEARS
 from child_relief import compute_h16_for_children
@@ -1579,6 +1580,16 @@ def delete_document(
     if _row.pl_source_document_id is None and _row.bs_source_document_id is None:
       db.delete(_row)
       logger.info(f"[Delete] Removed empty FinancialStatementProfile row (id={_row.id}) — both halves cleared.")
+
+  # Wipe out any Insight where the source_document_ids JSONB array contains this doc_id.
+  # Using .contains([doc_id]) ensures we match the PostgreSQL JSONB array logic correctly.
+  ins_deleted = (
+    db.query(Insight)
+    .filter(Insight.source_document_ids.contains([doc_id]))
+    .delete(synchronize_session=False)
+  )
+  if ins_deleted:
+    logger.info(f"[Delete] Removed {ins_deleted} Insight row(s) whose source was document ID {doc_id}.")
 
   db.delete(doc)
   db.commit()
