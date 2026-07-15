@@ -318,14 +318,32 @@ export const updateInsightState = async (insightId, state, reason = null, userId
 // WhatsApp thread gets an ID on its first message.
 
 /**
- * List a user's chat sessions, optionally scoped to one entity, most
- * recently updated first. Returns an array of
- * { sessionId, entityId, title, createdAt, updatedAt }.
+ * List a page of a user's chat sessions, optionally scoped to one entity,
+ * most recently updated first. Defaults to the 20 most recent — pass a
+ * larger `offset` to fetch older pages (e.g. when the sidebar list is
+ * scrolled to the bottom) rather than ever pulling a user's entire chat
+ * history in one request.
+ * Returns { sessions: [{ sessionId, entityId, title, createdAt, updatedAt }], hasMore }.
  */
-export const getChatSessions = async (userId, entityId = null) => {
-  const params = { user_id: userId };
+export const getChatSessions = async (userId, entityId = null, limit = 20, offset = 0) => {
+  const params = { user_id: userId, limit, offset };
   if (entityId) params.entity_id = entityId;
   const { data } = await api.get('/api/chat/sessions', { params });
+  return data;
+};
+
+/**
+ * Search a user's chat sessions by both title and message content (unlike
+ * getChatSessions, this isn't paginated with offset/scroll — it's a single
+ * ranked results list, most-recently-updated first). Pass an empty/whitespace
+ * query and the caller should skip calling this entirely rather than hitting
+ * the backend with it.
+ * Returns { results: [{ sessionId, entityId, title, updatedAt, matchedIn: 'title'|'message', snippet }] }.
+ */
+export const searchChatSessions = async (query, userId, entityId = null, limit = 20) => {
+  const params = { q: query, user_id: userId, limit };
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.get('/api/chat/search', { params });
   return data;
 };
 

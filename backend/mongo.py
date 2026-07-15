@@ -225,6 +225,7 @@ def insert_chunk(
   source_url: Optional[str] = None,
   page_number: Optional[int] = None,
   file_type: Optional[str] = None,
+  starts_mid_sentence: bool = False,
 ) -> str:
   """
   Insert one embedded chunk. Returns the inserted _id as a string.
@@ -249,6 +250,17 @@ def insert_chunk(
   "excel") tells the frontend which in-page renderer to use — this lets
   CukaiBot preview a user's own uploaded document inline instead of only
   citing it by name, without a second Postgres round-trip.
+
+  `starts_mid_sentence` comes straight from embeddings.chunk_text()'s Chunk
+  tuple (see its docstring) — True when this chunk's start position could
+  not be snapped to a sentence/clause boundary and almost certainly begins
+  mid-sentence. Persisted so main.py's _chunks_to_citations() can prefix a
+  citation snippet with "…" without re-deriving the boundary decision from
+  scratch at read time (which would only be able to guess, not know). Chunks
+  ingested before this field existed simply default to False on read (see
+  the .get() in _chunks_to_citations) — under-flagging a few pre-existing
+  chunks as "clean" is a much smaller cosmetic issue than mis-flagging new
+  ones, and re-seeding will backfill the real value anyway.
   """
   from datetime import datetime, timezone
 
@@ -276,6 +288,7 @@ def insert_chunk(
     "source_url": source_url,
     "page_number": page_number,
     "file_type": file_type,
+    "starts_mid_sentence": starts_mid_sentence,
 
     "created_at": datetime.now(timezone.utc),
   })
@@ -420,6 +433,7 @@ def vector_search(
         "source_url": 1,
         "page_number": 1,
         "file_type": 1,
+        "starts_mid_sentence": 1,
         "score": {"$meta": "vectorSearchScore"},
       }
     },

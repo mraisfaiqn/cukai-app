@@ -367,10 +367,11 @@ def ingest_resource(entry: dict, db, force: bool = False) -> None:
     search_cursor = 0
     for chunk in chunks:
       # chunk_text() strips each chunk, so search for a normalized/whitespace
-      # -insensitive match isn't needed: `chunk` is a verbatim substring of
-      # `text` (post-strip), except right at start=0 where .strip() may have
-      # trimmed leading text — find() still locates it correctly either way.
-      found_at = text.find(chunk, search_cursor)
+      # -insensitive match isn't needed: `chunk.text` is a verbatim substring
+      # of `text` (post-strip), except right at start=0 where .strip() may
+      # have trimmed leading text — find() still locates it correctly either
+      # way.
+      found_at = text.find(chunk.text, search_cursor)
       if found_at == -1:
         # Extremely defensive fallback: shouldn't happen since every chunk
         # is built as a literal slice of `text`, but if it ever does, don't
@@ -415,7 +416,7 @@ def ingest_resource(entry: dict, db, force: bool = False) -> None:
         # progress survives a later chunk's failure. Runs inside
         # embed_texts()'s loop, right after each individual embed succeeds.
         mongo.insert_chunk(
-          text=remaining_chunks[i],
+          text=remaining_chunks[i].text,
           embedding=vector,
           source="external_resource",
           external_resource_id=row.id,
@@ -425,9 +426,14 @@ def ingest_resource(entry: dict, db, force: bool = False) -> None:
           category=row.category,
           source_url=row.source_url,
           page_number=remaining_page_numbers[i],
+          starts_mid_sentence=remaining_chunks[i].starts_mid_sentence,
         )
 
-      embed_texts(remaining_chunks, task_type="retrieval_document", on_chunk_done=_on_chunk_embedded)
+      embed_texts(
+        [c.text for c in remaining_chunks],
+        task_type="retrieval_document",
+        on_chunk_done=_on_chunk_embedded,
+      )
 
     row.status = "embedded"
     row.chunk_count = len(chunks)

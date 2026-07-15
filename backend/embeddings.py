@@ -34,6 +34,7 @@ large document in one run instead of failing partway through.
 import logging
 import os
 import time
+from typing import NamedTuple
 
 from google import genai
 from google.genai import types
@@ -86,7 +87,24 @@ def _get_client() -> "genai.Client":
 # provisos, so semicolons and newlines are included alongside ".": a chunk
 # that starts right after a "; " reads far more naturally than one that
 # starts mid-clause, even though it isn't a full stop.
-_SENTENCE_END_MARKERS = (". ", ".\n", "? ", "! ", ";\n", "; ", "\n\n", "\n")
+#
+# Split into two tiers because they answer different questions:
+#   - _GENUINE_SENTENCE_END_MARKERS: actually mark the end of a sentence or
+#     clause. Snapping here means the next chunk starts a new sentence.
+#   - _LAYOUT_ONLY_MARKERS: a bare "\n" is extremely common in PDF-extracted
+#     text purely from line-wrapping *within* a sentence/paragraph (a line
+#     break the original PDF layout introduced, not the author's grammar).
+#     It's still worth snapping to — it reads better than a raw mid-word cut
+#     — but snapping to one does NOT mean the resulting chunk starts a new
+#     sentence, so it must not count as "clean" for starts_mid_sentence.
+#     Without this split, real PDF text (which has a bare "\n" every few
+#     lines) satisfies _rfind_sentence_end() almost everywhere, and
+#     starts_mid_sentence would almost never fire even on chunks that
+#     plainly start mid-sentence — this was caught by testing against real
+#     ingested PDFs, not a hypothetical.
+_GENUINE_SENTENCE_END_MARKERS = (". ", ".\n", "? ", "! ", ";\n", "; ", "\n\n")
+_LAYOUT_ONLY_MARKERS = ("\n",)
+_SENTENCE_END_MARKERS = _GENUINE_SENTENCE_END_MARKERS + _LAYOUT_ONLY_MARKERS
 
 
 def _rfind_sentence_end(text: str, start: int, end: int) -> int:
@@ -106,7 +124,80 @@ def _rfind_sentence_end(text: str, start: int, end: int) -> int:
   return best
 
 
-def chunk_text(text: str, chunk_size: int = CHUNK_SIZE_CHARS, overlap: int = CHUNK_OVERLAP_CHARS) -> list[str]:
+
+
+def _immediately_preceded_by_genuine_sentence_end(text: str, offset: int) -> bool:
+  """
+  True if `offset` in `text` sits right after a genuine sentence/clause-end
+  marker (see _GENUINE_SENTENCE_END_MARKERS) — allowing for the fact that
+  chunk_text() strips each chunk, so the marker's trailing whitespace may no
+  longer be directly adjacent to `offset` in the stripped chunk, but it IS
+  still directly adjacent to `offset` in the original, unstripped `text`.
+  Checked by scanning a small window immediately before `offset` for any
+  marker whose (start + len) lands within that window — i.e. the marker
+  ends at or before `offset` with only whitespace between, not by requiring
+  an exact end==offset match, since e.g. ". " followed by extra spaces or a
+  stripped newline would otherwise be missed.
+  """
+  # Longest genuine marker is 2 chars ("; ", ".\n", "\n\n" etc.) — look back
+  # a small, generous window to also tolerate a few extra whitespace chars
+  # between the marker and offset (e.g. ".  \n" before a stripped chunk).
+  # A larger window than the marker length is used specifically so a
+  # multi-blank-line paragraph break (e.g. "... text.  \n \n \n   " before a
+  # PDF page-header artifact) is still visible even with several stray
+  # spaces mixed into the blank lines — real PDF extraction output.
+  window_start = max(0, offset - 12)
+  window = text[window_start:offset]
+  if not window.strip() and "\n" not in window:
+    # Truly nothing here (start of text, or all spaces with no newline at
+    # all) — nothing to check.
+    return False
+
+  # Blank-line paragraph break: two or more newlines in the window, however
+  # much stray whitespace sits between/around them. Checked BEFORE the
+  # str.rstrip()-based marker check below, since rstrip() strips ALL
+  # trailing whitespace including newlines — a window that's e.g.
+  # " \n \n \n  " (a genuine multi-blank-line break) rstrips down to "",
+  # which would otherwise look indistinguishable from "no marker present"
+  # and wrongly return False. This was a real bug caught by testing against
+  # real ingested PDFs, not a hypothetical.
+  if window.count("\n") >= 2:
+    return True
+
+  stripped = window.rstrip()
+  if not stripped:
+    return False
+  for marker in _GENUINE_SENTENCE_END_MARKERS:
+    marker_bare = marker.rstrip()  # e.g. ". " -> ".", "; " -> ";"
+    if marker_bare and stripped.endswith(marker_bare):
+      return True
+  return False
+
+
+class Chunk(NamedTuple):
+  """
+  One piece produced by chunk_text(). `starts_mid_sentence` records how this
+  chunk's *start* boundary was decided, not just what the text looks like —
+  see the note below on why that distinction matters.
+  """
+  text: str
+  # True when this chunk's start position could NOT be snapped to a sentence
+  # /clause end (_SENTENCE_END_MARKERS) and fell back to a whitespace snap or
+  # a raw mid-word cut instead — i.e. the chunk almost certainly begins
+  # mid-sentence. False for the very first chunk of a text (nothing precedes
+  # it to be "mid" of) and for any chunk whose start landed cleanly just past
+  # a sentence/clause-ending marker.
+  #
+  # Computed from the *snapping decision itself* (exact) rather than guessed
+  # later from surface features of the resulting string, e.g. "does it start
+  # with a lowercase letter" (a heuristic that misfires on proper nouns,
+  # acronyms, digits, quotes, etc.). This flag is True if and only if
+  # chunk_text() itself could not find a sentence boundary to start the
+  # chunk on, so a downstream citation UI can trust it completely.
+  starts_mid_sentence: bool
+
+
+def chunk_text(text: str, chunk_size: int = CHUNK_SIZE_CHARS, overlap: int = CHUNK_OVERLAP_CHARS) -> list[Chunk]:
   """
   Split text into overlapping chunks by character count, snapped to sentence
   boundaries where possible (falling back to word boundaries, then a raw cut
@@ -129,28 +220,54 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE_CHARS, overlap: int = CHU
   marker exists in the window — e.g. a run of numbered list fragments with
   no punctuation — and finally to a raw cut if there isn't even a space,
   so a pathological input (one giant unbroken token) still terminates.
+
+  Returns a list of Chunk(text, starts_mid_sentence) rather than plain
+  strings. starts_mid_sentence is determined by directly checking, at each
+  chunk's actual starting offset in `text`, whether a genuine sentence/
+  clause-ending marker (see _GENUINE_SENTENCE_END_MARKERS — "." "?" "!" ";"
+  or a blank line, but NOT a bare "\\n") immediately precedes it. This is
+  checked independently per chunk against its real position, rather than
+  inferred from *how* the boundary-snapping loop below reached that
+  position — the loop's own snap can land on a bare "\\n" (a PDF line-wrap,
+  not a sentence end; see _LAYOUT_ONLY_MARKERS), and for real PDF text that
+  happens on nearly every boundary, so tracking "was some marker matched"
+  through the loop would call almost everything clean. Checking the actual
+  text at the actual offset avoids that trap entirely.
   """
   text = (text or "").strip()
   if not text:
     return []
   if len(text) <= chunk_size:
-    return [text]
+    return [Chunk(text=text, starts_mid_sentence=False)]
 
-  chunks = []
+  chunks: list[Chunk] = []
   start = 0
   while start < len(text):
     end = min(start + chunk_size, len(text))
 
     if end < len(text):
-      # Prefer snapping to a sentence/clause end; fall back to whitespace;
-      # fall back to the raw cut if neither is available in this window.
+      # Prefer snapping to a sentence/clause end (genuine or layout-only);
+      # fall back to whitespace; fall back to the raw cut if neither is
+      # available in this window. This placement logic is unchanged from
+      # before — it still treats a bare "\n" as an acceptable *chunking*
+      # boundary, since it reads better than a raw mid-word cut even though
+      # it isn't a real sentence end.
       snapped_end = _rfind_sentence_end(text, start, end)
       if snapped_end <= start:
         snapped_end = text.rfind(" ", start, end)
       if snapped_end > start:
         end = snapped_end
 
-    chunks.append(text[start:end].strip())
+    chunk_str = text[start:end].strip()
+    if chunk_str:
+      # Where does chunk_str actually start in `text`? .strip() above may
+      # have trimmed leading whitespace/newlines off of text[start:end], so
+      # re-locate the real start rather than assuming it's exactly `start`.
+      real_start = text.find(chunk_str, start)
+      if real_start == -1:
+        real_start = start  # defensive; shouldn't happen, chunk_str is a slice of text
+      starts_mid = real_start > 0 and not _immediately_preceded_by_genuine_sentence_end(text, real_start)
+      chunks.append(Chunk(text=chunk_str, starts_mid_sentence=starts_mid))
 
     if end >= len(text):
       break
@@ -174,9 +291,10 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE_CHARS, overlap: int = CHU
     # forever — this was a real bug caught by testing, not a hypothetical.
     if next_start <= start:
       next_start = end
+
     start = next_start
 
-  return [c for c in chunks if c]
+  return chunks
 
 
 # gemini-embedding-001 supports task_type directly (unlike gemini-embedding-2,

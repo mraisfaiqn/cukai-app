@@ -2085,7 +2085,7 @@ def embed_document_for_rag(document: "Document") -> None:
     if not chunks:
       return
 
-    vectors = embed_texts(chunks, task_type="retrieval_document")
+    vectors = embed_texts([c.text for c in chunks], task_type="retrieval_document")
 
     # Relative URL into this backend's own /files/ static mount (see main.py's
     # STORAGE_DIR mount) — deliberately NOT an absolute host:port URL, so it
@@ -2105,7 +2105,7 @@ def embed_document_for_rag(document: "Document") -> None:
 
     for chunk, vector in zip(chunks, vectors):
       mongo_store.insert_chunk(
-        text=chunk,
+        text=chunk.text,
         embedding=vector,
         user_id=document.user_id,
         entity_id=document.entity_id,
@@ -2115,6 +2115,7 @@ def embed_document_for_rag(document: "Document") -> None:
         category=document.category,
         source_url=source_url,
         file_type=file_type,
+        starts_mid_sentence=chunk.starts_mid_sentence,
       )
 
     logger.info(f"[Pipeline] Embedded {len(chunks)} chunk(s) for Document ID {document.id} into MongoDB.")

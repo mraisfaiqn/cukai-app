@@ -2396,6 +2396,24 @@ def _generate_chat_answer_with_retrieval(
 _EXTERNAL_RESOURCE_FALLBACK_URL = "https://www.hasil.gov.my/perundangan/akta/"
 
 
+def _snippet_for_chunk(c: dict) -> str:
+  """
+  Build the citation snippet text, prefixing "..." when the chunk's start
+  could not be snapped to a sentence/clause boundary during ingestion (see
+  embeddings.chunk_text()'s Chunk.starts_mid_sentence and mongo.insert_chunk).
+  This is read from a flag stored at ingestion time, not re-detected here —
+  by the time a chunk is just `c.get("text")`, there's no reliable way to
+  tell "starts mid-sentence" apart from "happens to start with a lowercase
+  acronym/proper noun/number", so guessing from the string alone would both
+  miss real cases and misfire on fine ones. Chunks ingested before this flag
+  existed default to False (not flagged) until re-seeded.
+  """
+  text = c.get("text", "")
+  if text and c.get("starts_mid_sentence"):
+    return f"...{text}"
+  return text
+
+
 def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
   """Shape MongoDB chunks into the CitationCard format the frontend already
   renders (tag/title/snippet/verified/sourceUrl) — see CitationCard in
@@ -2425,6 +2443,10 @@ def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
     - fileType: "pdf" | "image" | "excel" for document chunks, so the
       frontend's preview modal knows which renderer to use without a second
       Postgres lookback (mirrors CukaiAccount.jsx's doc.fileType).
+
+  snippet is built via _snippet_for_chunk(), which prefixes "..." when the
+  chunk's stored starts_mid_sentence flag is set — see that helper and
+  embeddings.chunk_text()'s Chunk docstring for where the flag comes from.
   """
   citations = []
   for c in chunks:
@@ -2456,7 +2478,7 @@ def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
     citations.append({
       "tag": tag,
       "title": title,
-      "snippet": c.get("text", ""),
+      "snippet": _snippet_for_chunk(c),
       "verified": f"Similarity {round(c['score'] * 100)}%" if c.get("score") is not None else None,
       "sourceUrl": source_url,
       "pageNumber": page_number,
@@ -2471,25 +2493,182 @@ def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
 def list_chat_sessions(
   user_id:   str            = Query(..., description="Owner of the sessions."),
   entity_id: Optional[int] = Query(default=None),
+  limit:     int           = Query(default=20, ge=1, le=100, description="Page size — defaults to the sidebar's 20-most-recent window."),
+  offset:    int           = Query(default=0, ge=0, description="How many sessions (most-recent-first) to skip before this page."),
   db: Session = Depends(get_db),
 ):
-  """List a user's chat sessions (most recently updated first), optionally
-  scoped to one entity — mirrors getAllEntities-style listing elsewhere."""
+  """List a page of a user's chat sessions (most recently updated first),
+  optionally scoped to one entity — mirrors getAllEntities-style listing
+  elsewhere, but paginated so the sidebar only ever pulls in 20 sessions at
+  a time instead of a user's entire chat history on every page load.
+
+  Returns { sessions: [...], hasMore }: hasMore tells the frontend whether
+  scrolling to the bottom of the list should trigger another page fetch
+  (offset + limit) or whether it's already seen every session."""
   _verify_entity_owned(db, user_id, entity_id)
   q = db.query(ChatSession).filter(ChatSession.user_id == user_id)
   if entity_id is not None:
     q = q.filter(ChatSession.entity_id == entity_id)
-  sessions = q.order_by(ChatSession.updated_at.desc()).all()
-  return [
+  q = q.order_by(ChatSession.updated_at.desc())
+  # Fetch one extra row past the page size purely to answer "is there more?"
+  # without a second COUNT(*) query — trimmed back off before returning.
+  page = q.offset(offset).limit(limit + 1).all()
+  has_more = len(page) > limit
+  sessions = page[:limit]
+  return {
+    "sessions": [
+      {
+        "sessionId": s.session_id,
+        "entityId": s.entity_id,
+        "title": s.title,
+        "createdAt": s.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+        "updatedAt": s.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
+      }
+      for s in sessions
+    ],
+    "hasMore": has_more,
+  }
+
+
+def _excerpt(text: str, query: str, radius: int = 60) -> str:
+  """Slice out a short window of `text` centred on the first case-insensitive
+  match of `query`, so a matched message's whole (potentially long) content
+  doesn't have to be shipped to the client just to show why it matched —
+  mirrors the small "...snippet..." preview pattern search UIs commonly use."""
+  lower_text, lower_query = text.lower(), query.lower()
+  idx = lower_text.find(lower_query)
+  if idx == -1:
+    return text[:radius * 2].strip()
+  start = max(0, idx - radius)
+  end = min(len(text), idx + len(query) + radius)
+  snippet = text[start:end].strip()
+  if start > 0:
+    snippet = f"...{snippet}"
+  if end < len(text):
+    snippet = f"{snippet}..."
+  return snippet
+
+
+def _numeric_search_variants(q: str) -> list[str]:
+  """If `q` is a plain number (optionally with a decimal part, e.g. '7000' or
+  '7000.50'), also return the comma-grouped form ('7,000' / '7,000.50') a
+  receipt amount would actually be stored as (see the RM-formatted amounts
+  in citation snippets/message content — e.g. 'RM 7,000.00'). ILIKE can't
+  skip over a comma the query doesn't have, so without this a search for
+  '7000' would silently miss 'RM7,000' in stored content — exactly the kind
+  of plain-number search someone would type first.
+  Returns just [q] unchanged for anything that isn't a plain number, so
+  ordinary text searches ("Section 33", "broadband") are untouched."""
+  m = re.fullmatch(r"(\d+)(\.\d+)?", q.strip())
+  if not m:
+    return [q]
+  int_part, dec_part = m.group(1), m.group(2) or ""
+  if len(int_part) <= 3:
+    return [q]  # no thousands separator possible yet, nothing to add
+  grouped = f"{int(int_part):,}{dec_part}"
+  return [q, grouped] if grouped != q else [q]
+
+
+@app.get("/api/chat/search")
+def search_chat_sessions(
+  q:         str            = Query(..., min_length=1, description="Search text, matched case-insensitively."),
+  user_id:   str            = Query(..., description="Owner of the sessions."),
+  entity_id: Optional[int] = Query(default=None),
+  limit:     int           = Query(default=20, ge=1, le=100),
+  db: Session = Depends(get_db),
+):
+  """Search a user's chat sessions by BOTH title and message content (the
+  ChatGPT-style behaviour, not Claude's title-only search) — session titles
+  here are short AI-generated summaries (see post_chat_message's title
+  resolution), which don't capture specific figures, vendor names, or ITA
+  section numbers a person might actually remember and search for, so
+  content has to be searched too for this to be useful in a tax context.
+
+  A plain numeric query also matches its comma-grouped form in content (see
+  _numeric_search_variants) — e.g. searching "7000" finds "RM7,000" — since
+  people naturally search amounts without typing the separator LHDN receipts
+  are formatted with.
+
+  Returns one row per matching session (deduped even if multiple messages
+  in the same session match), most-recently-updated first, each carrying a
+  `matchedIn` flag ('title' | 'message') and a short `snippet` showing
+  where the match was found — so the UI can show *why* a result matched,
+  not just that it did."""
+  _verify_entity_owned(db, user_id, entity_id)
+  variants = _numeric_search_variants(q)
+  like_patterns = [f"%{v}%" for v in variants]
+
+  base = db.query(ChatSession).filter(ChatSession.user_id == user_id)
+  if entity_id is not None:
+    base = base.filter(ChatSession.entity_id == entity_id)
+
+  # Title matches: cheap, single-table query. or_() across variants so a
+  # numeric query still matches either the plain or comma-grouped form.
+  title_hits = base.filter(or_(*[ChatSession.title.ilike(p) for p in like_patterns])).all()
+  title_hit_ids = {s.session_id for s in title_hits}
+
+  # Content matches: sessions (scoped the same way) that have at least one
+  # message whose content matches any variant — joined through chat_messages
+  # rather than loading every message, since only the matching session + one
+  # example message is needed for the snippet.
+  content_session_ids = {
+    session_id
+    for (session_id,) in (
+      base.with_entities(ChatSession.session_id)
+      .join(ChatMessage, ChatMessage.session_id == ChatSession.session_id)
+      .filter(or_(*[ChatMessage.content.ilike(p) for p in like_patterns]))
+      .distinct()
+      .all()
+    )
+    if session_id not in title_hit_ids  # title match already wins for this session
+  }
+
+  content_sessions = (
+    base.filter(ChatSession.session_id.in_(content_session_ids)).all()
+    if content_session_ids else []
+  )
+
+  # One representative matching message per content-matched session, for the snippet.
+  example_messages = {}
+  if content_session_ids:
+    matches = (
+      db.query(ChatMessage)
+      .filter(ChatMessage.session_id.in_(content_session_ids), or_(*[ChatMessage.content.ilike(p) for p in like_patterns]))
+      .order_by(ChatMessage.created_at.asc())
+      .all()
+    )
+    for m in matches:
+      example_messages.setdefault(m.session_id, m.content)
+
+  results = [
     {
       "sessionId": s.session_id,
       "entityId": s.entity_id,
       "title": s.title,
-      "createdAt": s.created_at.strftime("%Y-%m-%d %H:%M:%S"),
       "updatedAt": s.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
+      "matchedIn": "title",
+      "snippet": s.title or "New conversation",
     }
-    for s in sessions
+    for s in title_hits
+  ] + [
+    {
+      "sessionId": s.session_id,
+      "entityId": s.entity_id,
+      "title": s.title,
+      "updatedAt": s.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
+      "matchedIn": "message",
+      # Excerpt around whichever variant actually appears in this message —
+      # the plain query might not be the one that matched (e.g. content has
+      # "7,000" but not "7000").
+      "snippet": _excerpt(
+        example_messages.get(s.session_id, ""),
+        next((v for v in variants if v.lower() in example_messages.get(s.session_id, "").lower()), q),
+      ),
+    }
+    for s in content_sessions
   ]
+  results.sort(key=lambda r: r["updatedAt"], reverse=True)
+  return {"results": results[:limit]}
 
 
 @app.get("/api/chat/{session_id}/history")

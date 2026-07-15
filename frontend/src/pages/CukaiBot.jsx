@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { getAllEntities, getChatSessions, getChatHistory, sendChatMessage, deleteChatSession } from '../services/api';
+import { getAllEntities, getChatSessions, searchChatSessions, getChatHistory, sendChatMessage, deleteChatSession } from '../services/api';
 import cukaiBot from '../assets/cukaibot-icon.png';
 // import { jsPDF } from 'jspdf';
 
@@ -127,6 +127,20 @@ const MessageSquareIcon = ({ className = 'h-4 w-4' }) => (
   </svg>
 );
 
+const SearchIcon = ({ className = 'h-4 w-4' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="11" cy="11" r="8" />
+    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+  </svg>
+);
+
+const XIcon = ({ className = 'h-3.5 w-3.5' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="18" y1="6" x2="6" y2="18" />
+    <line x1="6" y1="6" x2="18" y2="18" />
+  </svg>
+);
+
 // ── Mock conversation data ───────────────────────────────────────────────────
 // No longer wired up — kept as reference/fallback. The real conversation now
 // comes from GET /api/chat/{session_id}/history via getChatHistory() in the
@@ -162,7 +176,7 @@ const MOCK_MESSAGES_BY_ENTITY = {
         ],
       },
       citations: [
-        { tag: 'ITA 1967', title: 'Section 46(1)(c)', snippet: '"medical treatment, special needs or carer expenses expended in that basis year by that individual for his…"', verified: 'Verified against 2024 Gazette' },
+        { tag: 'ITA 1967', title: 'Section 46(1)(c)', snippet: '"medical treatment, special needs or carer expenses expended in that basis year by that individual for his..."', verified: 'Verified against 2024 Gazette' },
         { tag: 'PUBLIC RULING', title: 'PR No. 11/2021', snippet: 'Guidelines on the deduction for expenses in relation to medical treatment for parents.' },
       ],
     },
@@ -432,11 +446,11 @@ function AssistantMessage({ message, isActive, onSelectCitations }) {
           type="button"
           onClick={() => onSelectCitations?.(message)}
           title={citationCount ? 'View this reply\'s sources' : undefined}
-          className={`block w-[calc(100%+0.75rem)] rounded-xl px-3 py-2 -ml-3 text-left transition-colors ${
+          className={`block w-[calc(100%+0.75rem)] select-text rounded-xl px-3 py-2 -ml-3 text-left transition-colors ${
             isActive ? 'bg-primary-tint/60 ring-1 ring-primary/30' : 'hover:bg-slate-50'
           }`}
         >
-          <MarkdownText text={message.text} className="text-xs leading-relaxed text-[#334155]" />
+          <MarkdownText text={message.text} className="select-text text-xs leading-relaxed text-[#334155]" />
           {citationCount > 0 && (
             <span className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-medium text-muted">
               <FileTextIcon className="h-3 w-3" />
@@ -485,11 +499,13 @@ function UserMessage({ message, isActive, onSelectCitations }) {
         type="button"
         onClick={() => onSelectCitations?.(message)}
         title="View sources for this question's reply"
-        className={`max-w-[75%] rounded-2xl rounded-tr-sm px-4 py-3 text-left transition-colors ${
-          isActive ? 'bg-headings ring-2 ring-primary/50' : 'bg-headings hover:bg-headings/90'
+        className={`max-w-[75%] select-text rounded-2xl rounded-tr-sm border px-4 py-3 text-left shadow-sm transition-colors ${
+          isActive
+            ? 'border-primary/40 bg-primary-tint ring-2 ring-primary/50'
+            : 'border-border bg-surface hover:bg-slate-50'
         }`}
       >
-        <p className="text-xs leading-relaxed text-white">{message.text}</p>
+        <p className="select-text text-xs leading-relaxed text-headings">{message.text}</p>
       </button>
     </div>
   );
@@ -518,9 +534,25 @@ function TypingIndicator() {
 // Claude's own sidebar collapse behaves.
 
 function ChatHistorySidebar({
-  isOpen, onToggle, sessions, isLoading, activeSessionId, onSelectSession, onNewChat, onDeleteSession,
+  isOpen, onToggle, sessions, isLoading, isLoadingMore, hasMore, onLoadMore, activeSessionId, onSelectSession, onNewChat, onDeleteSession,
+  searchQuery, onSearchQueryChange, searchResults, searchLoading, isSearchActive,
 }) {
   const grouped = groupSessionsByRecency(sessions);
+
+  // Fires onLoadMore once the list is scrolled within ~80px of its bottom —
+  // the same "near the end" threshold pattern most infinite-scroll lists
+  // use, so the next page starts fetching a little before the user actually
+  // hits the hard bottom edge rather than after, keeping the scroll feeling
+  // continuous instead of pausing on a visible edge each time. Only relevant
+  // to the normal paginated list — search results aren't paginated, so this
+  // is a no-op (onLoadMore isn't called) while a search is active.
+  function handleScroll(e) {
+    if (isSearchActive) return;
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+    if (scrollHeight - scrollTop - clientHeight < 80) {
+      onLoadMore?.();
+    }
+  }
 
   // Collapsed rail: just the toggle and a "new chat" icon button, both still
   // reachable with one click — collapsing shouldn't strand the user.
@@ -570,9 +602,60 @@ function ChatHistorySidebar({
         </button>
       </div>
 
-      {/* Session list */}
-      <div className="flex-1 overflow-y-auto min-h-0 px-2 py-3 space-y-4">
-        {isLoading ? (
+      {/* Search box — matches both session titles and message content (see
+          searchChatSessions), since titles alone are short AI-generated
+          summaries that won't capture a specific figure or vendor name. */}
+      <div className="px-3 pt-2.5 shrink-0">
+        <div className="flex items-center gap-2 rounded-lg border border-border bg-slate-50/50 px-2.5 py-2 transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/10">
+          <SearchIcon className="h-3.5 w-3.5 shrink-0 text-muted" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => onSearchQueryChange(e.target.value)}
+            placeholder="Search chats…"
+            className="min-w-0 flex-1 bg-transparent text-xs text-headings placeholder-[#94A3B8] outline-none"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => onSearchQueryChange('')}
+              title="Clear search"
+              className="shrink-0 rounded-md p-0.5 text-slate-300 transition-colors hover:text-headings"
+            >
+              <XIcon />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Session list — only the current page (20 most recent, then 20 more
+          per scroll-triggered fetch) is ever in `sessions`, never the user's
+          full chat history at once. While a search is active, this renders
+          `searchResults` instead (a single ranked list, not paginated). */}
+      <div className="flex-1 overflow-y-auto min-h-0 px-2 py-3 space-y-4" onScroll={handleScroll}>
+        {isSearchActive ? (
+          searchLoading && searchResults.length === 0 ? (
+            <p className="px-2 text-xs text-muted">Searching…</p>
+          ) : searchResults.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 px-3 py-8 text-center">
+              <SearchIcon className="h-6 w-6 text-slate-300" />
+              <p className="text-xs text-muted">No conversations match "{searchQuery.trim()}".</p>
+            </div>
+          ) : (
+            <div className="space-y-0.5">
+              {searchResults.map((s) => (
+                <SessionRow
+                  key={s.sessionId}
+                  session={s}
+                  isActive={s.sessionId === activeSessionId}
+                  onSelectSession={onSelectSession}
+                  onDeleteSession={onDeleteSession}
+                  matchedIn={s.matchedIn}
+                  snippet={s.snippet}
+                />
+              ))}
+            </div>
+          )
+        ) : isLoading ? (
           <p className="px-2 text-xs text-muted">Loading…</p>
         ) : grouped.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 px-3 py-8 text-center">
@@ -580,41 +663,79 @@ function ChatHistorySidebar({
             <p className="text-xs text-muted">No conversations yet. Ask a question to start one.</p>
           </div>
         ) : (
-          grouped.map((group) => (
-            <div key={group.label}>
-              <p className="px-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-muted">{group.label}</p>
-              <div className="space-y-0.5">
-                {group.items.map((s) => {
-                  const isActive = s.sessionId === activeSessionId;
-                  return (
-                    <div
+          <>
+            {grouped.map((group) => (
+              <div key={group.label}>
+                <p className="px-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-muted">{group.label}</p>
+                <div className="space-y-0.5">
+                  {group.items.map((s) => (
+                    <SessionRow
                       key={s.sessionId}
-                      onClick={() => onSelectSession(s.sessionId)}
-                      className={`group flex items-center gap-1.5 rounded-lg px-2 py-2 cursor-pointer transition-colors ${
-                        isActive ? 'bg-primary-tint' : 'hover:bg-slate-50'
-                      }`}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className={`truncate text-xs font-medium ${isActive ? 'text-primary' : 'text-headings'}`}>
-                          {s.title || 'New conversation'}
-                        </p>
-                        <p className="truncate text-[10px] text-muted">{timeAgo(s.updatedAt)}</p>
-                      </div>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); onDeleteSession(s.sessionId); }}
-                        title="Delete conversation"
-                        className="shrink-0 rounded-md p-1 text-slate-300 opacity-0 transition-all hover:bg-critical-bg hover:text-critical group-hover:opacity-100"
-                      >
-                        <TrashIcon />
-                      </button>
-                    </div>
-                  );
-                })}
+                      session={s}
+                      isActive={s.sessionId === activeSessionId}
+                      onSelectSession={onSelectSession}
+                      onDeleteSession={onDeleteSession}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
-          ))
+            ))}
+            {/* Bottom-of-list state: either a small spinner row while the
+                next page is being fetched, or (once hasMore is false) an
+                "end of history" marker so it's clear scrolling further
+                won't reveal anything — rather than looking like it's
+                just silently stuck. */}
+            {isLoadingMore ? (
+              <p className="px-2 pt-1 text-center text-[10px] text-muted">Loading more…</p>
+            ) : !hasMore ? (
+              <p className="px-2 pt-1 text-center text-[10px] text-slate-300">No more conversations</p>
+            ) : null}
+          </>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Single row in the sidebar's session list — shared between the normal
+ * recency-grouped list and search results, so the two only differ in what's
+ * shown below the title: search results additionally show a "Title"/"Message"
+ * badge and a matched snippet (from searchChatSessions' matchedIn/snippet),
+ * while the normal list just shows the relative timestamp.
+ */
+function SessionRow({ session: s, isActive, onSelectSession, onDeleteSession, matchedIn, snippet }) {
+  return (
+    <div
+      onClick={() => onSelectSession(s.sessionId)}
+      className={`group flex items-center gap-1.5 rounded-lg px-2 py-2 cursor-pointer transition-colors ${
+        isActive ? 'bg-primary-tint' : 'hover:bg-slate-50'
+      }`}
+    >
+      <div className="min-w-0 flex-1">
+        <p className={`truncate text-xs font-medium ${isActive ? 'text-primary' : 'text-headings'}`}>
+          {s.title || 'New conversation'}
+        </p>
+        {matchedIn ? (
+          <div className="flex items-center gap-1">
+            <span className="shrink-0 rounded bg-slate-100 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted">
+              {matchedIn === 'title' ? 'Title' : 'Message'}
+            </span>
+            {matchedIn === 'message' && (
+              <p className="truncate text-[10px] text-muted">{snippet}</p>
+            )}
+          </div>
+        ) : (
+          <p className="truncate text-[10px] text-muted">{timeAgo(s.updatedAt)}</p>
+        )}
+      </div>
+      <button
+        onClick={(e) => { e.stopPropagation(); onDeleteSession(s.sessionId); }}
+        title="Delete conversation"
+        className="shrink-0 rounded-md p-1 text-slate-300 opacity-0 transition-all hover:bg-critical-bg hover:text-critical group-hover:opacity-100"
+      >
+        <TrashIcon />
+      </button>
     </div>
   );
 }
@@ -645,8 +766,32 @@ function CukaiBot() {
   const [sessionId, setSessionId] = useState(null);
 
   // ── Chat history sidebar state ─────────────────────────────────────────
+  const SESSIONS_PAGE_SIZE = 20;
   const [sessions, setSessions] = useState([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
+  // Whether an older page of sessions is currently being fetched (separate
+  // from sessionsLoading, which is only the very first page's spinner) —
+  // lets the list show a small "loading more…" row at the bottom instead of
+  // blanking the whole sidebar while paging.
+  const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false);
+  // Whether there's another page of older sessions the backend hasn't sent
+  // yet. Starts true so the very first scroll-to-bottom check (before the
+  // initial load even resolves) doesn't skip fetching.
+  const [sessionsHasMore, setSessionsHasMore] = useState(true);
+
+  // ── Chat history search ─────────────────────────────────────────────────
+  // Searches BOTH session titles and message content (see searchChatSessions
+  // / the backend's /api/chat/search) rather than titles alone — titles are
+  // short AI-generated summaries that won't capture a specific figure, vendor
+  // name, or ITA section a person might search for. Kept entirely separate
+  // from the paginated `sessions` list above: while a search query is active
+  // the sidebar renders `searchResults` instead of the normal recency-grouped
+  // list, and scroll-triggered pagination is suspended (a search's results
+  // already come back as one ranked list, not a page to infinitely-scroll).
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const isSearchActive = searchQuery.trim().length > 0;
   // Defaults open on desktop, same as Claude's own sidebar; persisted so a
   // returning user's collapse preference sticks across visits/reloads.
   const [sidebarOpen, setSidebarOpen] = useState(() => {
@@ -729,17 +874,47 @@ function CukaiBot() {
   // whenever the entity changes — mirrors the message-history effect above,
   // so switching entities swaps both the conversation AND the sidebar list
   // together rather than leaving a stale list from the previous entity.
+  //
+  // Only ever fetches the first page (20 most-recent sessions) — this is
+  // what runs on initial page load / entity switch, so the page never pulls
+  // in a user's entire chat history just to render the sidebar. Older
+  // sessions are fetched on demand by loadMoreSessions below, as the user
+  // scrolls the list toward its bottom.
   async function refreshSessions() {
     const userId = localStorage.getItem('userId');
-    if (!userId) { setSessions([]); return; }
+    if (!userId) { setSessions([]); setSessionsHasMore(false); return; }
     setSessionsLoading(true);
     try {
-      const list = await getChatSessions(userId, activeEntity?.id ?? null);
-      setSessions(list || []);
+      const page = await getChatSessions(userId, activeEntity?.id ?? null, SESSIONS_PAGE_SIZE, 0);
+      setSessions(page?.sessions || []);
+      setSessionsHasMore(!!page?.hasMore);
     } catch (_) {
       setSessions([]);
+      setSessionsHasMore(false);
     } finally {
       setSessionsLoading(false);
+    }
+  }
+
+  // Sidebar infinite-scroll: fetches the next 20-session page and appends it
+  // to the list already on screen. Guards against duplicate fetches (e.g.
+  // a fast double-scroll firing the handler twice) by bailing out whenever
+  // a fetch is already in flight or the backend has already said there's
+  // nothing left to page in.
+  async function loadMoreSessions() {
+    if (sessionsLoadingMore || sessionsLoading || !sessionsHasMore) return;
+    const userId = localStorage.getItem('userId');
+    if (!userId) return;
+    setSessionsLoadingMore(true);
+    try {
+      const page = await getChatSessions(userId, activeEntity?.id ?? null, SESSIONS_PAGE_SIZE, sessions.length);
+      setSessions((prev) => [...prev, ...(page?.sessions || [])]);
+      setSessionsHasMore(!!page?.hasMore);
+    } catch (_) {
+      // Leave the existing list as-is on a failed page fetch — the user can
+      // just scroll again to retry, rather than losing what's already shown.
+    } finally {
+      setSessionsLoadingMore(false);
     }
   }
 
@@ -747,6 +922,38 @@ function CukaiBot() {
     refreshSessions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEntity?.id]);
+
+  // Debounced chat-history search: waits 300ms after the user stops typing
+  // before hitting the backend, the standard "don't fire a request per
+  // keystroke" pattern. Clearing the box (or it being all whitespace) just
+  // empties the results and skips the network call entirely — the sidebar
+  // falls back to rendering the normal paginated `sessions` list in that
+  // case (see isSearchActive).
+  useEffect(() => {
+    const trimmed = searchQuery.trim();
+    if (!trimmed) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return;
+    }
+    const userId = localStorage.getItem('userId');
+    if (!userId) return;
+
+    let cancelled = false;
+    setSearchLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await searchChatSessions(trimmed, userId, activeEntity?.id ?? null);
+        if (!cancelled) setSearchResults(res?.results || []);
+      } catch (_) {
+        if (!cancelled) setSearchResults([]);
+      } finally {
+        if (!cancelled) setSearchLoading(false);
+      }
+    }, 300);
+
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [searchQuery, activeEntity?.id]);
 
   useEffect(() => {
     if (messages.length > 2) { 
@@ -849,6 +1056,12 @@ function CukaiBot() {
   // the history-loading effect above) — just triggered by a click instead
   // of a page load.
   async function handleSelectSession(targetSessionId) {
+    // Selecting a session (including re-selecting the one already open, if
+    // that's what a search result pointed at) always dismisses any active
+    // search — the sidebar should return to the normal recency list once the
+    // user has picked what they were looking for, the same way typing a
+    // search in Claude/ChatGPT and clicking a result closes the search UI.
+    setSearchQuery('');
     if (targetSessionId === sessionId) return;
     const userId = localStorage.getItem('userId');
     if (!userId) return;
@@ -1042,10 +1255,18 @@ function CukaiBot() {
             onToggle={toggleSidebar}
             sessions={sessions}
             isLoading={sessionsLoading}
+            isLoadingMore={sessionsLoadingMore}
+            hasMore={sessionsHasMore}
+            onLoadMore={loadMoreSessions}
             activeSessionId={sessionId}
             onSelectSession={handleSelectSession}
             onNewChat={handleNewChat}
             onDeleteSession={handleDeleteSessionFromSidebar}
+            searchQuery={searchQuery}
+            onSearchQueryChange={setSearchQuery}
+            searchResults={searchResults}
+            searchLoading={searchLoading}
+            isSearchActive={isSearchActive}
           />
 
           {/* ── Left Column: Interactive Chat Stream Area ── */}
