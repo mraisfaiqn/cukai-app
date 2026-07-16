@@ -11,16 +11,19 @@ across both databases:
   MongoDB (document_chunks collection, source="external_resource") — the
     actual embedded text chunks used for RAG retrieval, keyed back to their
     ExternalResource row via external_resource_id. Lives in the SAME
-    collection as user receipts (source="document") and hand-written
-    tax_law summaries (source="tax_law") — see mongo.py's module docstring
-    for why one collection holds all three rather than splitting them apart.
+    collection as user receipts (source="document") — see mongo.py's
+    module docstring for why one collection holds both rather than
+    splitting them apart.
 
 This is the "download real documents from the internet and index them"
-counterpart to seed_tax_law.py's hand-written summaries — same end goal
-(give CukaiBot real material to retrieve for general tax-law questions),
-different sourcing method (verbatim official text vs. curated summary).
-Everything gets searched together at chat time via a single
-mongo.vector_search() call.
+half of CukaiBot's reference-material pipeline (give CukaiBot real
+material to retrieve for general tax-law questions, sourced verbatim from
+official documents rather than summarized). A companion hand-written-
+summary pool (source="tax_law", via the now-removed seed_tax_law.py) used
+to exist alongside this one, but was retired once this pool had real
+Act/Ruling coverage of its own — see mongo.py's module docstring for the
+full rationale. Everything gets searched together at chat time via
+mongo.search_user_and_reference_chunks()'s two-level diversified retrieval.
 
 Usage:
   cd backend
@@ -57,8 +60,7 @@ CACHE_DIR = os.path.join(os.path.dirname(__file__), "external_resources_cache")
 
 # Real, verified, publicly downloadable LHDN documents — see the reference_no
 # field for a stable identifier used for --refresh and de-duplication.
-# `category` groups the document by the topic it's meant to help answer,
-# matching seed_tax_law.py's 10-question set where relevant.
+# `category` groups the document by the topic it's meant to help answer.
 #
 # All 7 URLs below were individually fetched and confirmed live (July 2026).
 # Two of them — PR-4-2015 and PR-6-2015 — were previously thought to be
@@ -129,6 +131,39 @@ EXTERNAL_RESOURCES = [
     "source_url": "https://www.hasil.gov.my/wp-content/uploads/IRBM-e-Invoice-Guideline.pdf",
     "date_issued": "2026-07-07",
   },
+  {
+    "reference_no": "ACT-874",
+    "resource_type": "act",
+    "title": "Finance Act 2025 (Act 874)",
+    "category": "Primary Legislation — Amendments to the Income Tax Act 1967, RPGT Act 1976, Stamp Act 1949, Labuan Business Activity Tax Act 1990 & Petroleum (Income Tax) Act 1967",
+    # NOTE: unlike every other entry above, this is NOT an LHDN document —
+    # Act 874 is published by the Attorney General's Chambers (AGC), not
+    # LHDN, so it doesn't belong under FALLBACK_INDEX_URL (LHDN's index)
+    # and its citations shouldn't fall back as if it were an LHDN source.
+    # See fallback_url/no_page_anchor below.
+    #
+    # source_url is deliberately the AGC's human-browsable act-detail page
+    # rather than a direct PDF link: AGC serves the actual PDF through its
+    # own in-page viewer (lom.agc.gov.my/act-detail.php?act=874), so there
+    # is no stable direct-download URL to point a citation at — a user
+    # clicking this citation lands on the same page a browser would show
+    # them anyway, just via AGC's viewer instead of a raw PDF response.
+    "source_url": "https://lom.agc.gov.my/act-detail.php?act=874&lang=BI",
+    # download_url is the actual fetchable PDF, used only by download_pdf()
+    # below — never shown to the user. AGC's own page can't be fetched
+    # directly as a PDF (it's a JS-driven viewer wrapping the document), so
+    # this HubSpot-hosted mirror is what ingestion actually downloads from.
+    "download_url": "https://494075.fs1.hubspotusercontent-na1.net/hubfs/494075/compliance-portal/act-874-finance-act-2025.pdf",
+    # AGC's own Federal Legislation portal home (not LHDN's perundangan/akta/
+    # page) — the correct place to send someone if source_url ever 404s or
+    # AGC reshuffles its act-detail.php query params again.
+    "fallback_url": "https://lom.agc.gov.my/",
+    # source_url is a viewer page, not a raw PDF response, so a "#page=N"
+    # fragment appended to it would do nothing — see _chunks_to_citations
+    # in main.py for where this suppresses that behavior.
+    "no_page_anchor": True,
+    "date_issued": "2025-12-31",
+  },
 ]
 
 # Some official guideline PDFs run to 100+ pages of largely procedural detail
@@ -150,6 +185,14 @@ PAGE_RANGES = {
 # for years) and, unlike the direct PDF links, reliably loads in a browser.
 # Frontend usage: if a click on sourceUrl 404s, the citation UI can offer
 # this as "search the LHDN legislation index instead" rather than a dead end.
+#
+# This is the DEFAULT fallback, used for every resource whose catalog entry
+# above doesn't set its own "fallback_url" — i.e. the LHDN-hosted ones. It's
+# wrong for non-LHDN sources (e.g. ACT-874, published by the Attorney
+# General's Chambers), which is why that entry sets its own fallback_url in
+# EXTERNAL_RESOURCES instead of relying on this constant. See main.py's
+# _chunks_to_citations for where a chunk's own stored fallback_url takes
+# priority over this default.
 FALLBACK_INDEX_URL = "https://www.hasil.gov.my/perundangan/akta/"
 
 
@@ -333,11 +376,21 @@ def ingest_resource(entry: dict, db, force: bool = False) -> None:
 
   cache_path = os.path.join(CACHE_DIR, f"{reference_no}.pdf")
 
+  # Most resources are downloaded straight from source_url. A few (e.g.
+  # ACT-874) have a source_url that's a human-browsable viewer page rather
+  # than a raw PDF response — download_url, when present, is the actual
+  # fetchable file used for ingestion instead. This keeps source_url free to
+  # be "whatever URL a citation should send the user to" without that also
+  # having to be a URL requests.get() can pull a PDF from. Existing entries
+  # (no download_url key) are unaffected — they fall back to source_url,
+  # same as before this field existed.
+  fetch_url = entry.get("download_url") or entry["source_url"]
+
   try:
     # ── Download (skip if already cached, unless forced) ────────────────
     if force or not os.path.isfile(cache_path):
-      logger.info(f"  Downloading {reference_no} from {entry['source_url']} ...")
-      download_pdf(entry["source_url"], cache_path)
+      logger.info(f"  Downloading {reference_no} from {fetch_url} ...")
+      download_pdf(fetch_url, cache_path)
     row.local_path = cache_path
     row.status = "downloaded"
     row.downloaded_at = datetime.now(timezone.utc)
@@ -415,6 +468,16 @@ def ingest_resource(entry: dict, db, force: bool = False) -> None:
         # Insert immediately rather than waiting for the whole batch, so
         # progress survives a later chunk's failure. Runs inside
         # embed_texts()'s loop, right after each individual embed succeeds.
+        #
+        # fallback_url/no_page_anchor come from `entry` (this file's catalog
+        # dict), not `row` (the Postgres ExternalResource) — models.py has
+        # no column for either, on purpose (see the plan this was built
+        # from): they only ever need to be read back at chat-citation time
+        # via the Mongo chunk itself (main.py's _chunks_to_citations), so
+        # there's no need for a Postgres round-trip or migration to carry
+        # them. entry.get(...) defaults both to None/False for every
+        # existing catalog entry that doesn't set them, which is exactly
+        # the old LHDN-fallback / page-anchor-on behavior.
         mongo.insert_chunk(
           text=remaining_chunks[i].text,
           embedding=vector,
@@ -425,6 +488,8 @@ def ingest_resource(entry: dict, db, force: bool = False) -> None:
           title=row.title,
           category=row.category,
           source_url=row.source_url,
+          fallback_url=entry.get("fallback_url"),
+          no_page_anchor=entry.get("no_page_anchor", False),
           page_number=remaining_page_numbers[i],
           starts_mid_sentence=remaining_chunks[i].starts_mid_sentence,
         )
