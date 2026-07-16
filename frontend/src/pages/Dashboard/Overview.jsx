@@ -63,12 +63,35 @@ function urgencyFor(daysLeft) {
   return { bar: 'bg-border', pill: 'bg-primary-tint text-muted' };
 }
 
+// ── Small icons for the chart tabs ────────────────────────────────────────────
+const TabPieIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21.21 15.89A10 10 0 1 1 8 2.83" /><path d="M22 12A10 10 0 0 0 12 2v10z" />
+  </svg>
+);
+const TabFileIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
+  </svg>
+);
+const TabGiftIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="20 12 20 22 4 22 4 12" /><rect x="2" y="7" width="20" height="5" /><line x1="12" y1="22" x2="12" y2="7" /><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z" /><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" />
+  </svg>
+);
+const TabBarChartIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="12" y1="20" x2="12" y2="10" /><line x1="18" y1="20" x2="18" y2="4" /><line x1="6" y1="20" x2="6" y2="16" />
+  </svg>
+);
+
+
 // ── Shared carousel shell ─────────────────────────────────────────────────────
 // One slide visible at a time via dot navigation, but ALSO horizontally
 // scrollable (trackpad / swipe) with the scrollbar hidden — so laptop users can
 // side-scroll and PC users can click the (larger) dots. Dots reflect and drive
 // the scroll position.
-function CarouselShell({ label, slides, dotsUnderRight = false }) {
+function CarouselShell({ label, slides, slideLabels, dotsUnderRight = false }) {
   const scrollRef = useRef(null);
   const [idx, setIdx] = useState(0);
 
@@ -83,6 +106,32 @@ function CarouselShell({ label, slides, dotsUnderRight = false }) {
     const el = scrollRef.current;
     if (el) el.scrollTo({ left: i * el.clientWidth, behavior: 'smooth' });
   };
+
+  // Tab buttons — one per slide name. Clicking a tab uses the same goTo()
+  // that the dots use. Styled as filled cards: grey when inactive, white
+  // with a teal underline when active (matches the design mock).
+  let tabs = null;
+  if (slideLabels) {
+    tabs = (
+      <div className="flex items-center gap-1.5 shrink-0 mb-2 border-b border-border">
+        {slideLabels.map((item, i) => (
+          <button
+            key={item.name}
+            onClick={() => goTo(i)}
+            className={
+              'flex flex-1 items-center justify-center gap-2 rounded-t-lg px-3 py-2.5 text-xs font-semibold -mb-px border-b-2 transition-colors ' +
+              (i === idx
+                ? 'bg-surface text-primary border-primary'
+                : 'bg-background text-muted border-transparent hover:text-headings')
+            }
+          >
+            {item.icon}
+            {item.name}
+          </button>
+        ))}
+      </div>
+    );
+  }
 
   const dots = (
     <div className="flex items-center justify-center gap-2">
@@ -104,6 +153,7 @@ function CarouselShell({ label, slides, dotsUnderRight = false }) {
     <section className="flex h-full flex-col rounded-xl border border-border bg-surface p-3">
       <style>{'.cukai-carousel::-webkit-scrollbar{display:none}'}</style>
       {label && <p className="font-headings text-sm font-bold text-headings shrink-0 mb-2">{label}</p>}
+      {tabs}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
@@ -116,14 +166,14 @@ function CarouselShell({ label, slides, dotsUnderRight = false }) {
           </div>
         ))}
       </div>
-      {dotsUnderRight ? (
+      {!slideLabels && (dotsUnderRight ? (
         <div className="grid grid-cols-4 shrink-0 pt-2">
           <div />
           <div className="col-span-3">{dots}</div>
         </div>
       ) : (
         <div className="shrink-0 pt-2">{dots}</div>
-      )}
+      ))}
     </section>
   );
 }
@@ -221,6 +271,37 @@ function segmentsFromReliefBreakdown(breakdown) {
       wasCapped: !!b.wasCapped,       // true once uploads exceed the cap
     }));
 }
+function detailFromEntries(entries) {
+  const map = new Map();
+  (entries || []).forEach((e) => {
+    const key = prettyCategory(e.category);
+    const row = map.get(key) || { label: key, amount: 0, count: 0 };
+    row.amount += e.amountNumeric || 0;
+    row.count += 1;
+    map.set(key, row);
+  });
+  return Array.from(map.values())
+    .filter((r) => r.amount > 0)
+    .sort((a, b) => b.amount - a.amount)
+    .map((r) => ({
+      label: r.label,
+      amount: fmtRM(r.amount),
+      raw: r.amount,
+      count: `${r.count} document${r.count === 1 ? '' : 's'}`,
+    }));
+}
+function reconcileComponents(components, headlineAmount, otherLabel) {
+  const listed = components.reduce((s, c) => s + (c.raw || 0), 0);
+  const gap = (headlineAmount || 0) - listed;
+  if (Math.abs(gap) < 1) return components;
+  return [...components, { label: otherLabel, amount: fmtRM(gap), raw: gap }];
+}
+// Builds an "a + b = total" equation string from a component list, so the
+// equation shown can never disagree with the line items below it.
+function equationFromComponents(components, total) {
+  if (!components || components.length === 0) return null;
+  return components.map((c) => fmtRM(c.raw || 0)).join(' + ') + ' = ' + fmtRM(total || 0);
+}
 
 // ── Pie slide (4-column: legend + footer | enlarged donut) ────────────────────
 function PieSlide({ chart }) {
@@ -257,7 +338,12 @@ function PieSlide({ chart }) {
       )}
 
       {/* Left column (1/4) — legend (scrollable) + footer total */}
+      {/* Left column (1/4) — title, legend (scrollable), footer total */}
       <div className="col-span-1 flex flex-col min-h-0">
+        <div className="shrink-0 mb-2">
+          <p className="font-headings text-sm font-bold text-headings">{chart.title}</p>
+          {chart.subtitle && <p className="text-xs text-muted mt-0.5">{chart.subtitle}</p>}
+        </div>
         <div className="flex-1 min-h-0 overflow-y-auto flex flex-col justify-center space-y-1.5 pr-0.5">
           {slices.length === 0 ? (
             <p className="text-xs text-muted">No data yet</p>
@@ -293,10 +379,6 @@ function PieSlide({ chart }) {
 
       {/* Right columns (3/4) — title fixed at top, donut centered in the remaining space (matches bar chart layout) */}
       <div className="col-span-3 flex flex-col min-h-0">
-        <div className="text-center shrink-0 mb-2">
-          <p className="font-headings text-sm font-bold text-headings">{chart.title}</p>
-          {chart.subtitle && <p className="text-sm text-muted mt-0.5">{chart.subtitle}</p>}
-        </div>
         <div className="flex-1 min-h-0 flex items-center justify-center">
         {total === 0 ? (
           <div style={{ width: SIZE, height: SIZE }} className="flex items-center justify-center rounded-full border-2 border-dashed border-border">
@@ -442,7 +524,30 @@ function PieChartsCarousel({ charts }) {
   const slides = (charts || []).map((c, i) =>
     c.type === 'bar' ? <BarSlide key={i} chart={c} /> : <PieSlide key={i} chart={c} />
   );
-  return <CarouselShell label="Breakdown & Trends" slides={slides} dotsUnderRight />;
+
+  // One tab per chart: a name plus a small icon, same style as the stat
+  // card chips. The bar chart has no title field, so we name it here.
+  const labels = (charts || []).map((c) => {
+    if (c.type === 'bar') {
+      return { name: 'Tax Summary by Year', icon: <TabBarChartIcon /> };
+    }
+    if (c.title === 'Business Income') {
+      return { name: c.title, icon: <TabPieIcon /> };
+    }
+    if (c.title === 'Deductible Expenses') {
+      return { name: c.title, icon: <TabFileIcon /> };
+    }
+    return { name: c.title, icon: <TabGiftIcon /> };
+  });
+
+  return (
+    <CarouselShell
+      label="Breakdown & Trends"
+      slides={slides}
+      slideLabels={labels}
+      dotsUnderRight
+    />
+  );
 }
 
 // ── Neutral placeholders shown until the first fetch resolves ──────────────────
@@ -481,6 +586,7 @@ export default function Overview() {
   // here, the same way ManageAccount does, instead of depending on it.
   const fetchDashboardMetrics = React.useCallback(async () => {
     try {
+      setLoading(true);
       const userId = localStorage.getItem('userId');
       if (!userId) return;
 
@@ -522,6 +628,19 @@ export default function Overview() {
       const pendingReview = cy?.pendingReviewCount ?? 0;
       const daysLeft = daysToFormBDeadline();
 
+   
+      const selfRelief = Number(totals?.individualSelfRelief) || 0;
+      const q4Reliefs = (totals?.q4ReliefsBreakdown || [])
+        .reduce((s, b) => s + (b.cappedTotal || 0), 0);
+      const reliefsApplied = selfRelief + q4Reliefs;
+      // TEMPORARY — remove after checking.
+      console.log('DEDUCTIONS CHECK', {
+        q3Deductions: totals?.q3Deductions,
+        q3CapitalAllowance: totals?.q3CapitalAllowance,
+        q3TotalDeductions: totals?.q3TotalDeductions,
+      });
+      //
+
       // ── Stats grid: derived from uploaded-document totals only when this
       // year actually has processed documents. Without the docCount guard the
       // summary always returns a (zeroed) totals object, so a year with no
@@ -545,31 +664,93 @@ export default function Overview() {
           const good  = (delta > 0) === (favorable === 'up');
           return { change: `${fmtDelta(delta)} vs YA ${priorLabel}`, trend, tone: good ? 'success' : 'danger' };
         };
+        const incomeComponents = reconcileComponents(
+          detailFromEntries(cy?.q1BusinessIncome), totals.totalIncome, 'Other income');
+       // Deductions popover = running expenses + capital allowance, matching
+        // how the backend composes q3TotalDeductions. The raw Q3 entries list
+        // can contain capital documents (e.g. hire purchase) at face value,
+        // which are NOT deductions — so we anchor on the two backend totals
+        // and reconcile any residue honestly.
+        const capitalAllowance = Number(totals.q3CapitalAllowance) || 0;
+        const deductionComponents = reconcileComponents(
+          [
+            { label: 'Business expenses', amount: fmtRM(totals.q3Deductions || 0),
+              raw: Number(totals.q3Deductions) || 0,
+              count: 'Running costs from your uploaded receipts' },
+            ...(capitalAllowance ? [{ label: 'Capital allowance',
+              amount: fmtRM(capitalAllowance), raw: capitalAllowance,
+              count: 'Yearly write-off on equipment — the purchase price itself is not deductible' }] : []),
+          ],
+          totals.q3TotalDeductions,
+          'Other deductions',
+        );
 
         setLiveStats([
-          { label: 'Total Income',      value: fmtRM(totals.totalIncome || 0),
-            ...yoy(totals.totalIncome, priorTotals?.totalIncome, 'up') },
-          { label: 'Total Deductions',  value: fmtRM(totals.q3TotalDeductions || 0),
-            ...yoy(totals.q3TotalDeductions, priorTotals?.q3TotalDeductions, 'up') },
+        { label: 'Total Income', value: fmtRM(totals.totalIncome || 0),
+            ...yoy(totals.totalIncome, priorTotals?.totalIncome, 'up'),
+            detail: {
+              formula: 'All the money you earned this year, added together — from your business and anywhere else.',
+              components: incomeComponents,
+              equation: equationFromComponents(incomeComponents, totals.totalIncome),
+            } },
+
+          { label: 'Total Deductions', value: fmtRM(totals.q3TotalDeductions || 0),
+            ...yoy(totals.q3TotalDeductions, priorTotals?.q3TotalDeductions, 'up'),
+            detail: {
+              formula: 'Money you spent running your business, plus a yearly write-off on equipment you bought. LHDN lets you subtract both before your tax is worked out.',
+              components: deductionComponents,
+              equation: equationFromComponents(deductionComponents, totals.q3TotalDeductions),
+            } },
+
           { label: 'Chargeable Income', value: fmtRM(totals.estimatedChargeableIncome || 0),
-            ...yoy(totals.estimatedChargeableIncome, priorTotals?.estimatedChargeableIncome, 'down') },
-          { label: 'Est. Tax Payable',  value: fmtRM(totals.estimatedTaxPayable || 0),
-            ...yoy(totals.estimatedTaxPayable, priorTotals?.estimatedTaxPayable, 'down') },
-        ]);
-      } else if (activeEntity) {
-        const turnover  = parseFloat(activeEntity.salesTurnover)    || 0;
-        const expenses  = parseFloat(activeEntity.totalExpenditure) || 0;
-        const netProfit = parseFloat(activeEntity.netProfitLoss)    || (turnover - expenses);
-        const estimatedTax = netProfit > 5000 ? netProfit * 0.03 : 0;
+            ...yoy(totals.estimatedChargeableIncome, priorTotals?.estimatedChargeableIncome, 'down'),
+            detail: {
+              formula: 'Total income − total deductions − personal reliefs. This is the part of your money that actually gets taxed.',
+              equation: fmtRM(totals.totalIncome || 0)
+                + ' − ' + fmtRM(totals.q3TotalDeductions || 0)
+                + ' − ' + fmtRM(reliefsApplied)
+                + ' = ' + fmtRM(totals.estimatedChargeableIncome || 0),
+              components: [
+                { label: 'Total income', amount: fmtRM(totals.totalIncome || 0) },
+                { label: 'Business costs', amount: '− ' + fmtRM(totals.q3TotalDeductions || 0) },
+                { label: 'Self relief', amount: '− ' + fmtRM(selfRelief),
+                  count: 'Automatic — every resident gets this' },
+                { label: 'Other reliefs', amount: '− ' + fmtRM(q4Reliefs),
+                  count: 'From your uploaded relief receipts' },
+              ],
+              note: 'The smaller this number, the less tax you pay. Uploading relief receipts (insurance, PRS, lifestyle purchases) makes it smaller.',
+            } },
 
-        setLiveStats([
-          { label: 'Sales Turnover',    value: fmtRM(turnover),    change: 'Live Sync',  trend: 'up' },
-          { label: 'Total Expenditure', value: fmtRM(expenses),    change: 'Live Sync',  trend: 'down' },
-          { label: 'Net Profit / Loss', value: fmtRM(netProfit),   change: 'Calculated', trend: netProfit >= 0 ? 'up' : 'down' },
-          { label: 'Est. Tax Payable',  value: fmtRM(estimatedTax), change: 'Formulaic',  trend: 'neutral' },
+          { label: 'Est. Tax Payable', value: fmtRM(totals.estimatedTaxPayable || 0),
+            ...yoy(totals.estimatedTaxPayable, priorTotals?.estimatedTaxPayable, 'down'),
+            detail: {
+              formula: 'Your chargeable income is split into slices, and each slice is taxed at its own rate — from 0% on the first RM5,000 up to 30% at the top. Rebates are then subtracted directly from the tax.',
+              equation: (Number(totals.lowIncomeRebate) || Number(totals.zakatRebate))
+                ? fmtRM(totals.taxChargedMyr || 0)
+                  + (Number(totals.lowIncomeRebate) ? ' − ' + fmtRM(totals.lowIncomeRebate) : '')
+                  + (Number(totals.zakatRebate) ? ' − ' + fmtRM(totals.zakatRebate) : '')
+                  + ' = ' + fmtRM(totals.estimatedTaxPayable || 0)
+                : null,
+              components: [
+                { label: 'Tax on your chargeable income', amount: fmtRM(totals.taxChargedMyr || 0),
+                  count: 'Calculated slice by slice at LHDN rates' },
+                ...(Number(totals.lowIncomeRebate) ? [{ label: 'Low income rebate',
+                  amount: '− ' + fmtRM(totals.lowIncomeRebate),
+                  count: 'For chargeable income of RM35,000 or less' }] : []),
+                ...(Number(totals.zakatRebate) ? [{ label: 'Zakat paid',
+                  amount: '− ' + fmtRM(totals.zakatRebate) }] : []),
+                ...(Number(totals.cp500Paid) ? [{ label: 'Already prepaid via CP500',
+                  amount: fmtRM(totals.cp500Paid),
+                  count: 'Instalments paid — reduces what is left to settle, not the tax itself' }] : []),
+              ],
+              note: Number(totals.cp500Paid)
+                ? 'After your CP500 prepayments, the balance left to settle is '
+                  + fmtRM(totals.balancePayableMyr || 0) + '. This is an estimate, not your official filing.'
+                : 'This is an estimate to help you plan, based on your documents so far. It is not your official tax filing.',
+            } },
         ]);
       }
-
+      
       // ── Pie charts: each page built from a different slice of the
       // document-derived totals, so they repopulate as the user uploads more.
       // NOTE: q1BusinessIncome / q3Deductions / etc. live under

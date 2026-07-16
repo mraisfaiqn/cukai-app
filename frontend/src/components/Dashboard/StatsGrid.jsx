@@ -3,8 +3,16 @@
 // Matches the four-up strip in Main_Dashboard_-_Cukai_AI.png.
 // `compact` prop tightens the grid for the no-scroll viewport layout —
 // cards shrink their internal padding/font via a prop passed to StatCard.
-import StatCard from './StatCard';
+import StatCard, { CoinsIcon, FileTextIcon, ChartIcon, BankIcon } from './StatCard';
 
+// Icon chip per known metric, mirroring the design mock. Unknown labels
+// (skeleton cards, fallback figures) simply get no chip.
+const CARD_ICONS = {
+  'Total Income':      { icon: <CoinsIcon />,    tint: 'bg-teal-50 text-teal-600' },
+  'Total Deductions':  { icon: <FileTextIcon />, tint: 'bg-blue-50 text-blue-600' },
+  'Chargeable Income': { icon: <ChartIcon />,    tint: 'bg-purple-50 text-purple-600' },
+  'Est. Tax Payable':  { icon: <BankIcon />,     tint: 'bg-amber-50 text-amber-600' },
+};
 const ArrowUp = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="12" y1="19" x2="12" y2="5" />
@@ -84,6 +92,9 @@ function StatsGrid({ stats, compact = false }) {
             changeTone={changeTone}
             highlight={highlight}
             compact={compact}
+            detail={stat.detail}
+            icon={CARD_ICONS[stat.label]?.icon}
+            iconTint={CARD_ICONS[stat.label]?.tint}
           />
         );
       })}
