@@ -20,7 +20,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 
 from database import init_db, SessionLocal
 import models
@@ -142,8 +142,8 @@ async def lifespan(app: FastAPI):
   _requeue_interrupted_documents()
   # Best-effort: verify/create the MongoDB Atlas vector search index used by
   # CukaiBot's RAG retrieval (one index on the one document_chunks
-  # collection, which holds user receipts, tax_law summaries, and
-  # external_resource PDF chunks together — see mongo.py's module docstring).
+  # collection, which holds user receipts and external_resource PDF chunks
+  # together — see mongo.py's module docstring).
   # Non-fatal if MONGODB_ATLAS_CLUSTER_URI isn't set yet or Atlas is unreachable — the rest
   # of the app (uploads, tax profile, etc.) should still start normally.
   try:
@@ -1984,7 +1984,7 @@ def get_form_b_profile(
 #
 # Gemini call count per turn: 1 call for profile/identity/small-talk/meta
 # questions (classify-and-answer combined, no retrieval); 2 calls when
-# document search, law search, or both are needed (classify, then generate
+# document search, reference search, or both are needed (classify, then generate
 # grounded on what was retrieved) — see _classify_and_maybe_answer()'s
 # docstring for why the second call can't be avoided in that case.
 #
@@ -1998,24 +1998,36 @@ CHAT_HISTORY_TURN_LIMIT = 20  # most recent messages pulled into the prompt
 
 # Split, not pooled, so the user's own (much smaller) set of uploaded
 # documents always gets a fair shot at its own slots, rather than being
-# crowded out by the much larger law/reference corpus in a single pooled
-# top_k — see mongo.search_user_and_reference_chunks()'s docstring for why
-# a single shared CHAT_VECTOR_TOP_K across everything was the actual bug
-# behind Act 53 showing up as a citation for personal questions like
-# "what is my total income?".
-CHAT_USER_DOC_TOP_K      = 5  # from the user's own uploaded documents
-CHAT_REFERENCE_TOP_K     = 5  # from EACH of tax_law / external_resource
+# crowded out by the much larger external_resource corpus in a single
+# pooled top_k — see mongo.search_user_and_reference_chunks()'s docstring
+# for why a single shared top_k across both was the actual bug behind Act
+# 53 showing up as a citation for personal questions like "what is my
+# total income?".
+CHAT_USER_DOC_TOP_K = 5  # from the user's own uploaded documents
 
-# Ceiling on the final MERGED result across all pools combined. Each pool
-# above (document / tax_law / external_resource) is allowed up to 5 of its
-# own so no single source is starved, but when a question needs several
-# pools at once (e.g. "document" + "external_resource") the merge can
-# otherwise hand back up to 15 chunks in one turn (5+5+5) — noisy for the
-# LLM prompt and overwhelming as a citation list in the UI. context_chunks
-# is already sorted by score (desc) by search_user_and_reference_chunks(),
-# so slicing to this cap keeps the single best CHAT_MAX_TOTAL_CITATIONS
-# chunks overall, regardless of which pool(s) they came from.
-CHAT_MAX_TOTAL_CITATIONS = 5
+# The external_resource side no longer uses a plain top_k at all — see
+# mongo.search_user_and_reference_chunks()'s docstring for the two-level
+# "retrieve wide, filter, diversify by document" strategy that replaced it
+# (reference_candidate_k / reference_min_score / reference_chunks_per_doc /
+# reference_max_docs, all with their own defaults there). This constant is
+# kept only as the historical name for what CHAT_MAX_TOTAL_CITATIONS below
+# used to divide between two pools evenly; it no longer gates anything on
+# its own.
+
+# Ceiling on the final MERGED result across both pools (document +
+# external_resource) combined. document can still fill up to
+# CHAT_USER_DOC_TOP_K (5) of its own slots, and external_resource's
+# diversified selection can contribute up to reference_max_docs (5) x
+# reference_chunks_per_doc (2) = 10 chunks — so an unbounded merge could
+# hand back up to 15 chunks in one turn, noisy for the LLM prompt and
+# overwhelming as a citation list in the UI. context_chunks is already
+# sorted by score (desc) by search_user_and_reference_chunks(), so slicing
+# to this cap keeps the single best CHAT_MAX_TOTAL_CITATIONS chunks
+# overall BY SCORE, regardless of which pool they came from — e.g. if
+# document only contributes 2 strong chunks and external_resource
+# contributes 8, the result is those 10, not padded up to 12 by forcing in
+# weaker matches just to fill the budget.
+CHAT_MAX_TOTAL_CITATIONS = 12
 
 CHAT_SYSTEM_PROMPT = """You are Cukai Bot, a Malaysian tax advisory assistant for cukai.ai.
 
@@ -2032,7 +2044,7 @@ Rules:
 - Never fabricate a section number, ruling number, or amount that isn't in the context.
 - Remind the user, when appropriate, to verify with a licensed tax agent or LHDN directly.
 
-Formatting:
+Formatting of the answer text:
 - Write in plain, well-organized prose and short paragraphs, the way you'd
   explain it out loud to someone — not as a reference document.
 - Avoid heavy markdown structure: no "###" headings, and don't break the
@@ -2043,6 +2055,21 @@ Formatting:
   "- " bulleted list only when there are 3+ distinct items that are easier
   to scan as a list (e.g. a set of conditions or required documents). Do not
   nest bullets or mix multiple heading levels.
+
+After writing the answer, also come up with exactly 3 short follow-up
+questions (each under 12 words) the user might naturally ask next — written
+from the USER's point of view (first person, e.g. "What deductions am I
+eligible for?" not "What deductions are they eligible for?"). Ground these in
+the same CONTEXT and the answer you just gave: a natural next question, a
+related limit/exception, or a document/step the user would need next — not
+generic chatbot prompts unrelated to this conversation.
+
+Return ONLY valid JSON matching this exact shape, no markdown fences, no
+preamble, no explanation outside the JSON:
+{"answer": "...", "followups": ["...", "...", "..."]}
+The "answer" value is a single string (use \\n for paragraph breaks within it,
+following the formatting rules above) — do not nest markdown structure or
+additional objects inside it.
 """
 
 
@@ -2159,7 +2186,7 @@ def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -
 # This collapses profile/identity/small-talk/meta questions (no retrieval
 # needed) down to a single Gemini call instead of two, since there's
 # nothing a second "generation" call could add once we already know no
-# document or law lookup applies: the model has every fact it needs
+# document or reference lookup applies: the model has every fact it needs
 # (person_context + history) right here.
 #
 # When retrieval IS needed, a second Gemini call is unavoidable — Mongo's
@@ -2171,15 +2198,15 @@ _CLASSIFY_AND_ANSWER_SYSTEM_PROMPT = """You are Cukai Bot, a Malaysian tax advis
 
 The chatbot has three possible information sources:
 1. The user's own uploaded documents (receipts, Form EA, bank statements, invoices) — needed for questions about the user's own specific financial data, amounts, transactions, or documents.
-2. Official Malaysian tax law/reference material (the Income Tax Act, Public Rulings, e-Invoice guidelines) — needed for questions about tax rules, deduction limits, definitions, rates, or how the law works in general.
+2. Official Malaysian tax reference material (the Income Tax Act, Public Rulings, e-Invoice guidelines) — needed for questions about tax rules, deduction limits, definitions, rates, or how the law works in general.
 3. Neither — identity/profile questions the user's own account already answers directly (name, IC number, TIN, marital status, which businesses/entities they own), small talk, greetings, or meta questions about the chatbot itself.
 
-A single message can need BOTH document and law lookups at once (e.g. "is my broadband bill deductible under Section 33?" needs the user's actual bill AND the law on Section 33). Set both flags true in that case — do not force a single choice when both genuinely apply.
+A single message can need BOTH document and reference lookups at once (e.g. "is my broadband bill deductible under Section 33?" needs the user's actual bill AND the law on Section 33). Set both flags true in that case — do not force a single choice when both genuinely apply.
 
 When uncertain, prefer setting a flag to true rather than false — a citation the user didn't strictly need is a much smaller problem than answering a real tax question with no grounding at all.
 
-IMPORTANT — you do not have document or law context available in this step:
-- If EITHER flag is true, do NOT attempt to answer. Set "direct_answer" to null — the system will retrieve the right context and generate the grounded answer in a follow-up step.
+IMPORTANT — you do not have document or reference context available in this step:
+- If EITHER flag is true, do NOT attempt to answer. Set "direct_answer" to null and "followups" to an empty list — the system will retrieve the right context and generate the grounded answer (and its own follow-ups) in a follow-up step.
 - Only if BOTH flags are false (this is a profile/identity/small-talk/meta question that needs no retrieval) should you write the actual answer now, using the CONTEXT block below (the user's own account profile, if provided) and the conversation history. Put that full answer in "direct_answer".
 
 When you do write a direct_answer, follow these rules:
@@ -2187,10 +2214,12 @@ When you do write a direct_answer, follow these rules:
 - Never fabricate a fact, section number, ruling number, or amount that isn't in the CONTEXT or history.
 - Write in plain, well-organized prose — the way you'd explain it out loud, not as a reference document. Avoid heavy markdown; only use "**bold**" for a handful of key terms and "- " lists when there are 3+ distinct items.
 
+Whenever you write a direct_answer, also write "followups": an array of exactly 3 short follow-up questions (each under 12 words) the user might naturally ask next, written from the USER's point of view (first person, e.g. "What deductions am I eligible for?" not "What deductions are they eligible for?"). Ground them in the same conversation — the topic just discussed, a natural next question, or a related angle — not generic chatbot prompts. If direct_answer is null, "followups" must be an empty list [].
+
 If, and only if, a line starting with "TITLE_REQUESTED:" appears below, also write a short session title in "session_title": 6 words or fewer, describing the TOPIC of the question (not a restatement of it as a question), plain title case, no quotation marks, no trailing period. If the question is small talk or too vague to summarize meaningfully, use exactly "New conversation". If no such line appears, set "session_title" to null.
 
 Return ONLY valid JSON matching this exact shape, no markdown fences, no preamble, no explanation:
-{"needs_document_search": true/false, "needs_law_search": true/false, "direct_answer": "..." or null, "session_title": "..." or null, "reasoning": "one short phrase"}
+{"needs_document_search": true/false, "needs_reference_search": true/false, "direct_answer": "..." or null, "followups": ["...", "...", "..."], "session_title": "..." or null, "reasoning": "one short phrase"}
 """
 
 
@@ -2214,10 +2243,10 @@ def _classify_and_maybe_answer(
   second Gemini round-trip just to re-ask "now answer it" when the model
   already had everything required to answer on the first pass.
 
-  When either needs_document_search or needs_law_search comes back true, the
+  When either needs_document_search or needs_reference_search comes back true, the
   caller MUST run retrieval and call _generate_chat_answer_with_retrieval()
   for the actual answer — direct_answer is deliberately left null in that
-  case, since this call has no document/law context to draw from yet.
+  case, since this call has no document/reference context to draw from yet.
 
   generate_title: pass True only for a brand-new session's first message —
   see the module-level comment above _CLASSIFY_AND_ANSWER_SYSTEM_PROMPT for
@@ -2228,13 +2257,17 @@ def _classify_and_maybe_answer(
 
   Returns a dict with:
     - "needs_document_search" (bool)
-    - "needs_law_search" (bool)
+    - "needs_reference_search" (bool)
     - "direct_answer" (str | None) — populated only when both flags are False
+    - "followups" (list[str]) — 3 suggested next questions, populated only
+      alongside a direct_answer; empty list when retrieval is needed instead
+      (the retrieval path generates its own, see
+      _generate_chat_answer_with_retrieval)
     - "session_title" (str | None) — populated only when generate_title=True
     - "reasoning" (str, for logging/debugging only — never shown to the user)
 
   Fails open on any error (LLM failure, malformed JSON): defaults to
-  {"needs_document_search": True, "needs_law_search": True, "direct_answer": None},
+  {"needs_document_search": True, "needs_reference_search": True, "direct_answer": None, "followups": []},
   i.e. "search everything" — a stuck classifier should degrade to running
   full retrieval rather than silently answering a real tax question with no
   grounding at all. session_title falls back to None on failure too — the
@@ -2242,8 +2275,8 @@ def _classify_and_maybe_answer(
   for the title, so a classifier hiccup never leaves a session untitled.
   """
   fail_open = {
-    "needs_document_search": True, "needs_law_search": True,
-    "direct_answer": None, "session_title": None,
+    "needs_document_search": True, "needs_reference_search": True,
+    "direct_answer": None, "followups": [], "session_title": None,
     "reasoning": "classification unavailable — defaulting to full search",
   }
 
@@ -2276,7 +2309,7 @@ def _classify_and_maybe_answer(
     messages = [SystemMessage(content=system_prompt)]
     # A couple of turns of history are enough for the routing half of this
     # decision (e.g. a one-word follow-up like "and Section 44?" needs the
-    # prior turn to know it's still a law question). Kept short rather than
+    # prior turn to know it still needs reference search). Kept short rather than
     # the full CHAT_HISTORY_TURN_LIMIT window since a direct_answer here only
     # ever covers profile/small-talk turns, which don't need deep history.
     for turn in history[-4:]:
@@ -2298,19 +2331,28 @@ def _classify_and_maybe_answer(
 
     parsed = json.loads(raw)
     needs_document_search = bool(parsed.get("needs_document_search", True))
-    needs_law_search = bool(parsed.get("needs_law_search", True))
+    needs_reference_search = bool(parsed.get("needs_reference_search", True))
     direct_answer = parsed.get("direct_answer")
     # Guard against the model writing an answer anyway despite a true flag —
     # a direct_answer is only trustworthy (no fabricated grounding risk) when
     # neither retrieval source was flagged as needed.
-    if needs_document_search or needs_law_search:
+    if needs_document_search or needs_reference_search:
       direct_answer = None
+    # followups rides along with direct_answer: no answer yet this turn means
+    # no follow-ups to suggest yet either (the retrieval path generates its
+    # own once it has an actual grounded answer to base them on).
+    followups_raw = parsed.get("followups") if direct_answer else None
+    followups = (
+      [str(f).strip() for f in followups_raw if str(f).strip()][:3]
+      if isinstance(followups_raw, list) else []
+    )
     session_title = parsed.get("session_title")
     session_title = str(session_title).strip('"\' ').strip()[:80] if (generate_title and session_title) else None
     return {
       "needs_document_search": needs_document_search,
-      "needs_law_search": needs_law_search,
+      "needs_reference_search": needs_reference_search,
       "direct_answer": str(direct_answer).strip() if direct_answer else None,
+      "followups": followups,
       "session_title": session_title,
       "reasoning": str(parsed.get("reasoning", ""))[:200],
     }
@@ -2321,10 +2363,10 @@ def _classify_and_maybe_answer(
 
 def _generate_chat_answer_with_retrieval(
   question: str, history: list[dict], context_chunks: list[dict], person_context: Optional[str] = None,
-) -> str:
+) -> dict:
   """
   The retrieval-grounded generation path — used only when
-  _classify_and_maybe_answer() determined that document search, law search,
+  _classify_and_maybe_answer() determined that document search, reference search,
   or both are needed. Gemini call #2 for this turn (the one call that's
   genuinely unavoidable): Mongo's $vectorSearch has to run in between the
   classify call and this one, since we don't know what to retrieve until
@@ -2335,6 +2377,13 @@ def _generate_chat_answer_with_retrieval(
   Postgres profile (person_context, see _person_context_block) + Postgres
   chat history + the current question. Reuses the same
   ChatGoogleGenerativeAI pattern as pipeline.py's classify_and_extract_with_llm.
+
+  Returns {"answer": str, "followups": list[str]} — the model writes both in
+  the same JSON response (see CHAT_SYSTEM_PROMPT), so suggesting 3 relevant
+  next questions costs nothing extra: no second LLM round-trip just to ask
+  "what would the user ask next?" after the fact. followups is always a list
+  (possibly empty on a parse hiccup, see the except branch below) so the
+  caller never needs a None-check.
 
   Note on query contextualization (step 2 in the team's diagram): the
   original diagram rewrites e.g. "what does it eat?" into "what do cats eat?"
@@ -2361,7 +2410,7 @@ def _generate_chat_answer_with_retrieval(
   if context_chunks:
     context_block = "\n".join(f"- {c.get('text', '')}" for c in context_chunks)
   else:
-    context_block = "(No relevant documents or tax-law references were found for this question.)"
+    context_block = "(No relevant documents or reference material were found for this question.)"
 
   # Prepend the Postgres profile block (name, TIN, active entity, etc.) ahead
   # of the document-chunk context, when there is one — see
@@ -2381,8 +2430,34 @@ def _generate_chat_answer_with_retrieval(
   response = llm.invoke(messages)
   raw = response.content
   if isinstance(raw, list):
-    return "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw).strip()
-  return str(raw).strip() if raw is not None else ""
+    raw = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw)
+  raw = str(raw).strip() if raw is not None else ""
+
+  # Same tolerant-JSON-extraction pattern as _classify_and_maybe_answer, in
+  # case the model wraps the JSON in markdown fences or adds stray preamble
+  # despite the "no markdown fences" instruction.
+  json_match = re.search(r"(\{.*\})", raw, re.DOTALL)
+  if json_match:
+    raw = json_match.group(1)
+
+  try:
+    parsed = json.loads(raw)
+    answer = str(parsed.get("answer") or "").strip()
+    followups_raw = parsed.get("followups")
+    followups = (
+      [str(f).strip() for f in followups_raw if str(f).strip()][:3]
+      if isinstance(followups_raw, list) else []
+    )
+    if not answer:
+      raise ValueError("empty answer field")
+    return {"answer": answer, "followups": followups}
+  except (json.JSONDecodeError, ValueError, TypeError) as e:
+    # Fallback for the rare case the model ignores the JSON contract and
+    # replies with plain prose instead — treat the whole response as the
+    # answer rather than losing the turn entirely. No follow-ups in that
+    # case (there's no reliable way to carve them out of unstructured text).
+    logger.warning(f"[Chat] Retrieval-answer response wasn't valid JSON, using raw text as answer: {e}")
+    return {"answer": raw, "followups": []}
 
 
 # Stable, human-browsable landing page to fall back to when a direct PDF
@@ -2414,6 +2489,37 @@ def _snippet_for_chunk(c: dict) -> str:
   return text
 
 
+def _chunk_source_url(c: dict) -> Optional[str]:
+  """
+  Build a chunk's fully-formed, deep-linked source URL: its raw source_url
+  with a "#page=N" fragment appended when a page number is known and the
+  resource supports it — the same logic _chunks_to_citations() applies to a
+  card's primary chunk, factored out so extraExcerpts (runner-up chunks
+  from the same document, each potentially on a different page) can get
+  their own correct per-page link too, rather than all sharing the card's
+  single primary-chunk URL.
+
+  "#page=N" is the de-facto PDF open-parameter most browsers/viewers honor
+  (Chrome, Firefox, Edge, Adobe Reader) to jump straight to a given page —
+  cheap, standard, no extra request needed. Skipped when the chunk is
+  flagged no_page_anchor: some sources' source_url is a human-facing viewer
+  page rather than a raw PDF response (e.g. ACT-874's AGC act-detail.php,
+  which renders the document through its own in-page viewer), so appending
+  "#page=N" would do nothing useful there and could read as broken/
+  misleading. no_page_anchor is set once per resource at ingestion time
+  (seed_external_resources.py), so it's identical across every chunk of the
+  same reference_no — safe to read from any individual chunk, including a
+  runner-up excerpt chunk, not just a card's primary one.
+
+  Returns None if the chunk has no source_url at all (e.g. malformed row).
+  """
+  source_url = c.get("source_url")
+  page_number = c.get("page_number")
+  if source_url and page_number and not c.get("no_page_anchor"):
+    return f"{source_url}#page={page_number}"
+  return source_url
+
+
 def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
   """Shape MongoDB chunks into the CitationCard format the frontend already
   renders (tag/title/snippet/verified/sourceUrl) — see CitationCard in
@@ -2432,6 +2538,24 @@ def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
       to without a second round-trip. Never set for document chunks — those
       are served by this same backend's /files/ mount, which doesn't rot the
       way an external LHDN link can.
+
+      Sourced from the chunk's own stored "fallback_url" field
+      (mongo.insert_chunk) when present, falling back to the module-level
+      _EXTERNAL_RESOURCE_FALLBACK_URL (LHDN's index) otherwise. This
+      per-chunk override exists because not every external_resource is an
+      LHDN document — e.g. ACT-874 (Finance Act 2025) is published by the
+      Attorney General's Chambers, so an LHDN index page would be a
+      confusing, unrelated fallback for it. See seed_external_resources.py's
+      EXTERNAL_RESOURCES catalog for where a resource sets its own
+      fallback_url.
+    - fallbackLabel: a short human-readable name for whatever fallbackUrl
+      points at (e.g. "the official LHDN index" or "the official AGC
+      Federal Legislation portal"), derived here from which URL is actually
+      in play rather than assumed by the frontend. CukaiBot.jsx previously
+      hardcoded "search the official LHDN index instead" next to every
+      fallbackUrl, which was wrong as soon as a non-LHDN fallback (like
+      ACT-874's) existed — this field lets the frontend just interpolate
+      instead of guessing from the URL string itself.
     - isInternal: True for document chunks. Tells the frontend to render
       sourceUrl as an in-page preview (embed/img, via the backend's own
       /files/ static mount — see pipeline.py's embed_document_for_rag) rather
@@ -2443,32 +2567,72 @@ def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
     - fileType: "pdf" | "image" | "excel" for document chunks, so the
       frontend's preview modal knows which renderer to use without a second
       Postgres lookback (mirrors CukaiAccount.jsx's doc.fileType).
+    - extraExcerptCount / extraExcerpts: see the "One card per reference_no"
+      section below.
 
-  snippet is built via _snippet_for_chunk(), which prefixes "..." when the
-  chunk's stored starts_mid_sentence flag is set — see that helper and
-  embeddings.chunk_text()'s Chunk docstring for where the flag comes from.
+  One card per reference_no: mongo.search_user_and_reference_chunks() can
+  now return up to reference_chunks_per_doc (2, by default) chunks from the
+  SAME external_resource document — e.g. ACT-874's page 8 and page 41 both
+  making the cut for one question — see that function's docstring for why
+  (multi-chunk context from one document beats one chunk each from several
+  unrelated ones). Without deduping here, that would render as two
+  separate ACT-874 citation cards, which reads as a duplicate reference
+  rather than "here's more context from the same source". So chunks are
+  grouped by reference_no before building cards: each group becomes ONE
+  card, built from its highest-scoring chunk (best tag/title/snippet/score/
+  sourceUrl/etc.). The rest of the group is summarized as extraExcerptCount
+  (a plain count, for the "+N more excerpts" toggle label) AND included in
+  full as extraExcerpts (each with its own snippet/pageNumber), so the
+  frontend can reveal them on click instead of only gesturing at their
+  existence. Every kept chunk (not just the card's primary one) was already
+  sent to the LLM via context_chunks regardless of what this function does
+  with it — extraExcerpts is purely about letting a person inspect the same
+  material the LLM saw, not about what the LLM receives. Chunks with no
+  reference_no (document chunks; any malformed external_resource row) are
+  never grouped — each becomes its own card, same as before this change.
   """
-  citations = []
+  # Group by reference_no first (see docstring above); anything without one
+  # (None) — document chunks, or a malformed row — is treated as its own
+  # singleton group so it still gets exactly one card, un-merged.
+  groups: dict[object, list[dict]] = {}
   for c in chunks:
+    ref_no = c.get("reference_no")
+    key = ref_no if ref_no else id(c)  # id(c) => never collides, never merges
+    groups.setdefault(key, []).append(c)
+
+  citations = []
+  for group in groups.values():
+    group.sort(key=lambda c: c.get("score", 0), reverse=True)
+    c = group[0]  # best-scoring chunk represents the whole card
+    rest = group[1:]
+    card_score = c.get("score", 0)
+
     source = c.get("source")
     source_url = None
     page_number = None
     fallback_url = None
+    fallback_label = None
     is_internal = False
     file_type = None
     if source == "external_resource":
       tag = c.get("reference_no") or c.get("resource_type", "REFERENCE").upper()
       title = c.get("title") or c.get("category") or "Official reference"
-      source_url = c.get("source_url")
       page_number = c.get("page_number")
-      # "#page=N" is the de-facto PDF open-parameter most browsers/viewers
-      # honor (Chrome, Firefox, Edge, Adobe Reader) to jump straight to a
-      # given page — cheap, standard, no extra request needed.
-      if source_url and page_number:
-        source_url = f"{source_url}#page={page_number}"
-      fallback_url = _EXTERNAL_RESOURCE_FALLBACK_URL
-    elif source == "tax_law":
-      tag, title = "TAX LAW", c.get("category") or "Reference material"
+      source_url = _chunk_source_url(c)
+      # Prefer the chunk's own stored fallback_url (set for non-LHDN
+      # sources like ACT-874 — see mongo.insert_chunk/seed_external_
+      # resources.py) over the shared LHDN default, so a citation never
+      # offers an unrelated publisher's index page as its fallback.
+      fallback_url = c.get("fallback_url") or _EXTERNAL_RESOURCE_FALLBACK_URL
+      # The frontend used to hardcode "search the official LHDN index
+      # instead" next to every fallbackUrl — correct for LHDN sources, but
+      # wrong once a non-LHDN fallback_url (e.g. ACT-874's AGC portal) is
+      # in play. Derive a short label here instead, so CukaiBot.jsx just
+      # interpolates it rather than assuming every fallback is LHDN's.
+      fallback_label = (
+        "the official LHDN index" if fallback_url == _EXTERNAL_RESOURCE_FALLBACK_URL
+        else "the official AGC portal"
+      )
     else:
       tag = f"YA{c['year_of_assessment']}" if c.get("year_of_assessment") else "DOCUMENT"
       title = c.get("category") or "Your document"
@@ -2479,13 +2643,43 @@ def _chunks_to_citations(chunks: list[dict]) -> list[dict]:
       "tag": tag,
       "title": title,
       "snippet": _snippet_for_chunk(c),
+      "extraExcerptCount": len(rest) or None,
+      # One entry per remaining chunk in this document's group, each
+      # carrying its own snippet + page number + deep-linked sourceUrl (a
+      # second excerpt from a different page is exactly the useful thing to
+      # show — reusing the card's own pageNumber/sourceUrl for every extra
+      # excerpt would point every one of them at the wrong page). sourceUrl
+      # is only built for source="external_resource" excerpts: document
+      # chunks (source="document") never reach this branch in practice —
+      # mongo.search_user_and_reference_chunks()'s diversify-by-document
+      # step (the thing that produces >1 chunk per reference_no in the
+      # first place) only ever runs on the external_resource pool — but the
+      # explicit check keeps this correct even if that assumption changes,
+      # rather than silently building a URL with the wrong semantics
+      # (document sourceUrls are relative /files/ paths meant for the
+      # in-page preview modal, not a "#page=N" deep link to window.open()).
+      # Kept in score order (already sorted via group.sort() above), so
+      # "excerpt 1" is always the second-best match, not an arbitrary one.
+      "extraExcerpts": [
+        {
+          "snippet": _snippet_for_chunk(ec),
+          "pageNumber": ec.get("page_number"),
+          "sourceUrl": _chunk_source_url(ec) if ec.get("source") == "external_resource" else None,
+        }
+        for ec in rest
+      ] or None,
       "verified": f"Similarity {round(c['score'] * 100)}%" if c.get("score") is not None else None,
       "sourceUrl": source_url,
       "pageNumber": page_number,
       "fallbackUrl": fallback_url,
+      "fallbackLabel": fallback_label,
       "isInternal": is_internal,
       "fileType": file_type,
+      "_score": card_score,  # internal-only, used for the sort below
     })
+  citations.sort(key=lambda card: card["_score"], reverse=True)
+  for card in citations:
+    del card["_score"]
   return citations
 
 
@@ -2509,7 +2703,20 @@ def list_chat_sessions(
   q = db.query(ChatSession).filter(ChatSession.user_id == user_id)
   if entity_id is not None:
     q = q.filter(ChatSession.entity_id == entity_id)
-  q = q.order_by(ChatSession.updated_at.desc())
+  # Pinned sessions sort first (mirrors Claude's own sidebar, which shows a
+  # standalone "Pinned" group above the recency groups). Within the pinned
+  # bucket, order by pinned_at — when the session was pinned — not
+  # updated_at, since updated_at tracks conversation activity and must stay
+  # independent of sidebar bookkeeping (see ChatSession.pinned_at and
+  # update_chat_session for the full rationale). coalesce() is a defensive
+  # fallback only — every pinned row should have pinned_at set going
+  # forward, but it guards against any pinned row that predates this
+  # column from sorting to the bottom of the group.
+  q = q.order_by(
+    ChatSession.pinned_at.isnot(None).desc(),
+    func.coalesce(ChatSession.pinned_at, ChatSession.updated_at).desc(),
+    ChatSession.updated_at.desc(),
+  )
   # Fetch one extra row past the page size purely to answer "is there more?"
   # without a second COUNT(*) query — trimmed back off before returning.
   page = q.offset(offset).limit(limit + 1).all()
@@ -2521,6 +2728,9 @@ def list_chat_sessions(
         "sessionId": s.session_id,
         "entityId": s.entity_id,
         "title": s.title,
+        "pinned": s.pinned_at is not None,
+        "pinnedAt": s.pinned_at.strftime("%Y-%m-%d %H:%M:%S") if s.pinned_at else None,
+        "folder": s.folder,
         "createdAt": s.created_at.strftime("%Y-%m-%d %H:%M:%S"),
         "updatedAt": s.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
       }
@@ -2528,6 +2738,81 @@ def list_chat_sessions(
     ],
     "hasMore": has_more,
   }
+
+
+@app.get("/api/chat/folders")
+def list_chat_folders(
+  user_id:   str            = Query(..., description="Owner of the sessions."),
+  entity_id: Optional[int] = Query(default=None),
+  db: Session = Depends(get_db),
+):
+  """List the distinct folder names a user has created (via PATCH .../folder),
+  optionally scoped to one entity — backs the "Add to folder" picker so it
+  can offer existing folders instead of only ever creating new ones."""
+  _verify_entity_owned(db, user_id, entity_id)
+  q = db.query(ChatSession.folder).filter(
+    ChatSession.user_id == user_id, ChatSession.folder.isnot(None),
+  )
+  if entity_id is not None:
+    q = q.filter(ChatSession.entity_id == entity_id)
+  folders = sorted({row[0] for row in q.distinct().all() if row[0]})
+  return {"folders": folders}
+
+
+@app.patch("/api/chat/folders/{folder_name}")
+def rename_chat_folder(
+  folder_name: str,
+  payload:     dict,
+  user_id:     str            = Query(..., description="Owner of the sessions."),
+  entity_id:   Optional[int] = Query(default=None),
+  db: Session = Depends(get_db),
+):
+  """Rename a folder — since a folder is just a shared text tag on however
+  many ChatSession rows carry it (not its own table), "renaming" a folder
+  means bulk-updating every session currently tagged `folder_name` to the
+  new name in one pass. Backs the sidebar folder group header's rename
+  action, which renames the whole folder rather than one conversation.
+
+  Request body: { "name": str }
+  Returns { "folder": new_name, "updated": <count of sessions renamed> }."""
+  new_name = (payload.get("name") or "").strip()[:120]
+  if not new_name:
+    raise HTTPException(status_code=422, detail="name is required.")
+
+  q = db.query(ChatSession).filter(
+    ChatSession.user_id == user_id, ChatSession.folder == folder_name,
+  )
+  if entity_id is not None:
+    q = q.filter(ChatSession.entity_id == entity_id)
+  sessions = q.all()
+  for session in sessions:
+    session.folder = new_name
+  db.commit()
+  return {"folder": new_name, "updated": len(sessions)}
+
+
+@app.delete("/api/chat/folders/{folder_name}")
+def delete_chat_folder(
+  folder_name: str,
+  user_id:     str            = Query(..., description="Owner of the sessions."),
+  entity_id:   Optional[int] = Query(default=None),
+  db: Session = Depends(get_db),
+):
+  """Delete a folder — un-files every session tagged `folder_name` (sets
+  their folder back to null) rather than deleting the conversations
+  themselves. Backs the sidebar folder group header's delete-folder action.
+
+  Returns { "updated": <count of sessions un-filed> }."""
+  q = db.query(ChatSession).filter(
+    ChatSession.user_id == user_id, ChatSession.folder == folder_name,
+  )
+  if entity_id is not None:
+    q = q.filter(ChatSession.entity_id == entity_id)
+  sessions = q.all()
+  for session in sessions:
+    session.folder = None
+  db.commit()
+  return {"updated": len(sessions)}
 
 
 def _excerpt(text: str, query: str, radius: int = 60) -> str:
@@ -2645,6 +2930,8 @@ def search_chat_sessions(
       "sessionId": s.session_id,
       "entityId": s.entity_id,
       "title": s.title,
+      "pinned": s.pinned_at is not None,
+      "folder": s.folder,
       "updatedAt": s.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
       "matchedIn": "title",
       "snippet": s.title or "New conversation",
@@ -2655,6 +2942,8 @@ def search_chat_sessions(
       "sessionId": s.session_id,
       "entityId": s.entity_id,
       "title": s.title,
+      "pinned": s.pinned_at is not None,
+      "folder": s.folder,
       "updatedAt": s.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
       "matchedIn": "message",
       # Excerpt around whichever variant actually appears in this message —
@@ -2700,6 +2989,7 @@ def get_chat_history(
         "role": m.role,
         "text": m.content,
         "citations": m.citations,
+        "followups": m.followups,
       }
       for m in messages
     ],
@@ -2808,26 +3098,28 @@ def post_chat_message(
   logger.info(
     f"[Chat] Retrieval classification for session {session.session_id}: "
     f"documents={classification['needs_document_search']} "
-    f"law={classification['needs_law_search']} "
+    f"reference={classification['needs_reference_search']} "
     f"({classification['reasoning']})"
   )
-  if is_new_session and classification.get("session_title"):
+  if is_new_session and classification.get("session_title") and not session.title_locked:
     session.title = classification["session_title"]
     db.commit()
 
   context_chunks: list[dict] = []
-  needs_retrieval = classification["needs_document_search"] or classification["needs_law_search"]
+  needs_retrieval = classification["needs_document_search"] or classification["needs_reference_search"]
 
   if not needs_retrieval and classification["direct_answer"]:
     # ── Fast path: one Gemini call total for this turn — no vector search,
-    #    no second generation call needed.
+    #    no second generation call needed. followups came along for free in
+    #    that same call (see _classify_and_maybe_answer's "followups" field).
     answer_text = classification["direct_answer"]
+    followups = classification.get("followups") or []
   else:
     # ── Step 4: embed the question and search only the pool(s) the
     #    classification says are needed, as two SEPARATE pools when both are
     #    needed — see mongo.search_user_and_reference_chunks()'s docstring. A
     #    single pooled search across everything structurally favored the much
-    #    larger law corpus (hundreds of Act 53 chunks) over a user's own small
+    #    larger reference corpus (hundreds of Act 53 chunks) over a user's own small
     #    set of uploaded documents, even when the document was the better answer.
     if needs_retrieval:
       try:
@@ -2837,9 +3129,8 @@ def post_chat_message(
           user_id=user_id,
           entity_id=entity_id,
           search_documents=classification["needs_document_search"],
-          search_law=classification["needs_law_search"],
+          search_reference=classification["needs_reference_search"],
           user_top_k=CHAT_USER_DOC_TOP_K,
-          reference_top_k=CHAT_REFERENCE_TOP_K,
         )
       except Exception as e:
         logger.warning(f"[Chat] Vector search failed for session {session.session_id}: {e}")
@@ -2853,9 +3144,13 @@ def post_chat_message(
 
     # ── Step 5: generate the grounded answer — Gemini call #2 for this turn,
     #    only incurred when retrieval was actually needed (or the classifier
-    #    failed open and defaulted to "search everything").
+    #    failed open and defaulted to "search everything"). followups again
+    #    ride along in this same call's JSON response — see
+    #    _generate_chat_answer_with_retrieval's docstring.
     try:
-      answer_text = _generate_chat_answer_with_retrieval(message, history, context_chunks, person_context)
+      result = _generate_chat_answer_with_retrieval(message, history, context_chunks, person_context)
+      answer_text = result["answer"]
+      followups = result.get("followups") or []
       if not answer_text:
         raise ValueError("empty response")
     except Exception as e:
@@ -2864,6 +3159,7 @@ def post_chat_message(
         "Sorry, I couldn't generate a response just now. Please try again in a moment, "
         "or rephrase your question."
       )
+      followups = []
 
   citations = _chunks_to_citations(context_chunks)
 
@@ -2874,6 +3170,7 @@ def post_chat_message(
     role="assistant",
     content=answer_text,
     citations=citations or None,
+    followups=followups or None,
   )
   db.add(assistant_msg)
   session.updated_at = datetime.datetime.now(datetime.timezone.utc)
@@ -2887,7 +3184,94 @@ def post_chat_message(
       "role": "assistant",
       "text": assistant_msg.content,
       "citations": citations,
+      "followups": followups,
     },
+  }
+
+
+@app.patch("/api/chat/{session_id}")
+def update_chat_session(
+  session_id: str,
+  payload:    dict,
+  user_id:    str = Query(..., description="Owner of the session."),
+  db: Session = Depends(get_db),
+):
+  """Partial-update a session's sidebar-facing fields — backs the sidebar's
+  3-dot menu (Pin/Unpin, Rename, Add to folder/Remove from folder). Only the
+  keys actually present in the body are touched, so e.g. renaming doesn't
+  accidentally unpin a session — each field is independent.
+
+  Request body (all optional): { "title": str, "pinned": bool, "folder": str|null }
+  Passing "folder": null (or "") removes the session from any folder.
+  Renaming here also sets title_locked=True so a later turn's auto-title
+  logic never silently overwrites a name the user chose on purpose.
+
+  updated_at is deliberately left untouched by pin/folder changes (see the
+  restore step below) — it's the "last conversation activity" signal that
+  drives the Today/Yesterday/Previous 7 days/Older recency groups, and
+  pinning/filing a session is sidebar bookkeeping, not activity. Without
+  this, SQLAlchemy's onupdate=... on ChatSession.updated_at fires on *any*
+  UPDATE to the row — including one that only flips `pinned` — which used
+  to bump a session to the top of its recency bucket just from being pinned
+  or unpinned, and (worse) meant a freshly-unpinned session could still
+  outrank its folder-mates after a refresh even though nothing in the
+  conversation itself had changed.
+
+  Returns the updated session in the same shape list_chat_sessions uses."""
+  session = db.query(ChatSession).filter(
+    ChatSession.session_id == session_id, ChatSession.user_id == user_id,
+  ).first()
+  if not session:
+    raise HTTPException(status_code=404, detail="Chat session not found.")
+
+  # Snapshot updated_at before making any changes so it can be restored
+  # after commit — see the docstring above for why.
+  original_updated_at = session.updated_at
+
+  if "title" in payload:
+    title = (payload.get("title") or "").strip()
+    if not title:
+      raise HTTPException(status_code=422, detail="title cannot be empty.")
+    session.title = title[:255]
+    session.title_locked = True
+  if "pinned" in payload:
+    new_pinned = bool(payload.get("pinned"))
+    # pinned_at is the single source of truth for pin state (see
+    # ChatSession.pinned_at) — there's no separate boolean column, so
+    # setting/clearing this IS the pin/unpin. It's also the sort key for
+    # the Pinned group / pinned-within-folder ordering, which is why unpin
+    # clears it to None rather than leaving it at its old value: a stale
+    # pinned_at was previously left in place on unpin, and kept being used
+    # as the *secondary* sort key among unpinned sessions via
+    # coalesce(pinned_at, updated_at) in list_chat_sessions — letting a
+    # long-unpinned session keep outranking its unpinned neighbors by an
+    # old pin timestamp instead of its real updated_at — exactly the "it
+    # jumps back to the top after a refresh" bug this guards against.
+    session.pinned_at = datetime.datetime.now(datetime.timezone.utc) if new_pinned else None
+  if "folder" in payload:
+    folder = payload.get("folder")
+    folder = folder.strip() if isinstance(folder, str) else folder
+    session.folder = folder[:120] if folder else None
+
+  db.commit()
+  # SQLAlchemy's onupdate=... on updated_at fires for *any* UPDATE to this
+  # row, regardless of which columns changed — including this endpoint's
+  # pin/folder-only edits. Restore the pre-commit value so pin/folder
+  # changes never masquerade as conversation activity (a title rename is
+  # arguably content, so it's the one edit here allowed to bump it).
+  if "title" not in payload:
+    session.updated_at = original_updated_at
+    db.commit()
+  db.refresh(session)
+  return {
+    "sessionId": session.session_id,
+    "entityId": session.entity_id,
+    "title": session.title,
+    "pinned": session.pinned_at is not None,
+    "pinnedAt": session.pinned_at.strftime("%Y-%m-%d %H:%M:%S") if session.pinned_at else None,
+    "folder": session.folder,
+    "createdAt": session.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+    "updatedAt": session.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
   }
 
 

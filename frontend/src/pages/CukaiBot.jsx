@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { getAllEntities, getChatSessions, searchChatSessions, getChatHistory, sendChatMessage, deleteChatSession } from '../services/api';
+import { getAllEntities, getChatSessions, searchChatSessions, getChatHistory, sendChatMessage, deleteChatSession, updateChatSession, getChatFolders, renameChatFolder, deleteChatFolder } from '../services/api';
 import cukaiBot from '../assets/cukaibot-icon.png';
 // import { jsPDF } from 'jspdf';
 
@@ -55,22 +55,6 @@ const CheckCircleIcon = () => (
   </svg>
 );
 
-const ClearIcon = () => (
-  <svg 
-    xmlns="http://www.w3.org/2000/svg" 
-    className="h-4 w-4" 
-    viewBox="0 0 24 24" 
-    fill="none" 
-    stroke="currentColor" 
-    strokeWidth="2" 
-    strokeLinecap="round" 
-    strokeLinejoin="round"
-  >
-    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-    <polyline points="3 3 3 8 8 8" />
-  </svg>
-);
-
 const DownloadIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -79,8 +63,8 @@ const DownloadIcon = () => (
   </svg>
 );
 
-const SparkleIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+const SparkleIcon = ({ className = 'h-4 w-4 text-primary' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
   </svg>
 );
@@ -141,6 +125,69 @@ const XIcon = ({ className = 'h-3.5 w-3.5' }) => (
   </svg>
 );
 
+// "Kebab" 3-dot menu trigger — same glyph Claude's own sidebar uses to
+// reveal per-session actions (pin/rename/folder/delete) without cluttering
+// the row with several always-visible icon buttons. `horizontal` lays the
+// three dots left-to-right instead of top-to-bottom (a "meatballs" menu),
+// which reads more naturally at the end of a single-line chat session row.
+const MoreIcon = ({ className = 'h-3.5 w-3.5', horizontal = false }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="currentColor">
+    {horizontal ? (
+      <>
+        <circle cx="5" cy="12" r="1.75" />
+        <circle cx="12" cy="12" r="1.75" />
+        <circle cx="19" cy="12" r="1.75" />
+      </>
+    ) : (
+      <>
+        <circle cx="12" cy="5" r="1.75" />
+        <circle cx="12" cy="12" r="1.75" />
+        <circle cx="12" cy="19" r="1.75" />
+      </>
+    )}
+  </svg>
+);
+
+const PinIcon = ({ className = 'h-3.5 w-3.5', filled = false }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 17v5" />
+    <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h.5a1 1 0 0 0 0-2h-8a1 1 0 0 0 0 2H8v4.76Z" />
+  </svg>
+);
+
+const PencilIcon = ({ className = 'h-3.5 w-3.5' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    <path d="m15 5 4 4" />
+  </svg>
+);
+
+const FolderIcon = ({ className = 'h-3.5 w-3.5' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
+  </svg>
+);
+
+const FolderPlusIcon = ({ className = 'h-3.5 w-3.5' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
+    <line x1="12" y1="11" x2="12" y2="17" />
+    <line x1="9" y1="14" x2="15" y2="14" />
+  </svg>
+);
+
+const CheckIcon = ({ className = 'h-3.5 w-3.5' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
+
+const ChevronRightIcon = ({ className = 'h-3.5 w-3.5' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="9 18 15 12 9 6" />
+  </svg>
+);
+
 // ── Mock conversation data ───────────────────────────────────────────────────
 // No longer wired up — kept as reference/fallback. The real conversation now
 // comes from GET /api/chat/{session_id}/history via getChatHistory() in the
@@ -190,26 +237,30 @@ function getInitialMessagesForEntity(entityId) {
 
 // ── Sidebar helpers ──────────────────────────────────────────────────────────
 
-/** Same relative-time convention already used in InsightsInbox.jsx, reused
- * here so timestamps read consistently across the app. */
-function timeAgo(iso) {
-  const diffMs = Date.now() - new Date(iso);
-  const mins = Math.floor(diffMs / 60000);
-  if (mins < 60) return `${Math.max(mins, 1)}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 7) return `${days}d ago`;
-  return new Date(iso).toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' });
-}
-
 /**
- * Buckets sessions into the same "Today / Yesterday / Previous 7 Days /
- * Older" groups Claude's own sidebar uses, based on each session's
- * updatedAt (so a session you just replied in jumps back to "Today" rather
- * than staying pinned to when it was first created). Sessions arrive
- * pre-sorted most-recent-first from getChatSessions(), and that order is
- * preserved within each bucket.
+ * Buckets sessions into groups for the sidebar, in this order:
+ *   1. "Pinned" — pinned sessions that are NOT filed in a folder, newest
+ *      first. A pinned session that's also in a folder stays inside that
+ *      folder instead (see below) — it just shows a small pin badge on its
+ *      row (see SessionRow) rather than being lifted out into this group.
+ *      Only once a pinned session loses its folder (folder deleted, or
+ *      explicitly moved out) does it fall into this group, since at that
+ *      point "pinned" is the only organizing fact left about it.
+ *   2. One group per folder the user has created, alphabetically. Each
+ *      folder group contains ALL of that folder's sessions — pinned and
+ *      unpinned alike — so pinning a session never moves it out of the
+ *      folder it's filed under. Within a folder, pinned sessions float to
+ *      the top (see sortFolderItems below) so pinning one moves it there
+ *      immediately, without needing a refresh to pick up the server's own
+ *      pinned-first ordering.
+ *   3. The same "Today / Yesterday / Previous 7 Days / Older" recency
+ *      buckets Claude's sidebar uses, for whatever's left (no folder, not
+ *      pinned) — based on each session's updatedAt so a session you just
+ *      replied in jumps back to "Today" rather than staying pinned to when
+ *      it was first created.
+ * Sessions arrive pre-sorted most-recent-first from getChatSessions() (with
+ * pinned-and-unfiled already sorted first server-side too), and that order
+ * is preserved within each bucket.
  */
 function groupSessionsByRecency(sessions) {
   const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
@@ -217,19 +268,67 @@ function groupSessionsByRecency(sessions) {
   const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
   const weekAgo = new Date(today); weekAgo.setDate(weekAgo.getDate() - 7);
 
-  const groups = [
+  // Folder membership takes priority over pinned status for *placement*:
+  // a pinned session with a folder stays grouped under that folder. Only
+  // pinned sessions with no folder go into the top-level "Pinned" group.
+  // Sorted newest-pinned-first by pinnedAt (see sortFolderItems below for
+  // why this can't be updatedAt) so pinning/unpinning re-sorts this group
+  // instantly from local state too, not just within-folder pinned items.
+  const pinnedUnfiled = sessions
+    .filter((s) => s.pinned && !s.folder)
+    .sort((a, b) => new Date(b.pinnedAt ?? b.updatedAt) - new Date(a.pinnedAt ?? a.updatedAt));
+  const foldered = sessions.filter((s) => s.folder);
+  const unfiledUnpinned = sessions.filter((s) => !s.folder && !s.pinned);
+
+  // Within a folder, pinned sessions float to the top (newest-pinned
+  // first), then the rest keep the incoming most-recent-first order. This
+  // is done here — rather than relying on sessions already arriving
+  // pre-sorted from the server — so toggling pin on a session re-sorts its
+  // folder instantly from local state, without waiting on a refetch.
+  //
+  // Sorted by pinnedAt, NOT updatedAt: pinnedAt is a dedicated "when was
+  // this pinned" timestamp (see handlePinSession / the backend's
+  // ChatSession.pinned_at) that's independent of conversation activity.
+  // Using updatedAt here used to cause a real bug — pinning or unpinning a
+  // session bumps its updatedAt as a side effect of the PATCH request, so
+  // sorting pinned-group order by updatedAt meant the *act* of pinning
+  // could reorder other already-pinned sessions, and an unpinned session's
+  // bumped updatedAt could outrank its folder-mates once the server-side
+  // list was refetched — even though nothing about the conversation itself
+  // had changed. Falling back to updatedAt only covers sessions pinned
+  // before pinnedAt existed server-side.
+  const sortFolderItems = (items) => {
+    const pinnedItems = items.filter((s) => s.pinned).sort((a, b) => new Date(b.pinnedAt ?? b.updatedAt) - new Date(a.pinnedAt ?? a.updatedAt));
+    const unpinnedItems = items.filter((s) => !s.pinned);
+    return [...pinnedItems, ...unpinnedItems];
+  };
+
+  const folderNames = [...new Set(foldered.map((s) => s.folder))].sort();
+  const folderGroups = folderNames.map((name) => ({
+    label: name,
+    isFolder: true,
+    items: sortFolderItems(foldered.filter((s) => s.folder === name)),
+  }));
+
+  const recencyGroups = [
     { label: 'Today', items: [] },
     { label: 'Yesterday', items: [] },
     { label: 'Previous 7 days', items: [] },
     { label: 'Older', items: [] },
   ];
-  for (const s of sessions) {
+  for (const s of unfiledUnpinned) {
     const updated = startOfDay(s.updatedAt);
-    if (updated.getTime() === today.getTime()) groups[0].items.push(s);
-    else if (updated.getTime() === yesterday.getTime()) groups[1].items.push(s);
-    else if (updated > weekAgo) groups[2].items.push(s);
-    else groups[3].items.push(s);
+    if (updated.getTime() === today.getTime()) recencyGroups[0].items.push(s);
+    else if (updated.getTime() === yesterday.getTime()) recencyGroups[1].items.push(s);
+    else if (updated > weekAgo) recencyGroups[2].items.push(s);
+    else recencyGroups[3].items.push(s);
   }
+
+  const groups = [
+    ...(pinnedUnfiled.length > 0 ? [{ label: 'Pinned', groupKey: '__pinned__', isPinned: true, items: pinnedUnfiled }] : []),
+    ...folderGroups.map((g) => ({ ...g, groupKey: `folder:${g.label}` })),
+    ...recencyGroups.map((g) => ({ ...g, groupKey: `recency:${g.label}` })),
+  ];
   return groups.filter((g) => g.items.length > 0);
 }
 
@@ -300,6 +399,17 @@ function MarkdownText({ text, className = '' }) {
 }
 
 function CitationCard({ citation, onPreview }) {
+  // Collapsed by default — extraExcerpts (when present) are additional
+  // page-text from the SAME document that also matched the question (see
+  // main.py's _chunks_to_citations: one card per reference_no, with the
+  // runner-up chunks folded in here rather than rendered as their own
+  // duplicate-looking cards). Local, not lifted to parent state, since
+  // each card's expand/collapse is independent and doesn't need to survive
+  // a re-render of the citations list (switching messages naturally
+  // remounts this component with a fresh collapsed state, which is the
+  // right default for a citation you haven't looked at yet).
+  const [showExtraExcerpts, setShowExtraExcerpts] = useState(false);
+
   // No click-based "did it work?" detection here on purpose. window.open()
   // with 'noopener' set gives no trustworthy signal either way: some
   // browsers return null even on a successful open (noopener deliberately
@@ -324,7 +434,7 @@ function CitationCard({ citation, onPreview }) {
   };
 
   return (
-    <div className="rounded-xl border border-border bg-surface p-4 shadow-sm">
+    <div className="min-w-0 rounded-xl border border-border bg-surface p-4 shadow-sm">
       <div className="mb-2 flex items-start justify-between gap-2">
         <span className="inline-flex items-center rounded-full bg-headings px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
           {citation.tag}
@@ -343,7 +453,44 @@ function CitationCard({ citation, onPreview }) {
       {citation.pageNumber && (
         <p className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">Page {citation.pageNumber}</p>
       )}
-      <p className="mt-1.5 font-mono text-xs leading-relaxed text-muted">{citation.snippet}</p>
+      <p className="mt-1.5 break-words font-mono text-xs leading-relaxed text-muted">{citation.snippet}</p>
+      {citation.extraExcerptCount > 0 && (
+        <div className="mt-1">
+          <button
+            className="text-[10px] font-medium text-primary underline decoration-dotted underline-offset-2"
+            onClick={() => setShowExtraExcerpts((v) => !v)}
+          >
+            {showExtraExcerpts
+              ? 'Hide extra excerpt' + (citation.extraExcerptCount > 1 ? 's' : '')
+              : `+${citation.extraExcerptCount} more excerpt${citation.extraExcerptCount > 1 ? 's' : ''} from this source`}
+          </button>
+          {showExtraExcerpts && (
+            <div className="mt-2 space-y-2 border-l-2 border-border pl-2.5">
+              {(citation.extraExcerpts || []).map((excerpt, i) => (
+                <div key={i}>
+                  <div className="flex items-center justify-between gap-2">
+                    {excerpt.pageNumber ? (
+                      <p className="text-[10px] font-medium uppercase tracking-wide text-muted">Page {excerpt.pageNumber}</p>
+                    ) : (
+                      <span />
+                    )}
+                    {excerpt.sourceUrl && (
+                      <button
+                        className="text-muted transition-colors hover:text-primary"
+                        onClick={() => window.open(excerpt.sourceUrl, '_blank', 'noopener,noreferrer')}
+                        title={excerpt.pageNumber ? `Open source document (page ${excerpt.pageNumber})` : 'Open source document'}
+                      >
+                        <ExternalLinkIcon />
+                      </button>
+                    )}
+                  </div>
+                  <p className="mt-0.5 break-words font-mono text-xs leading-relaxed text-muted">{excerpt.snippet}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {citation.verified && (
         <div className="mt-3 flex items-center gap-1.5 border-t border-border pt-2.5">
           <CheckCircleIcon />
@@ -358,9 +505,8 @@ function CitationCard({ citation, onPreview }) {
               className="text-primary underline"
               onClick={() => window.open(citation.fallbackUrl, '_blank', 'noopener,noreferrer')}
             >
-              search the official LHDN index instead
+              search {citation.fallbackLabel || 'the official source index'} instead.
             </button>
-            .
           </p>
         </div>
       )}
@@ -459,8 +605,9 @@ function EmptyCitationsPlaceholder() {
   );
 }
 
-function AssistantMessage({ message, isActive, onSelectCitations }) {
+function AssistantMessage({ message, isActive, onSelectCitations, showFollowups = false, onSelectFollowup }) {
   const citationCount = message.citations?.length || 0;
+  const followups = showFollowups ? (message.followups || []).slice(0, 3) : [];
   return (
     <div className="flex gap-4">
       {/* Bot avatar */}
@@ -514,6 +661,38 @@ function AssistantMessage({ message, isActive, onSelectCitations }) {
             </div>
           </div>
         )}
+
+        {/* Suggested follow-ups — inline, part of the scrolling message flow
+            (not a fixed panel below it, which used to permanently shrink the
+            conversation viewport on every screen — see the screenshot that
+            prompted this change). Only the latest assistant reply ever shows
+            these (showFollowups, set by the parent from lastAssistantMessageId),
+            and clicking one dismisses this block for THIS message via
+            onSelectFollowup — the next reply gets its own fresh set instead
+            of two messages both showing chips at once. */}
+        {followups.length > 0 && (
+          <div>
+            <div className="mb-1.5 flex items-center gap-1.5">
+              <SparkleIcon className="h-3.5 w-3.5 text-primary" />
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted">
+                Suggested follow-ups
+              </span>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              {followups.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  onClick={() => onSelectFollowup?.(prompt)}
+                  className="group flex w-full items-center gap-2 rounded-lg border border-border bg-slate-50 px-3 py-2 text-left text-xs font-medium text-[#334155] transition-colors hover:border-primary hover:bg-primary-tint hover:text-primary"
+                >
+                  <span className="flex-1 min-w-0">{prompt}</span>
+                  <ChevronRightIcon className="h-3.5 w-3.5 shrink-0 text-slate-300 transition-colors group-hover:text-primary" />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -562,9 +741,34 @@ function TypingIndicator() {
 
 function ChatHistorySidebar({
   isOpen, onToggle, sessions, isLoading, isLoadingMore, hasMore, onLoadMore, activeSessionId, onSelectSession, onNewChat, onDeleteSession,
+  onPinSession, onRenameSession, onAddToFolder, onRemoveFromFolder, onRenameFolder, onDeleteFolder, folders,
   searchQuery, onSearchQueryChange, searchResults, searchLoading, isSearchActive,
 }) {
   const grouped = groupSessionsByRecency(sessions);
+
+  // Which folder groups are collapsed — keyed by groupKey (e.g.
+  // "folder:Client A"), persisted so a folder someone collapsed stays
+  // collapsed across reloads instead of re-expanding every visit. Only
+  // folder groups are collapsible (Pinned and the recency buckets stay
+  // always-expanded, same as Claude's own sidebar), so this only ever
+  // needs to track keys starting with "folder:".
+  const [collapsedFolders, setCollapsedFolders] = useState(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem('cukaiCollapsedFolders') || '[]'));
+    } catch (_) {
+      return new Set();
+    }
+  });
+
+  function toggleFolderCollapsed(groupKey) {
+    setCollapsedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      localStorage.setItem('cukaiCollapsedFolders', JSON.stringify([...next]));
+      return next;
+    });
+  }
 
   // Fires onLoadMore once the list is scrolled within ~80px of its bottom —
   // the same "near the end" threshold pattern most infinite-scroll lists
@@ -676,6 +880,11 @@ function ChatHistorySidebar({
                   isActive={s.sessionId === activeSessionId}
                   onSelectSession={onSelectSession}
                   onDeleteSession={onDeleteSession}
+                  onPinSession={onPinSession}
+                  onRenameSession={onRenameSession}
+                  onAddToFolder={onAddToFolder}
+                  onRemoveFromFolder={onRemoveFromFolder}
+                  folders={folders}
                   matchedIn={s.matchedIn}
                   snippet={s.snippet}
                 />
@@ -691,22 +900,47 @@ function ChatHistorySidebar({
           </div>
         ) : (
           <>
-            {grouped.map((group) => (
-              <div key={group.label}>
-                <p className="px-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-muted">{group.label}</p>
-                <div className="space-y-0.5">
-                  {group.items.map((s) => (
-                    <SessionRow
-                      key={s.sessionId}
-                      session={s}
-                      isActive={s.sessionId === activeSessionId}
-                      onSelectSession={onSelectSession}
-                      onDeleteSession={onDeleteSession}
+            {grouped.map((group) => {
+              const isCollapsible = group.isFolder;
+              const isCollapsed = isCollapsible && collapsedFolders.has(group.groupKey);
+              return (
+                <div key={group.groupKey}>
+                  {isCollapsible ? (
+                    <FolderGroupHeader
+                      name={group.label}
+                      count={group.items.length}
+                      isCollapsed={isCollapsed}
+                      onToggleCollapsed={() => toggleFolderCollapsed(group.groupKey)}
+                      onRenameFolder={(newName) => onRenameFolder(group.label, newName)}
+                      onDeleteFolder={() => onDeleteFolder(group.label)}
                     />
-                  ))}
+                  ) : (
+                    <p className="flex items-center gap-1 px-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-muted">
+                      {group.isPinned && <PinIcon filled className="h-2.5 w-2.5" />}
+                      {group.label}
+                    </p>
+                  )}
+                  {!isCollapsed && (
+                    <div className="space-y-0.5">
+                      {group.items.map((s) => (
+                        <SessionRow
+                          key={s.sessionId}
+                          session={s}
+                          isActive={s.sessionId === activeSessionId}
+                          onSelectSession={onSelectSession}
+                          onDeleteSession={onDeleteSession}
+                          onPinSession={onPinSession}
+                          onRenameSession={onRenameSession}
+                          onAddToFolder={onAddToFolder}
+                          onRemoveFromFolder={onRemoveFromFolder}
+                          folders={folders}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
             {/* Bottom-of-list state: either a small spinner row while the
                 next page is being fetched, or (once hasMore is false) an
                 "end of history" marker so it's clear scrolling further
@@ -725,25 +959,515 @@ function ChatHistorySidebar({
 }
 
 /**
+ * A folder's group header in the sidebar — the collapse/expand chevron and
+ * folder name, plus a small 3-dot menu of its own for Rename folder /
+ * Delete folder. Renaming here is a group-level action (it bulk-renames the
+ * folder tag on every session filed under it — see renameChatFolder), which
+ * is why it lives on the header rather than in each session's own menu.
+ */
+function FolderGroupHeader({ name, count, isCollapsed, onToggleCollapsed, onRenameFolder, onDeleteFolder }) {
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(name);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [anchorRect, setAnchorRect] = useState(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const menuButtonRef = useRef(null);
+  const menuRef = useRef(null);
+  const renameInputRef = useRef(null);
+
+  useEffect(() => {
+    if (renaming) {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+  }, [renaming]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleClick(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) { setMenuOpen(false); setConfirmingDelete(false); }
+    }
+    function handleKey(e) { if (e.key === 'Escape') { setMenuOpen(false); setConfirmingDelete(false); } }
+    document.addEventListener('mousedown', handleClick);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [menuOpen]);
+
+  function openMenu(e) {
+    e.stopPropagation();
+    setAnchorRect(menuButtonRef.current.getBoundingClientRect());
+    setMenuOpen(true);
+  }
+
+  function startRename() {
+    setRenameValue(name);
+    setRenaming(true);
+  }
+
+  function commitRename() {
+    const trimmed = renameValue.trim();
+    setRenaming(false);
+    if (trimmed && trimmed !== name) onRenameFolder(trimmed);
+  }
+
+  if (renaming) {
+    return (
+      <div className="flex items-center gap-1.5 rounded-md px-2 py-1 bg-slate-50">
+        <FolderIcon className="h-2.5 w-2.5 shrink-0 text-muted" />
+        <input
+          ref={renameInputRef}
+          type="text"
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitRename();
+            if (e.key === 'Escape') setRenaming(false);
+          }}
+          className="min-w-0 flex-1 rounded border border-primary bg-surface px-1 py-0.5 text-[11px] text-headings outline-none"
+        />
+        <button onClick={commitRename} title="Save" className="shrink-0 rounded p-0.5 text-primary hover:bg-primary-tint">
+          <CheckIcon className="h-3 w-3" />
+        </button>
+        <button onClick={() => setRenaming(false)} title="Cancel" className="shrink-0 rounded p-0.5 text-slate-300 hover:text-headings">
+          <XIcon className="h-3 w-3" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group/folder flex items-center gap-1 rounded-md px-2 pb-1 pt-0.5">
+      <button
+        onClick={onToggleCollapsed}
+        className="flex min-w-0 flex-1 items-center gap-1 text-left text-[10px] font-bold uppercase tracking-wider text-muted transition-colors hover:text-headings"
+      >
+        <ChevronRightIcon className={`h-2.5 w-2.5 shrink-0 transition-transform ${isCollapsed ? '' : 'rotate-90'}`} />
+        <FolderIcon className="h-2.5 w-2.5 shrink-0" />
+        <span className="truncate">{name}</span>
+        <span className="shrink-0 text-[9px] font-semibold text-slate-300">{count}</span>
+      </button>
+      <button
+        ref={menuButtonRef}
+        onClick={openMenu}
+        title="Folder options"
+        className={`shrink-0 rounded p-0.5 text-slate-300 transition-all hover:bg-slate-200 hover:text-headings ${
+          menuOpen ? 'opacity-100 bg-slate-200' : 'opacity-0 group-hover/folder:opacity-100'
+        }`}
+      >
+        <MoreIcon className="h-3 w-3" />
+      </button>
+      {menuOpen && anchorRect && (
+        <div
+          ref={menuRef}
+          style={{
+            position: 'fixed',
+            left: Math.min(anchorRect.right - 160, window.innerWidth - 168),
+            top: anchorRect.bottom + 4,
+            width: 160,
+          }}
+          className="z-50 rounded-xl border border-border bg-surface py-1 shadow-lg"
+        >
+          <button
+            onClick={() => { startRename(); setMenuOpen(false); }}
+            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-headings transition-colors hover:bg-slate-50"
+          >
+            <PencilIcon className="h-3.5 w-3.5 text-muted" />
+            Rename folder
+          </button>
+          {!confirmingDelete ? (
+            <button
+              onClick={() => setConfirmingDelete(true)}
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-critical transition-colors hover:bg-critical-bg"
+            >
+              <TrashIcon className="h-3.5 w-3.5" />
+              Delete folder
+            </button>
+          ) : (
+            <div className="px-3 py-2">
+              <p className="mb-1.5 text-[11px] text-muted">Delete folder? Chats stay, just un-filed.</p>
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => { onDeleteFolder(); setMenuOpen(false); }}
+                  className="flex-1 rounded-md bg-critical px-2 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-critical/90"
+                >
+                  Delete
+                </button>
+                <button
+                  onClick={() => setConfirmingDelete(false)}
+                  className="flex-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted transition-colors hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The sidebar's per-session 3-dot ("kebab") menu — Pin/Unpin, Rename, Add to
+ * folder (with a submenu of existing folders plus "New folder…"), and
+ * Delete. Mirrors Claude's own sidebar session menu. Rendered via a fixed
+ * overlay positioned under the trigger button rather than a plain
+ * `absolute` dropdown, so it isn't clipped by the sidebar's own
+ * `overflow-y-auto` session list.
+ */
+function SessionMenu({
+  session: s, onClose, anchorRect, onPin, onRename, onAddToFolder, onRemoveFromFolder, onDelete, folders,
+}) {
+  // Folder flyout opens on hover (mouse enter) and stays open while the
+  // pointer is anywhere over either the trigger row or the flyout itself —
+  // same behavior as a native app's nested menu, so the folder list appears
+  // immediately instead of needing an extra click first. A short close
+  // delay (rather than closing the instant the pointer leaves) keeps the
+  // flyout from vanishing during the brief gap while moving the mouse from
+  // the trigger row over to the flyout panel itself.
+  const [showFolderFlyout, setShowFolderFlyout] = useState(false);
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const menuRef = useRef(null);
+  const folderTriggerRef = useRef(null);
+  const closeFlyoutTimer = useRef(null);
+
+  useEffect(() => {
+    function handleClick(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) onClose();
+    }
+    function handleKey(e) { if (e.key === 'Escape') onClose(); }
+    document.addEventListener('mousedown', handleClick);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [onClose]);
+
+  useEffect(() => () => clearTimeout(closeFlyoutTimer.current), []);
+
+  function openFlyoutNow() {
+    clearTimeout(closeFlyoutTimer.current);
+    setShowFolderFlyout(true);
+  }
+  function closeFlyoutSoon() {
+    // While the "New folder" name input is showing, the mouse leaving the
+    // panel just means the person moved their cursor to type or click
+    // elsewhere on the screen — it doesn't mean they're done with the
+    // flyout. Closing it out from under them here would silently discard
+    // whatever they were about to create, so once that input is open the
+    // flyout only closes via Cancel/Create, Escape, or clicking outside the
+    // whole menu (handled by SessionMenu's own document click listener).
+    if (showNewFolderInput) return;
+    clearTimeout(closeFlyoutTimer.current);
+    closeFlyoutTimer.current = setTimeout(() => {
+      setShowFolderFlyout(false);
+      setShowNewFolderInput(false);
+      setNewFolderName('');
+    }, 150);
+  }
+
+  // Position just under the trigger button, right-aligned to it — flips to
+  // open upward instead if there isn't enough room below (e.g. the last row
+  // in a long list), same as most sidebar kebab menus.
+  const MENU_WIDTH = 208;
+  const MENU_EST_HEIGHT = 216;
+  const spaceBelow = window.innerHeight - anchorRect.bottom;
+  const openUpward = spaceBelow < MENU_EST_HEIGHT && anchorRect.top > MENU_EST_HEIGHT;
+  const style = {
+    position: 'fixed',
+    left: Math.min(anchorRect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8),
+    top: openUpward ? undefined : anchorRect.bottom + 4,
+    bottom: openUpward ? window.innerHeight - anchorRect.top + 4 : undefined,
+    width: MENU_WIDTH,
+  };
+
+  // The flyout panel opens to the RIGHT of the main menu by default (the
+  // sidebar itself sits on the left edge of the screen, so there's normally
+  // plenty of room there) — only flips to the left if the main menu is
+  // pushed far enough right that a right-side flyout would run off-screen.
+  const flyoutStyle = (() => {
+    const rightEdgeIfOpenRight = anchorRect.right + 4 + MENU_WIDTH;
+    const openRight = rightEdgeIfOpenRight <= window.innerWidth - 8;
+    return {
+      position: 'fixed',
+      top: style.top,
+      bottom: style.bottom,
+      left: openRight
+        ? anchorRect.right + 4
+        : Math.max(8, anchorRect.right - MENU_WIDTH - MENU_WIDTH - 4),
+      width: MENU_WIDTH,
+    };
+  })();
+
+  function submitNewFolder() {
+    const name = newFolderName.trim();
+    if (!name) return;
+    onAddToFolder(name);
+    onClose();
+  }
+
+  return (
+    <div
+      ref={menuRef}
+      style={style}
+      // This menu is rendered as a DOM descendant of the session row it
+      // belongs to (so it can sit inside the row's hover/group styling),
+      // even though it's visually a fixed-position overlay elsewhere on
+      // screen. Without stopping propagation here, every click inside it —
+      // Pin, Rename, a folder in the "Move to folder" flyout, Delete,
+      // Cancel, anything — would bubble up to the row's own onClick and
+      // switch the active conversation to whichever session this menu
+      // happens to belong to, even when opened from a session other than
+      // the one currently open. Stopping it here keeps the current session
+      // selected no matter which menu action is chosen.
+      onClick={(e) => e.stopPropagation()}
+      className="z-50 rounded-xl border border-border bg-surface py-1 shadow-lg"
+    >
+      <button
+        onClick={() => { onPin(!s.pinned); onClose(); }}
+        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-headings transition-colors hover:bg-slate-50"
+      >
+        <PinIcon filled={s.pinned} className="h-3.5 w-3.5 text-muted" />
+        {s.pinned ? 'Unpin' : 'Pin'}
+      </button>
+      <button
+        onClick={() => { onRename(); onClose(); }}
+        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-headings transition-colors hover:bg-slate-50"
+      >
+        <PencilIcon className="h-3.5 w-3.5 text-muted" />
+        Rename
+      </button>
+
+      {/* Add/Move to folder — hovering this row opens the folder flyout
+          immediately (no click needed); clicking or keyboard-focusing it
+          also opens it, so it stays reachable without a mouse. */}
+      <div
+        ref={folderTriggerRef}
+        onMouseEnter={openFlyoutNow}
+        onMouseLeave={closeFlyoutSoon}
+        className="relative"
+      >
+        <button
+          onClick={openFlyoutNow}
+          onFocus={openFlyoutNow}
+          className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-headings transition-colors hover:bg-slate-50 ${
+            showFolderFlyout ? 'bg-slate-50' : ''
+          }`}
+        >
+          <FolderPlusIcon className="h-3.5 w-3.5 text-muted" />
+          <span className="flex-1">{s.folder ? 'Move to folder' : 'Add to folder'}</span>
+          <ChevronRightIcon className="h-3 w-3 text-slate-300" />
+        </button>
+
+        {showFolderFlyout && (
+          <div
+            onMouseEnter={openFlyoutNow}
+            onMouseLeave={closeFlyoutSoon}
+            style={flyoutStyle}
+            className="z-50 rounded-xl border border-border bg-surface py-1 shadow-lg"
+          >
+            {!showNewFolderInput ? (
+              <>
+                <p className="px-3 pb-1 pt-1.5 text-[10px] font-bold uppercase tracking-wider text-muted">Folders</p>
+                <div className="max-h-40 overflow-y-auto">
+                  {folders.length === 0 && (
+                    <p className="px-3 py-1.5 text-[11px] text-muted">No folders yet.</p>
+                  )}
+                  {folders.map((f) => (
+                    <button
+                      key={f}
+                      onClick={() => { onAddToFolder(f); onClose(); }}
+                      className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-xs font-medium transition-colors hover:bg-slate-50 ${
+                        s.folder === f ? 'text-primary' : 'text-headings'
+                      }`}
+                    >
+                      <FolderIcon className="h-3.5 w-3.5 shrink-0 text-muted" />
+                      <span className="flex-1 truncate">{f}</span>
+                      {s.folder === f && <CheckIcon className="h-3 w-3 shrink-0 text-primary" />}
+                    </button>
+                  ))}
+                </div>
+                <div className="my-1 border-t border-border" />
+                <button
+                  onClick={() => setShowNewFolderInput(true)}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-primary transition-colors hover:bg-primary-tint"
+                >
+                  <PlusIcon className="h-3.5 w-3.5" />
+                  New folder
+                </button>
+              </>
+            ) : (
+              <div className="p-2">
+                <input
+                  autoFocus
+                  type="text"
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') submitNewFolder(); }}
+                  placeholder="Folder name"
+                  className="mb-1.5 w-full rounded-md border border-border px-2 py-1.5 text-xs text-headings outline-none focus:border-primary"
+                />
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={submitNewFolder}
+                    disabled={!newFolderName.trim()}
+                    className="flex-1 rounded-md bg-primary px-2 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Create
+                  </button>
+                  <button
+                    onClick={() => { setShowNewFolderInput(false); setNewFolderName(''); }}
+                    className="flex-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted transition-colors hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {s.folder && (
+        <button
+          onClick={() => { onRemoveFromFolder(); onClose(); }}
+          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-headings transition-colors hover:bg-slate-50"
+        >
+          <FolderIcon className="h-3.5 w-3.5 text-muted" />
+          Remove from folder
+        </button>
+      )}
+      <div className="my-1 border-t border-border" />
+      {!confirmingDelete ? (
+        <button
+          onClick={() => setConfirmingDelete(true)}
+          className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-critical transition-colors hover:bg-critical-bg"
+        >
+          <TrashIcon className="h-3.5 w-3.5" />
+          Delete
+        </button>
+      ) : (
+        <div className="px-3 py-2">
+          <p className="mb-1.5 text-[11px] text-muted">Delete this conversation?</p>
+          <div className="flex gap-1.5">
+            <button
+              onClick={() => { onDelete(); onClose(); }}
+              className="flex-1 rounded-md bg-critical px-2 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-critical/90"
+            >
+              Delete
+            </button>
+            <button
+              onClick={() => setConfirmingDelete(false)}
+              className="flex-1 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted transition-colors hover:bg-slate-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * Single row in the sidebar's session list — shared between the normal
  * recency-grouped list and search results, so the two only differ in what's
  * shown below the title: search results additionally show a "Title"/"Message"
  * badge and a matched snippet (from searchChatSessions' matchedIn/snippet),
  * while the normal list just shows the relative timestamp.
+ *
+ * The trash icon that used to always sit at the row's right edge is now a
+ * 3-dot menu trigger (see SessionMenu) offering Pin/Unpin, Rename, Add to
+ * folder, and Delete — the same customization set Claude's own sidebar
+ * exposes per-conversation.
  */
-function SessionRow({ session: s, isActive, onSelectSession, onDeleteSession, matchedIn, snippet }) {
+function SessionRow({
+  session: s, isActive, onSelectSession, onDeleteSession, onPinSession, onRenameSession,
+  onAddToFolder, onRemoveFromFolder, folders, matchedIn, snippet,
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [anchorRect, setAnchorRect] = useState(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(s.title || '');
+  const menuButtonRef = useRef(null);
+  const renameInputRef = useRef(null);
+
+  useEffect(() => {
+    if (renaming) {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+  }, [renaming]);
+
+  function openMenu(e) {
+    e.stopPropagation();
+    setAnchorRect(menuButtonRef.current.getBoundingClientRect());
+    setMenuOpen(true);
+  }
+
+  function startRename() {
+    setRenameValue(s.title || '');
+    setRenaming(true);
+  }
+
+  function commitRename() {
+    const trimmed = renameValue.trim();
+    setRenaming(false);
+    if (trimmed && trimmed !== s.title) onRenameSession(s.sessionId, trimmed);
+  }
+
+  if (renaming) {
+    return (
+      <div className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 bg-slate-50">
+        <input
+          ref={renameInputRef}
+          type="text"
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitRename();
+            if (e.key === 'Escape') setRenaming(false);
+          }}
+          className="min-w-0 flex-1 rounded-md border border-primary bg-surface px-1.5 py-1 text-xs text-headings outline-none"
+        />
+        <button
+          onClick={(e) => { e.stopPropagation(); commitRename(); }}
+          title="Save"
+          className="shrink-0 rounded-md p-1 text-primary transition-colors hover:bg-primary-tint"
+        >
+          <CheckIcon />
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); setRenaming(false); }}
+          title="Cancel"
+          className="shrink-0 rounded-md p-1 text-slate-300 transition-colors hover:text-headings"
+        >
+          <XIcon />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div
       onClick={() => onSelectSession(s.sessionId)}
-      className={`group flex items-center gap-1.5 rounded-lg px-2 py-2 cursor-pointer transition-colors ${
+      className={`group flex items-center gap-1 rounded-lg px-2 py-2 cursor-pointer transition-colors ${
         isActive ? 'bg-primary-tint' : 'hover:bg-slate-50'
       }`}
     >
+      {s.pinned && <PinIcon filled className="h-3 w-3 shrink-0 text-muted" />}
       <div className="min-w-0 flex-1">
         <p className={`truncate text-xs font-medium ${isActive ? 'text-primary' : 'text-headings'}`}>
           {s.title || 'New conversation'}
         </p>
-        {matchedIn ? (
+        {matchedIn && (
           <div className="flex items-center gap-1">
             <span className="shrink-0 rounded bg-slate-100 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted">
               {matchedIn === 'title' ? 'Title' : 'Message'}
@@ -752,18 +1476,93 @@ function SessionRow({ session: s, isActive, onSelectSession, onDeleteSession, ma
               <p className="truncate text-[10px] text-muted">{snippet}</p>
             )}
           </div>
-        ) : (
-          <p className="truncate text-[10px] text-muted">{timeAgo(s.updatedAt)}</p>
         )}
       </div>
       <button
-        onClick={(e) => { e.stopPropagation(); onDeleteSession(s.sessionId); }}
-        title="Delete conversation"
-        className="shrink-0 rounded-md p-1 text-slate-300 opacity-0 transition-all hover:bg-critical-bg hover:text-critical group-hover:opacity-100"
+        ref={menuButtonRef}
+        onClick={openMenu}
+        title="More options"
+        className={`shrink-0 rounded-md p-1 text-slate-300 transition-all hover:bg-slate-200 hover:text-headings ${
+          menuOpen ? 'opacity-100 bg-slate-200' : 'opacity-0 group-hover:opacity-100'
+        }`}
       >
-        <TrashIcon />
+        <MoreIcon horizontal />
       </button>
+      {menuOpen && anchorRect && (
+        <SessionMenu
+          session={s}
+          anchorRect={anchorRect}
+          folders={folders}
+          onClose={() => setMenuOpen(false)}
+          onPin={(pinned) => onPinSession(s.sessionId, pinned)}
+          onRename={startRename}
+          onAddToFolder={(folder) => onAddToFolder(s.sessionId, folder)}
+          onRemoveFromFolder={() => onRemoveFromFolder(s.sessionId)}
+          onDelete={() => onDeleteSession(s.sessionId)}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Chat header's title, editable in place. Click (or focus) the title to swap
+ * it for a text input — same commit/cancel behavior as the sidebar's
+ * SessionRow rename input (Enter/blur saves, Escape cancels) — so the two
+ * renaming entry points feel like the same feature. Falls back to the
+ * "Tax Advisory Assistant" placeholder whenever there's no active session
+ * yet, and that placeholder isn't itself editable (there's no session to
+ * rename until the first message creates one).
+ */
+function ChatHeaderTitle({ title, sessionId, onRename }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(title || '');
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  function startEditing() {
+    if (!sessionId) return;
+    setValue(title || '');
+    setEditing(true);
+  }
+
+  function commit() {
+    const trimmed = value.trim();
+    setEditing(false);
+    if (trimmed && trimmed !== title) onRename(sessionId, trimmed);
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit();
+          if (e.key === 'Escape') setEditing(false);
+        }}
+        className="w-full max-w-xs rounded-md border border-primary bg-surface px-1.5 py-0.5 text-sm font-bold text-headings outline-none"
+      />
+    );
+  }
+
+  return (
+    <p
+      onClick={startEditing}
+      title={sessionId ? 'Click to rename' : undefined}
+      className={`truncate text-sm font-bold text-headings ${sessionId ? 'cursor-text rounded-md px-1.5 py-0.5 -mx-1.5 transition-colors hover:bg-slate-50' : ''}`}
+    >
+      {title || 'Tax Advisory Assistant'}
+    </p>
   );
 }
 
@@ -773,6 +1572,14 @@ function CukaiBot() {
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  // Message IDs whose inline "Suggested follow-ups" the user has already
+  // acted on (clicked one of the 3 questions) — see AssistantMessage's
+  // followups block. Only ever matters for the LATEST assistant message
+  // (older ones never render followups regardless, see the render check
+  // below), but tracked as a Set rather than a single id so switching
+  // sessions or reloading history can't leave a stale dismissal pointing at
+  // the wrong message.
+  const [dismissedFollowupIds, setDismissedFollowupIds] = useState(() => new Set());
   const [activeCitations, setActiveCitations] = useState([]);
   // Which assistant message's citations are currently shown in the side
   // panel — lets the UI highlight "you're viewing message X's sources" and
@@ -805,6 +1612,25 @@ function CukaiBot() {
   // yet. Starts true so the very first scroll-to-bottom check (before the
   // initial load even resolves) doesn't skip fetching.
   const [sessionsHasMore, setSessionsHasMore] = useState(true);
+
+  // Distinct folder names the user has created (via the sidebar's "Add to
+  // folder" menu) — offered as existing choices in SessionMenu's folder
+  // submenu, alongside a "New folder…" option. Refreshed any time a session
+  // is filed into a brand-new folder, so it doesn't require a full page
+  // reload to show up as a pickable option for other sessions right away.
+  const [folders, setFolders] = useState([]);
+
+  async function refreshFolders() {
+    const userId = localStorage.getItem('userId');
+    if (!userId) { setFolders([]); return; }
+    try {
+      const res = await getChatFolders(userId, activeEntity?.id ?? null);
+      setFolders(res?.folders || []);
+    } catch (_) {
+      // Leave the existing folder list as-is on failure — worst case the
+      // submenu is briefly missing a folder someone just added elsewhere.
+    }
+  }
 
   // ── Chat history search ─────────────────────────────────────────────────
   // Searches BOTH session titles and message content (see searchChatSessions
@@ -872,6 +1698,7 @@ function CukaiBot() {
 
     if (!resumeSessionId || !userId) {
       setMessages([]);
+      setDismissedFollowupIds(new Set());
       setActiveCitations([]);
       setActiveCitationsMessageId(null);
       setSessionId(null);
@@ -885,6 +1712,7 @@ function CukaiBot() {
         if (cancelled) return;
         setSessionId(history.sessionId);
         setMessages(history.messages || []);
+        setDismissedFollowupIds(new Set());
         const lastWithCitations = [...(history.messages || [])].reverse().find(m => m.citations?.length);
         setActiveCitations(lastWithCitations?.citations || []);
         setActiveCitationsMessageId(lastWithCitations?.id ?? null);
@@ -901,6 +1729,7 @@ function CukaiBot() {
         // the same empty/welcome state a brand-new entity would show, and
         // stop remembering a session that no longer resolves.
         setMessages([]);
+        setDismissedFollowupIds(new Set());
         setActiveCitations([]);
         setActiveCitationsMessageId(null);
         setSessionId(null);
@@ -960,6 +1789,7 @@ function CukaiBot() {
 
   useEffect(() => {
     refreshSessions();
+    refreshFolders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEntity?.id]);
 
@@ -1034,6 +1864,7 @@ function CukaiBot() {
         role: 'assistant',
         text: res.message.text,
         citations: res.message.citations || [],
+        followups: res.message.followups || [],
       };
       setMessages((prev) => [...prev, botMsg]);
       setActiveCitations(botMsg.citations);
@@ -1057,28 +1888,7 @@ function CukaiBot() {
     }
   }
 
-  async function handleClear() {
-    const userId = localStorage.getItem('userId');
-    if (sessionId && userId) {
-      deleteChatSession(sessionId, userId).catch(() => {});
-    }
-    setMessages([]);
-    setActiveCitations([]);
-    setActiveCitationsMessageId(null);
-    setInputValue('');
-    setSessionId(null);
-    clearPersistedSessionId(activeEntity?.id ?? null);
-    const params = new URLSearchParams(window.location.search);
-    params.delete('session');
-    const qs = params.toString();
-    window.history.replaceState(null, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
-    // The header's "Clear Chat" button deletes the current session outright
-    // (existing behavior, unchanged) — remove it from the sidebar list too
-    // rather than waiting for the next natural refresh.
-    setSessions((prev) => prev.filter((s) => s.sessionId !== sessionId));
-  }
-
-  // Sidebar "New chat" button: unlike handleClear, this does NOT delete the
+  // Sidebar "New chat" button: unlike the old Clear Chat action, this does NOT delete the
   // current session — it just deselects it, so the conversation the person
   // was just in still shows up in the sidebar to come back to. A fresh
   // session is only actually created once they send their first message
@@ -1089,6 +1899,7 @@ function CukaiBot() {
   // state instead of silently resuming the deselected conversation.
   function handleNewChat() {
     setMessages([]);
+    setDismissedFollowupIds(new Set());
     setActiveCitations([]);
     setActiveCitationsMessageId(null);
     setInputValue('');
@@ -1118,6 +1929,7 @@ function CukaiBot() {
       const history = await getChatHistory(targetSessionId, userId);
       setSessionId(history.sessionId);
       setMessages(history.messages || []);
+      setDismissedFollowupIds(new Set());
       const lastWithCitations = [...(history.messages || [])].reverse().find((m) => m.citations?.length);
       setActiveCitations(lastWithCitations?.citations || []);
       setActiveCitationsMessageId(lastWithCitations?.id ?? null);
@@ -1153,6 +1965,20 @@ function CukaiBot() {
     setActiveCitationsMessageId(target.id);
   }
 
+  // Drops any folder from the local `folders` list that no longer has a
+  // single session tagged with it — called after any action that can leave
+  // a folder empty (removing a session from its folder, or deleting a
+  // session outright) so a folder with nothing left in it disappears from
+  // the sidebar and the "Add to folder" picker immediately, the same way it
+  // would after a fresh refreshFolders() round-trip. Takes the up-to-date
+  // sessions list explicitly (rather than reading the `sessions` state
+  // variable) since this runs right alongside a setSessions call and state
+  // updates aren't visible synchronously.
+  function pruneEmptyFolders(updatedSessions) {
+    const foldersStillInUse = new Set(updatedSessions.filter((s) => s.folder).map((s) => s.folder));
+    setFolders((prev) => prev.filter((f) => foldersStillInUse.has(f)));
+  }
+
   // Sidebar row's trash icon: deletes ANY session in the list, not just the
   // currently open one (that's the difference from handleClear, which only
   // ever acts on the active session). If the deleted session happens to be
@@ -1161,7 +1987,9 @@ function CukaiBot() {
   async function handleDeleteSessionFromSidebar(targetSessionId) {
     const userId = localStorage.getItem('userId');
     if (!userId) return;
-    setSessions((prev) => prev.filter((s) => s.sessionId !== targetSessionId));
+    const remaining = sessions.filter((s) => s.sessionId !== targetSessionId);
+    setSessions(remaining);
+    pruneEmptyFolders(remaining);
     if (targetSessionId === sessionId) {
       handleNewChat();
     }
@@ -1175,92 +2003,122 @@ function CukaiBot() {
     }
   }
 
+  // Applies a partial session update (pin/rename/folder) optimistically to
+  // local state first, so the sidebar reacts instantly instead of waiting
+  // on a round-trip, then persists it — reconciling from the server on
+  // failure the same way handleDeleteSessionFromSidebar does, since an
+  // optimistic update that silently didn't actually save would otherwise
+  // look identical to one that succeeded.
+  //
+  // `localOnlyUpdates` (optional) are merged into local state alongside
+  // `updates` but never sent to the server — for fields the server derives
+  // itself from its own clock/logic (e.g. pinnedAt), where sending a
+  // client-guessed value would be redundant at best and wrong at worst.
+  async function patchSession(targetSessionId, updates, localOnlyUpdates = {}) {
+    const userId = localStorage.getItem('userId');
+    if (!userId) return;
+    setSessions((prev) => prev.map((s) => (s.sessionId === targetSessionId ? { ...s, ...updates, ...localOnlyUpdates } : s)));
+    try {
+      await updateChatSession(targetSessionId, userId, updates);
+    } catch (_) {
+      refreshSessions();
+    }
+  }
+
+  // Sidebar menu's Pin/Unpin action — re-sorts the list (pinned sessions
+  // float to the top of their folder, or to their own top-level "Pinned"
+  // group if unfiled) purely via the optimistic patch above; no separate
+  // re-sort call needed since groupSessionsByRecency derives grouping and
+  // ordering straight from each session's own `pinned`/`pinnedAt`/`folder`
+  // fields.
+  //
+  // pinnedAt is set optimistically here (client's own clock) purely so the
+  // pinned-group sort is instantly correct without waiting on a refetch —
+  // it's local-display-only and NOT sent to the server: the PATCH body only
+  // carries `pinned`, and the backend stamps its own pinned_at from the
+  // request's actual server time (see update_chat_session). The next
+  // refreshSessions() reconciles this local guess with that real value.
+  function handlePinSession(targetSessionId, pinned) {
+    patchSession(targetSessionId, { pinned }, {
+      pinnedAt: pinned ? new Date().toISOString() : null,
+    });
+  }
+
+  // Sidebar menu's Rename action (also reachable via the row's own inline
+  // rename input) — also updates activeSessionTitle's source of truth
+  // (`sessions`) so the page header's title swaps immediately if this is
+  // the currently open conversation, without needing a separate reload.
+  function handleRenameSession(targetSessionId, title) {
+    patchSession(targetSessionId, { title });
+  }
+
+  // Sidebar menu's "Add to folder" / "Move to folder" action — also adds
+  // the folder to the local `folders` list right away if it's brand new,
+  // so it's immediately offered as a choice for other sessions without
+  // waiting on refreshFolders' next round-trip.
+  function handleAddSessionToFolder(targetSessionId, folder) {
+    const updated = sessions.map((s) => (s.sessionId === targetSessionId ? { ...s, folder } : s));
+    patchSession(targetSessionId, { folder });
+    setFolders((prev) => (prev.includes(folder) ? prev : [...prev, folder].sort()));
+    // If this session was previously the last one filed under a *different*
+    // folder, moving it here just emptied that other folder out — prune it
+    // the same way handleRemoveSessionFromFolder does.
+    pruneEmptyFolders(updated);
+  }
+
+  function handleRemoveSessionFromFolder(targetSessionId) {
+    patchSession(targetSessionId, { folder: null });
+    // The session just un-filed may have been the last one in its folder —
+    // prune using the post-update session list so an emptied folder doesn't
+    // linger in the sidebar or the "Add to folder" picker.
+    pruneEmptyFolders(sessions.map((s) => (s.sessionId === targetSessionId ? { ...s, folder: null } : s)));
+  }
+
+  // Folder group header's "Rename folder" action — bulk-renames the folder
+  // tag on every session currently filed under `oldName` (see
+  // renameChatFolder). Applied optimistically to both `sessions` (so every
+  // affected row's group membership updates immediately) and `folders`
+  // (so the rename picker's list reflects the new name right away too),
+  // then persisted server-side, reconciling from the server on failure.
+  async function handleRenameFolder(oldName, newName) {
+    const userId = localStorage.getItem('userId');
+    if (!userId) return;
+    setSessions((prev) => prev.map((s) => (s.folder === oldName ? { ...s, folder: newName } : s)));
+    setFolders((prev) => {
+      const next = prev.filter((f) => f !== oldName);
+      return next.includes(newName) ? next : [...next, newName].sort();
+    });
+    try {
+      await renameChatFolder(oldName, newName, userId, activeEntity?.id ?? null);
+    } catch (_) {
+      refreshSessions();
+      refreshFolders();
+    }
+  }
+
+  // Folder group header's "Delete folder" action — un-files every session
+  // in that folder (their `folder` becomes null) rather than deleting the
+  // conversations, so this only ever removes the grouping, never any chat
+  // history. Applied optimistically the same way as the rename above.
+  async function handleDeleteFolder(folderName) {
+    const userId = localStorage.getItem('userId');
+    if (!userId) return;
+    setSessions((prev) => prev.map((s) => (s.folder === folderName ? { ...s, folder: null } : s)));
+    setFolders((prev) => prev.filter((f) => f !== folderName));
+    try {
+      await deleteChatFolder(folderName, userId, activeEntity?.id ?? null);
+    } catch (_) {
+      refreshSessions();
+      refreshFolders();
+    }
+  }
+
   function toggleSidebar() {
     setSidebarOpen((prev) => {
       const next = !prev;
       localStorage.setItem('cukaiChatSidebarOpen', String(next));
       return next;
     });
-  }
-
-  // ── Export the current chat session to a downloadable PDF ──────────────────
-  // Dumps every message in the transcript, then appends the sidebar's
-  // "Active Citations" (the same `activeCitations` state driving the right
-  // panel) as its own section at the very end of the document.
-  function handleExportPDF() {
-    if (!messages || messages.length === 0) return;
-
-    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
-    const margin = 48;
-    const maxWidth = pageWidth - margin * 2;
-    let y = margin;
-
-    const addLine = (text, { size = 10, style = 'normal', color = [15, 23, 42], gap = 14 } = {}) => {
-      doc.setFont('helvetica', style);
-      doc.setFontSize(size);
-      doc.setTextColor(color[0], color[1], color[2]);
-      const lines = doc.splitTextToSize(text, maxWidth);
-      lines.forEach((line) => {
-        if (y > pageHeight - margin) {
-          doc.addPage();
-          y = margin;
-        }
-        doc.text(line, margin, y);
-        y += gap;
-      });
-    };
-
-    const addRule = (gapBefore = 6, gapAfter = 16) => {
-      y += gapBefore;
-      if (y > pageHeight - margin) { doc.addPage(); y = margin; }
-      doc.setDrawColor(226, 232, 240);
-      doc.line(margin, y, pageWidth - margin, y);
-      y += gapAfter;
-    };
-
-    // ── Document header ──
-    addLine('Cukai Bot Conversation', { size: 16, style: 'bold', gap: 22 });
-    if (activeEntity) addLine(`Entity: ${activeEntity.name}`, { size: 9, color: [100, 116, 139], gap: 12 });
-    addLine(`Exported ${new Date().toLocaleString('en-MY')}`, { size: 9, color: [100, 116, 139], gap: 20 });
-
-    // ── Messages ──
-    messages.forEach((msg) => {
-      const speaker = msg.role === 'user' ? 'You' : 'Cukai Bot';
-      addLine(speaker, { size: 10, style: 'bold', color: msg.role === 'user' ? [15, 23, 42] : [13, 148, 136], gap: 14 });
-      addLine(msg.text, { size: 10, gap: 14 });
-
-      if (msg.structured) {
-        const h = msg.structured.highlight;
-        if (h) {
-          addLine(`${h.label}: ${h.value}`, { size: 10, style: 'bold', gap: 14 });
-          if (h.note) addLine(h.note, { size: 9, color: [100, 116, 139], gap: 12 });
-        }
-        (msg.structured.checkItems || []).forEach((item) => {
-          addLine(`\u2022 ${item.bold} ${item.text}`, { size: 9, gap: 12 });
-        });
-      }
-
-      y += 8; // gap between messages
-    });
-
-    // ── Active Citations — appended as its own section at the end, mirroring
-    //    the right-hand sidebar's current state rather than per-message data ──
-    if (activeCitations && activeCitations.length > 0) {
-      addRule();
-      addLine('Active Citations', { size: 13, style: 'bold', gap: 18 });
-      activeCitations.forEach((c) => {
-        addLine(`[${c.tag}] ${c.title}`, { size: 10, style: 'bold', gap: 13 });
-        if (c.snippet) addLine(c.snippet, { size: 9, style: 'italic', color: [100, 116, 139], gap: 12 });
-        if (c.verified) addLine(c.verified, { size: 8, color: [13, 148, 136], gap: 11 });
-        y += 6;
-      });
-    }
-
-    const entityPart = activeEntity ? activeEntity.name.replace(/[^\w-]+/g, '_') : 'session';
-    const datePart = new Date().toISOString().slice(0, 10);
-    doc.save(`cukaibot-${entityPart}-${datePart}.pdf`);
   }
 
   function handleKeyDown(e) {
@@ -1282,6 +2140,12 @@ function CukaiBot() {
   const activeSessionTitle = !showEmptyState
     ? sessions.find((s) => s.sessionId === sessionId)?.title
     : null;
+
+  // id of the most recent assistant message — only THIS message is allowed
+  // to show its inline "Suggested follow-ups" block (see AssistantMessage),
+  // so an older reply never keeps displaying stale follow-up chips once the
+  // conversation has moved on.
+  const lastAssistantMessageId = [...messages].reverse().find((m) => m.role === 'assistant')?.id ?? null;
 
   return (
     <main className="h-[calc(100vh-4.1rem)] bg-background font-body flex flex-col overflow-hidden">
@@ -1312,6 +2176,13 @@ function CukaiBot() {
             onSelectSession={handleSelectSession}
             onNewChat={handleNewChat}
             onDeleteSession={handleDeleteSessionFromSidebar}
+            onPinSession={handlePinSession}
+            onRenameSession={handleRenameSession}
+            onAddToFolder={handleAddSessionToFolder}
+            onRemoveFromFolder={handleRemoveSessionFromFolder}
+            onRenameFolder={handleRenameFolder}
+            onDeleteFolder={handleDeleteFolder}
+            folders={folders}
             searchQuery={searchQuery}
             onSearchQueryChange={setSearchQuery}
             searchResults={searchResults}
@@ -1329,28 +2200,13 @@ function CukaiBot() {
                   <BotIcon className="h-6 w-6 object-contain" />
                 </div>
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-bold text-headings">
-                    {activeSessionTitle || 'Tax Advisory Assistant'}
-                  </p>
+                  <ChatHeaderTitle
+                    title={activeSessionTitle}
+                    sessionId={sessionId}
+                    onRename={handleRenameSession}
+                  />
                   <p className="text-xs text-muted">Powered by LHDN 2024 Guidelines</p>
                 </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleClear}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3.5 py-2 text-xs font-semibold text-muted shadow-sm transition-colors hover:bg-slate-50 hover:text-headings"
-                >
-                  <ClearIcon />
-                  Clear Chat
-                </button>
-                <button
-                  onClick={handleExportPDF}
-                  disabled={showEmptyState}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3.5 py-2 text-xs font-semibold text-muted shadow-sm transition-colors hover:bg-slate-50 hover:text-headings disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <DownloadIcon />
-                  Export
-                </button>
               </div>
             </div>
 
@@ -1397,6 +2253,15 @@ function CukaiBot() {
                     message={msg}
                     isActive={msg.id === activeCitationsMessageId}
                     onSelectCitations={handleSelectCitations}
+                    showFollowups={msg.id === lastAssistantMessageId && !dismissedFollowupIds.has(msg.id)}
+                    onSelectFollowup={(prompt) => {
+                      // Dismiss THIS message's follow-ups the moment one is
+                      // clicked — the new reply that comes back gets its own
+                      // fresh set (see lastAssistantMessageId), so there's
+                      // never a moment where two messages both show chips.
+                      setDismissedFollowupIds((prev) => new Set(prev).add(msg.id));
+                      handleSend(prompt);
+                    }}
                   />
                 );
               })}
@@ -1404,21 +2269,6 @@ function CukaiBot() {
               {isTyping && <TypingIndicator />}
               <div ref={messagesEndRef} />
             </div>
-
-            {/* Contextual Chips Tray Container */}
-            {!showEmptyState && (
-              <div className="border-t border-slate-50 px-5 py-2.5 flex items-center gap-2 overflow-x-auto shrink-0 scrollbar-none">
-                {(suggestedPrompts || []).slice(0, 3).map((prompt) => (
-                  <button
-                    key={prompt}
-                    onClick={() => handleSend(prompt)}
-                    className="shrink-0 rounded-full border border-border bg-slate-50 px-3 py-1.5 text-xs font-medium text-muted transition-all hover:border-primary hover:bg-primary-tint hover:text-primary"
-                  >
-                    {prompt}
-                  </button>
-                ))}
-              </div>
-            )}
 
             {/* Locked Footer Action/Input Tray */}
             <div className="border-t border-border p-4 shrink-0">
@@ -1467,8 +2317,22 @@ function CukaiBot() {
                   : 'Sources referenced in the current response. Click an earlier message to view its sources.'}
               </p>
 
-              {/* Scrollable container strictly within the right panel */}
-              <div className="flex-1 overflow-y-auto min-h-0 space-y-3 pr-1">
+              {/* Scrollable container strictly within the right panel.
+                  overflow-x-hidden matters here specifically: PDF-extracted
+                  snippet text (e.g. a Public Ruling's long parenthetical
+                  list like "(d) Busters/decollactors (e) Cables and
+                  connectors...") can contain a run of short whitespace-
+                  separated tokens with no natural wrap-friendly break, and
+                  font-mono makes each character wider still. Without this,
+                  that single long line grows this flex child's intrinsic
+                  width, and the browser falls back to a horizontal
+                  scrollbar on the WHOLE panel instead of wrapping — every
+                  other card gets stretched to match, not just the one with
+                  the long snippet. See CitationCard's snippet <p> below for
+                  the matching break-words rule, which is the other half of
+                  this fix (belt-and-suspenders: either alone mostly works,
+                  but only both together guarantee it can't recur). */}
+              <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 space-y-3 pr-1">
                 {(activeCitations || []).length > 0 ? (
                   activeCitations.map((citation, i) => (
                     <CitationCard key={i} citation={citation} onPreview={setPreviewCitation} />

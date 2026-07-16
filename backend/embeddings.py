@@ -2,7 +2,7 @@
 Embedding + chunking helpers shared by:
   - pipeline.py  (ingestion side — embeds a newly classified document)
   - main.py      (chat side — embeds the user's question at query time)
-  - seed_tax_law.py / seed_external_resources.py (bulk ingestion scripts)
+  - seed_external_resources.py (bulk ingestion script)
 
 Uses Google's gemini-embedding-001 via the same GEMINI_API_KEY already used
 for classification in pipeline.py — one API key, no separate billing account.

@@ -323,7 +323,7 @@ export const updateInsightState = async (insightId, state, reason = null, userId
  * larger `offset` to fetch older pages (e.g. when the sidebar list is
  * scrolled to the bottom) rather than ever pulling a user's entire chat
  * history in one request.
- * Returns { sessions: [{ sessionId, entityId, title, createdAt, updatedAt }], hasMore }.
+ * Returns { sessions: [{ sessionId, entityId, title, pinned, pinnedAt, folder, createdAt, updatedAt }], hasMore }.
  */
 export const getChatSessions = async (userId, entityId = null, limit = 20, offset = 0) => {
   const params = { user_id: userId, limit, offset };
@@ -349,7 +349,9 @@ export const searchChatSessions = async (query, userId, entityId = null, limit =
 
 /**
  * Fetch the full message history for one chat session, oldest first.
- * Returns { sessionId, entityId, messages: [{id, role, text, citations}] }.
+ * Returns { sessionId, entityId, messages: [{id, role, text, citations, followups}] }.
+ * followups is only ever populated on assistant messages (null on user
+ * messages, and on assistant messages saved before this field existed).
  */
 export const getChatHistory = async (sessionId, userId) => {
   const { data } = await api.get(`/api/chat/${sessionId}/history`, { params: { user_id: userId } });
@@ -361,7 +363,10 @@ export const getChatHistory = async (sessionId, userId) => {
  * Pass `sessionId = null` to start a new session — the response's
  * `sessionId` should then be stored (e.g. in state) and passed on
  * subsequent calls to keep the same thread.
- * Returns { sessionId, message: {id, role, text, citations} }.
+ * Returns { sessionId, message: {id, role, text, citations, followups} }.
+ * followups is an array of up to 3 AI-suggested next questions for THIS
+ * reply (may be empty, e.g. on a generation error) — drives the chip tray
+ * under the conversation instead of a fixed static prompt list.
  */
 export const sendChatMessage = async (message, userId, entityId = null, sessionId = null) => {
   const body = { message, user_id: userId };
@@ -374,5 +379,56 @@ export const sendChatMessage = async (message, userId, entityId = null, sessionI
 /** Permanently delete a chat session and all its messages. */
 export const deleteChatSession = async (sessionId, userId) => {
   const { data } = await api.delete(`/api/chat/${sessionId}`, { params: { user_id: userId } });
+  return data;
+};
+
+/**
+ * Partial-update a session's sidebar-facing fields — backs the sidebar's
+ * 3-dot menu (Pin/Unpin, Rename, Add to folder/Remove from folder). Pass
+ * only the fields being changed; e.g. `{ pinned: true }` to pin without
+ * touching the title or folder. Pass `folder: null` to remove a session
+ * from its folder.
+ * Returns the updated session: { sessionId, entityId, title, pinned, pinnedAt, folder, createdAt, updatedAt }.
+ */
+export const updateChatSession = async (sessionId, userId, updates) => {
+  const { data } = await api.patch(`/api/chat/${sessionId}`, updates, { params: { user_id: userId } });
+  return data;
+};
+
+/**
+ * List the distinct folder names a user has created, optionally scoped to
+ * one entity — backs the "Add to folder" picker so it can offer existing
+ * folders instead of only ever letting the user create a new one.
+ * Returns { folders: string[] }.
+ */
+export const getChatFolders = async (userId, entityId = null) => {
+  const params = { user_id: userId };
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.get('/api/chat/folders', { params });
+  return data;
+};
+
+/**
+ * Rename a folder — bulk-renames the folder tag on every session currently
+ * filed under `folderName` to `newName`, since a folder isn't its own row,
+ * just a shared text tag on however many ChatSession records carry it.
+ * Returns { folder: newName, updated: <count of sessions renamed> }.
+ */
+export const renameChatFolder = async (folderName, newName, userId, entityId = null) => {
+  const params = { user_id: userId };
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.patch(`/api/chat/folders/${encodeURIComponent(folderName)}`, { name: newName }, { params });
+  return data;
+};
+
+/**
+ * Delete a folder — un-files every session tagged `folderName` (their
+ * `folder` becomes null) without deleting the conversations themselves.
+ * Returns { updated: <count of sessions un-filed> }.
+ */
+export const deleteChatFolder = async (folderName, userId, entityId = null) => {
+  const params = { user_id: userId };
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.delete(`/api/chat/folders/${encodeURIComponent(folderName)}`, { params });
   return data;
 };

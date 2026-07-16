@@ -7,12 +7,20 @@ half of the two-database RAG design: "which chunks are MEANINGFULLY RELATED
 to what the user just asked" — unstructured, similarity-scored, and searched
 by embedding rather than by exact match.
 
-ONE collection (document_chunks) holds three kinds of chunk, distinguished by
+ONE collection (document_chunks) holds two kinds of chunk, distinguished by
 `source`:
   - "document"          — a user's own uploaded receipt/invoice (pipeline.py)
-  - "tax_law"            — hand-written topic summaries (seed_tax_law.py)
-  - "external_resource"  — real chunked text from official LHDN PDFs
+  - "external_resource"  — real chunked text from official LHDN/AGC PDFs
                             (seed_external_resources.py)
+
+A third kind, "tax_law" (hand-written topic summaries, via the now-removed
+seed_tax_law.py), existed early on as a stand-in for real legal-source
+coverage before external_resource had any actual ingested PDFs. Once
+external_resource covered the same ground with real, page-citable source
+text, tax_law's plain-language summaries added no unique value against the
+maintenance cost of keeping a second, hand-curated corpus in sync — so the
+whole pool was retired rather than merged in. If you find "tax_law" in git
+history/old comments, it no longer exists as a live `source` value.
 
 This started as two separate collections (document_chunks +
 external_resource_chunks), each with its own Atlas index. That split wasn't
@@ -27,24 +35,22 @@ they don't apply — a normal, common pattern for a schemaless store, not a
 messy one: `source` alone tells you which fields to expect.
 
 Collection shape (one document per embedded chunk) — union of all fields
-used by any of the three sources; most are None on any given chunk:
+used by either source; most are None on any given chunk:
   {
     "_id": ObjectId(...),
     "text": "Category: Business Expense, Office Supplies, RM150",
     "embedding": [0.0123, -0.0456, ...],   # 768 floats, gemini-embedding-001
-    "source": "document",   # "document" | "tax_law" | "external_resource"
+    "source": "document",   # "document" | "external_resource"
 
     # source="document" (user receipts, via pipeline.py):
     "user_id": "42", "entity_id": 7, "doc_id": 913,
     "year_of_assessment": 2026, "category": "office_supplies",
 
-    # source="tax_law" (hand-written summaries, via seed_tax_law.py):
-    "topic": "broadband_business_expense",
-
     # source="external_resource" (real PDFs, via seed_external_resources.py):
     "external_resource_id": 3, "resource_type": "public_ruling",
     "reference_no": "PR-4-2015", "title": "Entertainment Expense",
-    "source_url": "https://...", "page_number": None,
+    "source_url": "https://...", "fallback_url": "https://...",
+    "no_page_anchor": False, "page_number": None,
 
     # source_url/file_type are also populated for source="document" chunks
     # (via pipeline.py's embed_document_for_rag) so CukaiBot can preview a
@@ -61,9 +67,9 @@ used by any of the three sources; most are None on any given chunk:
 user_id/entity_id are stored on every chunk and used as pre-filters on every
 $vectorSearch query — this is the "Metadata is King" rule from the leader's
 diagram: without it, one user's chat could retrieve another user's receipts.
-tax_law and external_resource chunks use user_id=None/entity_id=None, which
-the filter below treats as "visible to every user" — shared reference
-material rather than anything owned by a specific account.
+external_resource chunks use user_id=None/entity_id=None, which the filter
+below treats as "visible to every user" — shared reference material rather
+than anything owned by a specific account.
 
 Required Atlas setup (done once, in the Atlas UI or via ensure_vector_index()
 below): a vector search index on `embedding` (dimensions=768, similarity=
@@ -223,6 +229,8 @@ def insert_chunk(
   reference_no: Optional[str] = None,
   title: Optional[str] = None,
   source_url: Optional[str] = None,
+  fallback_url: Optional[str] = None,
+  no_page_anchor: bool = False,
   page_number: Optional[int] = None,
   file_type: Optional[str] = None,
   starts_mid_sentence: bool = False,
@@ -230,19 +238,24 @@ def insert_chunk(
   """
   Insert one embedded chunk. Returns the inserted _id as a string.
 
-  One function now covers all three chunk kinds — pass only the fields
-  relevant to the source you're inserting; the rest default to None:
+  One function now covers both chunk kinds — pass only the fields relevant
+  to the source you're inserting; the rest default to None:
     - source="document"          (pipeline.py):          user_id, entity_id, doc_id, year_of_assessment, category, source_url, file_type
-    - source="tax_law"            (seed_tax_law.py):       category, topic
-    - source="external_resource"  (seed_external_resources.py): external_resource_id, resource_type, reference_no, title, source_url
+    - source="external_resource"  (seed_external_resources.py): external_resource_id, resource_type, reference_no, title, source_url, fallback_url, no_page_anchor
 
-  `topic` lets seed_tax_law.py check "do I already have a chunk for this
-  topic?" without exact text matching, so it can re-run safely without
-  duplicating entries. `external_resource_id`/`reference_no` serve the same
-  de-dupe/resume purpose for seed_external_resources.py. Document chunks
-  (source="document") use doc_id as their natural de-dupe key instead.
+  `topic` is a legacy field from the now-removed source="tax_law" pool
+  (seed_tax_law.py). Nothing writes or reads it anymore — kept as a no-op
+  optional param rather than removed outright, purely so any lingering
+  external caller passing it doesn't hard-fail on a TypeError. Safe to
+  delete entirely once you've confirmed nothing still passes it.
 
-  `source_url`/`file_type` are shared across two chunk kinds with different
+  `external_resource_id`/`reference_no` let seed_external_resources.py
+  check "do I already have chunks for this resource?" without exact text
+  matching, so it can re-run safely without duplicating entries. Document
+  chunks (source="document") use doc_id as their natural de-dupe key
+  instead.
+
+  `source_url`/`file_type` are shared across both chunk kinds with different
   meanings: for source="external_resource" source_url is an absolute link to
   a real LHDN PDF. For source="document" (pipeline.py's
   embed_document_for_rag), source_url is instead a relative `/files/<basename>`
@@ -250,6 +263,20 @@ def insert_chunk(
   "excel") tells the frontend which in-page renderer to use — this lets
   CukaiBot preview a user's own uploaded document inline instead of only
   citing it by name, without a second Postgres round-trip.
+
+  `fallback_url` is stored per-chunk (rather than read from a single
+  hardcoded constant at query time) because not every external_resource
+  comes from LHDN — e.g. ACT-874 (Finance Act 2025) is sourced from the
+  Attorney General's Chambers' Federal Legislation portal, whose own stable
+  index page is a different URL than LHDN's. Left None for resources that
+  should fall back to the shared LHDN index (main.py resolves that default).
+
+  `no_page_anchor` is set True for resources whose source_url points at a
+  page that can't honor a "#page=N" fragment — e.g. ACT-874's source_url is
+  the AGC's act-detail.php page, which renders the PDF through its own
+  in-page viewer rather than serving the raw file directly, so appending
+  "#page=N" to it would do nothing useful (and could be misleading). See
+  main.py's _chunks_to_citations for where this is read back.
 
   `starts_mid_sentence` comes straight from embeddings.chunk_text()'s Chunk
   tuple (see its docstring) — True when this chunk's start position could
@@ -268,7 +295,7 @@ def insert_chunk(
   result = collection.insert_one({
     "text": text,
     "embedding": embedding,
-    "source": source,  # "document" | "tax_law" | "external_resource"
+    "source": source,  # "document" | "external_resource"
 
     # source="document" fields
     "user_id": user_id,
@@ -277,7 +304,7 @@ def insert_chunk(
     "year_of_assessment": year_of_assessment,
     "category": category,
 
-    # source="tax_law" fields
+    # legacy — see insert_chunk()'s docstring; no longer written by any caller
     "topic": topic,
 
     # source="external_resource" fields
@@ -286,6 +313,8 @@ def insert_chunk(
     "reference_no": reference_no,
     "title": title,
     "source_url": source_url,
+    "fallback_url": fallback_url,
+    "no_page_anchor": no_page_anchor,
     "page_number": page_number,
     "file_type": file_type,
     "starts_mid_sentence": starts_mid_sentence,
@@ -365,20 +394,20 @@ def vector_search(
   """
   Run MongoDB Atlas's $vectorSearch aggregation, pre-filtered by user_id
   (and entity_id, when given) so retrieval never crosses between users.
-  Shared reference chunks (tax_law and external_resource, both stored with
-  user_id=None) always pass this filter regardless of which user is asking —
-  that's the mechanism that makes CukaiBot's legal/tax-law knowledge visible
-  to everyone while receipts stay private to their owner.
+  Shared reference chunks (external_resource, stored with user_id=None)
+  always pass this filter regardless of which user is asking — that's the
+  mechanism that makes CukaiBot's legal/tax-law knowledge visible to
+  everyone while receipts stay private to their owner.
 
   `resource_type`, when given, additionally narrows results to one kind of
   external resource ("act" | "public_ruling" | "guideline") — optional, for
   callers that already know which kind of source is most relevant. Chunks
-  with no resource_type (i.e. source="document" or "tax_law") are excluded
-  when this filter is active, so only pass it when you specifically want to
-  search official documents alone.
+  with no resource_type (i.e. source="document") are excluded when this
+  filter is active, so only pass it when you specifically want to search
+  official documents alone.
 
   `source`, when given, narrows results to one top-level source type
-  ("document" | "tax_law" | "external_resource"). This is the filter
+  ("document" | "external_resource"). This is the filter
   search_user_and_reference_chunks() below uses to run the user's own
   documents and the shared law corpus as two separate searches — see that
   function's docstring for why a single pooled top_k across both is
@@ -398,8 +427,7 @@ def vector_search(
   collection = get_chunks_collection()
 
   # Match either this user's own chunks, or shared (user_id=None) chunks —
-  # covers both tax_law summaries and external_resource chunks in one clause,
-  # since both use user_id=None.
+  # covers external_resource chunks, since those use user_id=None.
   owner_filter = {"$or": [{"user_id": user_id}, {"user_id": None}]}
   if entity_id is not None:
     owner_filter = {"$and": [owner_filter, {"$or": [{"entity_id": entity_id}, {"entity_id": None}]}]}
@@ -431,6 +459,8 @@ def vector_search(
         "reference_no": 1,
         "title": 1,
         "source_url": 1,
+        "fallback_url": 1,
+        "no_page_anchor": 1,
         "page_number": 1,
         "file_type": 1,
         "starts_mid_sentence": 1,
@@ -458,39 +488,72 @@ def search_user_and_reference_chunks(
   user_id: Optional[str],
   entity_id: Optional[int] = None,
   search_documents: bool = True,
-  search_law: bool = True,
+  search_reference: bool = True,
   user_top_k: int = 3,
-  reference_top_k: int = 3,
+  reference_candidate_k: int = 50,
+  reference_min_score: float = 0.80,
+  reference_chunks_per_doc: int = 2,
+  reference_max_docs: int = 5,
   num_candidates: int = 100,
   min_score: Optional[float] = 0.72,
 ) -> list[dict]:
   """
   Search the user's own uploaded documents (source="document") and the
-  shared law/reference corpus (source in "tax_law"/"external_resource") as
-  two SEPARATE $vectorSearch calls, then merge and re-sort by score —
-  instead of one pooled vector_search() call across everything.
+  shared external_resource corpus (real LHDN/AGC PDFs — Acts, Public
+  Rulings, guidelines) as two SEPARATE retrieval strategies, then merge and
+  re-sort by score — instead of one pooled vector_search() call across
+  everything.
 
-  Why this exists: a single pooled top_k search is structurally biased
-  toward whichever source has more chunks indexed, regardless of which one
-  actually answers the question. The full Income Tax Act alone chunks into
-  several hundred entries; a single user's uploaded Form EA might produce a
-  handful. Both "document" and "external_resource" chunks can legitimately
-  score high on a query like "what is my total income?" — the Form EA
-  because it has the actual number, Act 53 because "total income" is a
-  defined term used throughout the statute — but the Act's sheer chunk
-  volume gives it many more chances to be one of the nearest neighbors in a
-  single pooled top_k, even when the user's own document is the better
-  answer. A plain min_score threshold doesn't fix this either, since the
-  Act's matches can be genuinely strong on vocabulary overlap without being
-  the right answer to what was actually asked.
+  Why "document" stays a plain vector_search(): a single pooled top_k search
+  is structurally biased toward whichever source has more chunks indexed,
+  regardless of which one actually answers the question. A user's own
+  uploaded Form EA might only produce a handful of chunks, and shouldn't be
+  crowded out of its own top_k slots by the much larger external_resource
+  corpus. Running it as its own pool guarantees it a fair, undiluted shot
+  at user_top_k regardless of how large external_resource is.
 
-  Running the two pools separately guarantees the user's own documents get
-  a fair, undiluted shot at their own top_k slots, and are never crowded out
-  just because the law corpus is orders of magnitude larger. Results are
-  merged and sorted by score (descending) for the caller, so this is a
-  drop-in swap for a plain vector_search() call.
+  Why "external_resource" is NOT a plain vector_search(): the same crowding
+  problem recurs *within* this pool once it holds several distinct
+  documents (ACT-53, ACT-874, six Public Rulings, an e-Invoice guideline,
+  and growing) — a plain top_k over all of them favors whichever single
+  document happens to have the most individually-strong chunk matches,
+  which can silently starve out a second, equally-relevant document (e.g.
+  a comparison question naming two Public Rulings could return 5 chunks
+  from one and 0 from the other, purely because that one's phrasing
+  happened to embed slightly closer to the query). Instead this runs a
+  two-level "retrieve wide, then diversify by document" strategy:
 
-  `search_documents`/`search_law` let the caller skip an entire pool rather
+    1. Retrieve reference_candidate_k (default 50) nearest neighbors from
+       external_resource — a much wider net than what's ultimately kept.
+    2. Filter to reference_min_score (default 0.80) — stricter than the
+       0.72 used elsewhere, because a 50-wide candidate pool will otherwise
+       happily include genuinely mediocre matches just to fill the count;
+       $vectorSearch's `limit` is a ceiling, not a relevance bar (see
+       vector_search()'s docstring).
+    3. Group the survivors by reference_no (the Act/Ruling/guideline
+       identifier — e.g. "ACT-874", "PR-7-2025").
+    4. Within each document, keep only its top reference_chunks_per_doc
+       (default 2) chunks by score — this is what lets the LLM see
+       multiple adjacent chunks from the same document (e.g. a definition
+       plus the operative clause that uses it) without that document
+       consuming the entire budget.
+    5. Rank documents by their OWN best chunk's score (i.e. how well each
+       document's strongest match did), and keep only the top
+       reference_max_docs (default 5) documents.
+    6. Return all kept chunks from those documents, flattened.
+
+  This guarantees no single document can occupy every slot just by having
+  many strong individual chunk matches, while still letting a genuinely
+  dominant document contribute more than one chunk of context.
+
+  `tax_law` no longer exists as a separate source — it was a parallel
+  hand-written-summary pool (see git history / seed_tax_law.py, now
+  removed) that predated external_resource having real ingested PDFs.
+  Once external_resource had actual Act/Ruling coverage, tax_law's
+  plain-language summaries became a maintenance burden with no unique
+  value, so the pool was retired outright rather than merged in.
+
+  `search_documents`/`search_reference` let the caller skip an entire pool rather
   than just filtering its results after the fact — see
   main.py._classify_and_maybe_answer(), which decides per-question whether
   each pool is even worth querying (e.g. "what is my name?" needs neither;
@@ -501,6 +564,13 @@ def search_user_and_reference_chunks(
   threshold has no clean way to tell "on-topic but irrelevant" apart from
   "the right answer" — skipping the pool outright when it isn't needed
   avoids that problem entirely instead of trying to tune around it.
+
+  Results are merged and sorted by score (descending) for the caller. Note
+  this function does NOT itself cap the total combined result size — see
+  main.py's CHAT_MAX_TOTAL_CITATIONS, which trims the merged, sorted output
+  to an overall prompt/citation budget after both pools have already had
+  their fair, undiluted shot. Capping here instead would reintroduce the
+  same "larger pool wins by default" bias this function exists to avoid.
   """
   user_chunks = []
   if search_documents:
@@ -515,18 +585,64 @@ def search_user_and_reference_chunks(
     )
 
   reference_chunks = []
-  if search_law:
-    for src in ("tax_law", "external_resource"):
-      reference_chunks.extend(vector_search(
-        query_embedding=query_embedding,
-        user_id=user_id,
-        entity_id=entity_id,
-        source=src,
-        top_k=reference_top_k,
-        num_candidates=num_candidates,
-        min_score=min_score,
-      ))
+  if search_reference:
+    candidates = vector_search(
+      query_embedding=query_embedding,
+      user_id=user_id,
+      entity_id=entity_id,
+      source="external_resource",
+      top_k=reference_candidate_k,
+      num_candidates=max(num_candidates, reference_candidate_k * 2),
+      min_score=reference_min_score,
+    )
+    reference_chunks = _diversify_by_document(
+      candidates,
+      chunks_per_doc=reference_chunks_per_doc,
+      max_docs=reference_max_docs,
+    )
 
   merged = user_chunks + reference_chunks
   merged.sort(key=lambda c: c.get("score", 0), reverse=True)
   return merged
+
+
+def _diversify_by_document(
+  chunks: list[dict],
+  chunks_per_doc: int = 2,
+  max_docs: int = 5,
+) -> list[dict]:
+  """
+  Two-level document-diversity ranking for a flat list of scored chunks —
+  see search_user_and_reference_chunks()'s docstring for the full rationale.
+  Assumes every chunk has a "reference_no" (true for source="external_resource";
+  not meaningful for "document" or the retired "tax_law", so this is only
+  ever called on external_resource candidates).
+
+  Steps: group by reference_no -> sort each group's chunks by score, keep
+  the top chunks_per_doc -> rank groups by their best (first, since already
+  sorted) chunk's score -> keep the top max_docs groups -> flatten and
+  return, still sorted by score (desc) so the caller's own merge+sort stays
+  correct without needing to know this function's internals.
+
+  A chunk with no reference_no (shouldn't normally happen for
+  external_resource, but defensively handled) is grouped under None and
+  treated as its own single-chunk "document" — it can still be selected,
+  just never grouped with anything else.
+  """
+  groups: dict[Optional[str], list[dict]] = {}
+  for c in chunks:
+    groups.setdefault(c.get("reference_no"), []).append(c)
+
+  kept_per_doc = []
+  for ref_no, doc_chunks in groups.items():
+    doc_chunks.sort(key=lambda c: c.get("score", 0), reverse=True)
+    kept_per_doc.append(doc_chunks[:chunks_per_doc])
+
+  # Rank documents by their own best (highest-scoring) surviving chunk —
+  # each inner list is already sorted, so [0] is that document's best.
+  kept_per_doc.sort(key=lambda group: group[0].get("score", 0), reverse=True)
+
+  selected_docs = kept_per_doc[:max_docs]
+  flattened = [c for group in selected_docs for c in group]
+  flattened.sort(key=lambda c: c.get("score", 0), reverse=True)
+  return flattened
