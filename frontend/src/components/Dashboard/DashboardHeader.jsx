@@ -20,6 +20,7 @@ function DashboardHeader({
   msic,            // industry classification code, e.g. "MSIC 1811" — shown as plain meta text.
   assessmentYear,  // year of assessment, e.g. "YA 2025" — rendered as a pill chip to stand out.
   deadlineNote,    // headline deadline reminder, e.g. "142 days to Form C".
+  onDeadlineClick,  // callback for when the user clicks the deadline reminder (e.g. to open a modal)
 }) {
   return (
     <header>
@@ -41,11 +42,15 @@ function DashboardHeader({
         </span>
         <span aria-hidden="true">·</span>
 
-        {/* Deadline reminder — teal to read as a gentle call to action */}
-        <span className="flex items-center gap-1.5 font-medium text-primary">
+        {/* Deadline reminder — clickable, jumps to Generate Forms in Manage Account */}
+        <button
+          type="button"
+          onClick={onDeadlineClick}
+          className="flex items-center gap-1.5 rounded-full px-2 py-0.5 font-medium text-primary transition-colors hover:bg-primary-tint focus:outline-none focus:ring-2 focus:ring-primary/40"
+        >
           <CalendarIcon />
           {deadlineNote}
-        </span>
+        </button>
       </div>
     </header>
   );

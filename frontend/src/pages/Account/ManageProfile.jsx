@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import cukaiLogo from '../../assets/cukai-logo.png';
@@ -2105,10 +2106,9 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
   const [previewIndex, setPreviewIndex] = useState(null);
   const [showPersonalPanel, setShowPersonalPanel] = useState(false);
   const [newEntityDraft, setNewEntityDraft] = useState(null);
-  // Tabs sit below the always-visible personal summary and govern only the
-  // business-profiles area: entity management vs the generated Form B draft.
-  const [tab, setTab] = useState('entities');
-  
+ const [searchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab');
+  const [tab, setTab] = useState(requestedTab === 'forms' ? 'forms' : 'entities');
   // Add these two states right below them to track network status:
   const [error, setError] = useState(null);
 

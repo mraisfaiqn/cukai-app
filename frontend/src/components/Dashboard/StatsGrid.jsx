@@ -3,15 +3,15 @@
 // Matches the four-up strip in Main_Dashboard_-_Cukai_AI.png.
 // `compact` prop tightens the grid for the no-scroll viewport layout —
 // cards shrink their internal padding/font via a prop passed to StatCard.
-import StatCard, { CoinsIcon, FileTextIcon, ChartIcon, BankIcon } from './StatCard';
-
+import StatCard from './StatCard';
+import { TbCash, TbCalculator, TbCoin, TbBuildingBank } from 'react-icons/tb';
 // Icon chip per known metric, mirroring the design mock. Unknown labels
 // (skeleton cards, fallback figures) simply get no chip.
 const CARD_ICONS = {
-  'Total Income':      { icon: <CoinsIcon />,    tint: 'bg-teal-50 text-teal-600' },
-  'Total Deductions':  { icon: <FileTextIcon />, tint: 'bg-blue-50 text-blue-600' },
-  'Chargeable Income': { icon: <ChartIcon />,    tint: 'bg-purple-50 text-purple-600' },
-  'Est. Tax Payable':  { icon: <BankIcon />,     tint: 'bg-amber-50 text-amber-600' },
+  'Total Income':      { icon: <TbCash className="h-5 w-5" />,           tint: 'bg-teal-50 text-teal-600' },
+  'Total Deductions':  { icon: <TbCalculator className="h-5 w-5" />,     tint: 'bg-blue-50 text-blue-600' },
+  'Chargeable Income': { icon: <TbCoin className="h-5 w-5" />, tint: 'bg-purple-50 text-purple-600' },
+  'Est. Tax Payable':  { icon: <TbBuildingBank className="h-5 w-5" />,       tint: 'bg-amber-50 text-amber-600' },
 };
 const ArrowUp = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
