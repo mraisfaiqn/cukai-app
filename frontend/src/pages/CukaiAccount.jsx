@@ -1307,7 +1307,7 @@ function ManualUploadModal({ onConfirm, onCancel }) {
   );
 }
 
-function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive, onRetry, onUpdateStatus, onReset, onManualAdd, initialStateFilter }) {
+function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive, onRetry, onUpdateStatus, onReset, onManualAdd, initialStateFilter, initialDocTarget, initialDocAction }) {
   const inputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
   // Two orthogonal filter axes that compose:
@@ -1327,6 +1327,29 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
   const [previewDoc, setPreviewDoc] = useState(null);
   const [manualUploadOpen, setManualUploadOpen] = useState(false);
   const [limitToast, setLimitToast] = useState('');
+
+  // ── Insight deep-link: /account?doc=<id>&action=reclassify|classify ────────
+  // An insight card ("Answer now" / "Classify this document") lands the user
+  // here pointed at a specific document. Once the doc list has loaded, open
+  // that document's reclassify/classify modal directly instead of leaving the
+  // user to hunt for it. Runs once; if the doc isn't in the active entity's
+  // list (e.g. stale link) it's a graceful no-op.
+  const deepLinkHandled = useRef(false);
+  useEffect(() => {
+    if (deepLinkHandled.current) return;
+    if (!initialDocTarget || !initialDocAction) return;
+    if (!docs || docs.length === 0) return;
+    const target = docs.find((d) => d.id === initialDocTarget);
+    if (!target) return;
+    deepLinkHandled.current = true;
+    // Preselect a filter so the document is still visible behind/after the
+    // modal if the user dismisses it.
+    if (target.status === 'failed') setStateFilter('failed');
+    else if (target.needsReview) setStateFilter('needs_review');
+    // Both actions resolve through the same modal — it can set the category
+    // (classify) or override an existing one (reclassify/review).
+    setReclassDoc(target);
+  }, [docs, initialDocTarget, initialDocAction]);
 
   const viewingArchived = stateFilter === 'archived';
 
@@ -1705,6 +1728,17 @@ function CukaiAccount() {
   const initialStateFilter = (() => {
     const p = new URLSearchParams(window.location.search).get('filter');
     return ['needs_review', 'failed', 'archived'].includes(p) ? p : null;
+  })();
+  // Insight deep-link: /account?doc=<id>&action=reclassify|classify opens that
+  // document's modal directly (see UploadTab's deep-link effect).
+  const deepLink = (() => {
+    const p = new URLSearchParams(window.location.search);
+    const docId = parseInt(p.get('doc') || '', 10);
+    const action = p.get('action');
+    return {
+      docId: Number.isFinite(docId) ? docId : null,
+      action: ['reclassify', 'classify'].includes(action) ? action : null,
+    };
   })();
   const [docs, setDocs]     = useState([]);       // resolved backend docs (mapped)
   const [uploads, setUploads] = useState([]);     // in-flight upload entries
@@ -2137,6 +2171,8 @@ function CukaiAccount() {
                 onReset={resetDoc}
                 onManualAdd={manualAddDoc}
                 initialStateFilter={initialStateFilter}
+                initialDocTarget={deepLink.docId}
+                initialDocAction={deepLink.action}
               />
             )}
           </div>
