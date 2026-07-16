@@ -94,13 +94,14 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Iterable, Optional
 
-from sqlalchemy import text
+from sqlalchemy import or_, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
-from models import FormBProfile
+from models import Document, FormBProfile, Person
 from insights.models import Insight, InsightRun, InsightRunChange
+from profile_completeness import missing_profile_fields
 from tax_rules import TAX_RULES_VERSION
 
 logger = logging.getLogger("uvicorn.error")
@@ -174,8 +175,15 @@ RELIEF_HEADROOM_MAX_SIGNAL_LINES = 6
 
 REVIEW_PENDING_MAX_CARDS = 8
 
-# Reopen a dismissed/actioned insight only when its RM impact moved this much.
+# Reopen a dismissed/actioned insight when its RM impact moved this much.
 REOPEN_IMPACT_CHANGE_PCT = 0.15
+
+# Written by the auto-resolve pass when a rule stops emitting a card. It is the
+# marker that distinguishes "the system resolved this because the condition
+# went away" from a user's own "Mark as done" / dismissal — which matters when
+# deciding whether a returning condition may reopen the card (see the reopen
+# rule in _persist_once). Keep in sync with the router's manual-resolve note.
+AUTO_RESOLVED_NOTE = "Resolved automatically — the underlying condition no longer applies."
 
 # Gemini bounds (Pipeline B). Explicit HTTP timeout within the mandated
 # 10–15s window; a single transient retry — the circuit breaker below adds
@@ -428,11 +436,61 @@ class TaxInsightEngine:
                 prior_q = prior_q.filter(FormBProfile.entity_id == self.entity_id)
             prior_formb_exists = db.query(prior_q.exists()).scalar()
 
+            # ── Unresolved documents blocking a complete Form B ─────────────
+            # The tax summary above only contains status='completed' docs, so
+            # documents that FAILED classification (or completed without a
+            # category) are invisible to every other rule — yet they are
+            # exactly what leaves Form B financial lines missing. Query them
+            # directly here so _rule_formb_incomplete can surface and deep-link
+            # each one to its classify/review screen. A failed document usually
+            # has no extracted year_of_assessment, so in the current-year run we
+            # also sweep up YA-less failures (that is where a fresh upload's
+            # failure should appear); past-year runs stay strictly scoped.
+            unresolved_q = db.query(Document).filter(
+                Document.user_id == self.doc_user_id,
+                or_(
+                    Document.status == "failed",
+                    (Document.status == "completed")
+                    & or_(Document.category.is_(None), Document.category == "Unclassified"),
+                ),
+            )
+            if self.entity_id is not None:
+                unresolved_q = unresolved_q.filter(Document.entity_id == self.entity_id)
+            if self.is_current_ya:
+                unresolved_q = unresolved_q.filter(
+                    or_(Document.year_of_assessment == self.ya,
+                        Document.year_of_assessment.is_(None))
+                )
+            else:
+                unresolved_q = unresolved_q.filter(Document.year_of_assessment == self.ya)
+
+            unresolved_docs = []
+            for d in unresolved_q.order_by(Document.id.desc()).all():
+                ed = d.extracted_data or {}
+                unresolved_docs.append({
+                    "documentId": d.id,
+                    "fileName": d.file_name,
+                    "documentType": d.document_type,
+                    "status": d.status,
+                    "category": d.category,
+                    "errorMessage": ed.get("error_message"),
+                })
+
+            # ── Personal Information completeness ───────────────────────────
+            # buildFormData() reads ~34 profile fields and silently renders "—"
+            # for each blank one, so an incomplete Personal Profile is the root
+            # cause of a broken Form B with no visible explanation. The required
+            # set (and its conditionals) is defined once in profile_completeness.
+            person = db.query(Person).filter(Person.id == self.user_id).first()
+            missing_fields = missing_profile_fields(person)
+
             return {
                 "locked": False,
                 "summary": summary,
                 "cy": (summary or {}).get("currentYear") or {},
                 "prior_formb_exists": bool(prior_formb_exists),
+                "unresolved_docs": unresolved_docs,
+                "missing_profile_fields": missing_fields,
             }
         finally:
             db.close()
@@ -737,11 +795,191 @@ class TaxInsightEngine:
                 "citation": _REVIEW_CITATIONS.get(category, "ITA 1967 s.33(1)"),
                 "signals": signals,
                 "source_document_ids": [doc_id],
-                "action": {"label": "Answer now", "to": "/account"},
+                # Deep-link straight to THIS document's review modal, not a
+                # generic dashboard — CukaiAccount reads ?doc & ?action and
+                # auto-opens the reclassify modal for it.
+                "action": {"label": "Answer now", "to": f"/account?doc={doc_id}&action=reclassify"},
             })
         if len(pending) > REVIEW_PENDING_MAX_CARDS:
             self.logs.append(
                 f"review_pending: {len(pending)} pending items, capped at {REVIEW_PENDING_MAX_CARDS} cards"
+            )
+        return cards
+
+    # ══════════════════════════════════════════════════════════════════════
+    # PERSONAL INFORMATION INCOMPLETE — review_pending
+    # The ROOT CAUSE upstream of the Form B card below: buildFormData() reads
+    # the Personal Profile for every identity/contact/refund line on Form B and
+    # renders "—" for each blank one, so an incomplete profile silently
+    # produces an unfilable form. This card names the exact missing fields and
+    # deep-links to the EXISTING Edit Profile panel on /manageaccount, which is
+    # where the user would normally fill these in. Structurally identical to the
+    # Form B document card (same type, same severity, same lifecycle) — only the
+    # message and the destination differ. It coexists with that card: they are
+    # independent, separately-fixable root causes of an unfilable Form B.
+    # Auto-resolves through the normal housekeeping pass once no fields are
+    # missing (the profile save triggers an engine run).
+    # ══════════════════════════════════════════════════════════════════════
+    def _rule_profile_incomplete(self, missing_fields: list[dict]) -> list[dict]:
+        missing = missing_fields or []
+        if not missing:
+            return []
+
+        n = len(missing)
+        # Group by section so the signals read like the form's own layout.
+        by_section: dict[str, list[str]] = {}
+        for f in missing:
+            by_section.setdefault(f.get("section") or "Personal information", []).append(
+                f.get("label") or f.get("key") or "—"
+            )
+        signals = [
+            {"label": section, "value": ", ".join(labels)}
+            for section, labels in by_section.items()
+        ]
+        signals.append({
+            "label": "Effect on Form B",
+            "value": "These lines render blank on your generated form",
+        })
+
+        return [{
+            "insight_type": "review_pending",
+            "severity": "action_required",
+            "generated_by": "rule_template",
+            "dedupe_key": self._key("review_pending", "profile_incomplete"),
+            "title": (
+                f"Your Personal Information is incomplete — {n} required "
+                f"field{'s' if n != 1 else ''} missing"
+            ),
+            "body": (
+                f"Form B can't be generated correctly because {n} required "
+                f"Personal Information field{'s are' if n != 1 else ' is'} still "
+                "empty. Your identity, contact and refund details feed the form's "
+                "header and refund sections directly, so every missing field leaves "
+                "a blank line on the generated form. Fill them in and your Form B "
+                "will generate properly."
+            ),
+            "rm_impact": None,
+            "deadline_date": None,
+            "citation": "LHDN Form B — Parts A & D (particulars of individual)",
+            "signals": signals,
+            "source_document_ids": [],
+            # Deep-link to the EXISTING Edit Profile panel — the same modal, with
+            # the same full form, that the "Edit profile" button opens. The user
+            # fills in whatever is empty and saves as normal.
+            # (The panel also supports a gaps-only mode via ?editProfile=gaps,
+            # which shows just the missing fields; it is deliberately unused here
+            # — the full form is the intended experience.)
+            "action": {"label": "Edit your profile", "to": "/manageaccount?editProfile=1"},
+        }]
+
+    # ══════════════════════════════════════════════════════════════════════
+    # FORM B INCOMPLETE — review_pending: unresolved documents block filing
+    # Fires when the YA's Form B can't be completed because documents are
+    # still unclassified/failed (their amounts are missing entirely) or held
+    # in pending review (excluded from the totals). Emits one per-document
+    # "classify this" card for each unclassified/failed document — deep-linked
+    # to /account?doc=<id>&action=classify — plus one headline summary card
+    # ("Form B incomplete — N to classify and M to review"). The review-SIDE
+    # per-document cards are produced by _rule_review_pending_docs above; this
+    # rule owns the classification side and the headline. All reuse the
+    # review_pending type (Needs Answer group), so band/lifecycle/auto-resolve
+    # mechanics are shared.
+    # ══════════════════════════════════════════════════════════════════════
+    def _rule_formb_incomplete(self, cy: dict, unresolved_docs: list[dict]) -> list[dict]:
+        pending_count = int(cy.get("pendingReviewCount") or 0)
+        unresolved = unresolved_docs or []
+        cards: list[dict] = []
+
+        # ── Per-document classification cards ───────────────────────────────
+        for doc in unresolved[:REVIEW_PENDING_MAX_CARDS]:
+            doc_id = doc.get("documentId")
+            if not doc_id:
+                continue
+            failed = doc.get("status") == "failed"
+            name = doc.get("fileName") or doc.get("documentType") or "a document"
+            err = (doc.get("errorMessage") or "").strip()
+            if failed:
+                reason = (
+                    f"Classification of '{name}' failed"
+                    + (f": {err}" if err else "")
+                    + ". Until it is classified, its amount is missing from your Form B."
+                )
+            else:
+                reason = (
+                    f"'{name}' has no tax category yet, so it is not counted anywhere "
+                    "on your Form B."
+                )
+            signals = [
+                {"label": "Document", "value": str(name)},
+                {"label": "Status", "value": "Classification failed" if failed else "Unclassified"},
+                {"label": "Effect on Form B", "value": "Its amount is currently omitted"},
+            ]
+            if err:
+                signals.append({"label": "Error", "value": err[:180]})
+            cards.append({
+                "insight_type": "review_pending",
+                "severity": "action_required",
+                "generated_by": "rule_template",
+                "dedupe_key": self._key("review_pending", f"formb_unclassified:doc-{doc_id}"),
+                "title": f"'{name}' isn't classified — missing from your Form B",
+                "body": reason + " Open it to classify (or retry) so it is included.",
+                "rm_impact": None,
+                "deadline_date": None,
+                "citation": "LHDN Form B — complete income & deduction schedule",
+                "signals": signals,
+                "source_document_ids": [doc_id],
+                # Deep-link straight to THIS document's classification function.
+                "action": {"label": "Classify this document", "to": f"/account?doc={doc_id}&action=classify"},
+            })
+
+        # ── Headline "Form B incomplete" summary card ───────────────────────
+        n_classify = len(unresolved)
+        n_review = pending_count
+        if n_classify + n_review > 0:
+            parts = []
+            if n_classify:
+                parts.append(f"{n_classify} document{'s' if n_classify != 1 else ''} to classify")
+            if n_review:
+                parts.append(f"{n_review} to review")
+            breakdown = " and ".join(parts)
+
+            # Route straight to the single culprit when there is exactly one and
+            # it is a classification gap; otherwise the filtered needs-review list.
+            if n_classify == 1 and n_review == 0:
+                only_id = unresolved[0].get("documentId")
+                action = {"label": "Resolve it now", "to": f"/account?doc={only_id}&action=classify"}
+            else:
+                action = {"label": "Review the incomplete items", "to": "/account?filter=needs_review"}
+
+            all_ids = [d.get("documentId") for d in unresolved if d.get("documentId")]
+            cards.append({
+                "insight_type": "review_pending",
+                "severity": "action_required",
+                "generated_by": "rule_template",
+                "dedupe_key": self._key("review_pending", "formb_incomplete"),
+                "title": f"YA {self.ya} Form B incomplete — {breakdown}",
+                "body": (
+                    f"Your YA {self.ya} Form B can't be completed yet: {breakdown}. "
+                    "Each unresolved document leaves an income or deduction line blank, "
+                    "so your computed figures understate reality until they are handled. "
+                    "Resolve them before you file."
+                ),
+                "rm_impact": None,
+                "deadline_date": None,
+                "citation": "LHDN Form B — complete income & deduction schedule",
+                "signals": [
+                    {"label": "Documents to classify", "value": str(n_classify)},
+                    {"label": "Items pending review", "value": str(n_review)},
+                    {"label": "Effect", "value": "These figures are missing from your Form B"},
+                ],
+                "source_document_ids": all_ids,
+                "action": action,
+            })
+
+        if len(unresolved) > REVIEW_PENDING_MAX_CARDS:
+            self.logs.append(
+                f"formb_incomplete: {len(unresolved)} unclassified docs, capped at "
+                f"{REVIEW_PENDING_MAX_CARDS} per-document cards"
             )
         return cards
 
@@ -1413,6 +1651,10 @@ class TaxInsightEngine:
 
             # 2 — lifecycle snapshot for the reopen rule
             existing = {}
+            # Lifecycle metadata the audit snapshot deliberately doesn't carry
+            # (it mirrors _card_snapshot for before/after symmetry). resolved_note
+            # is what tells an auto-resolution apart from a user's own action.
+            existing_meta = {}
             if keys:
                 rows = db.query(Insight).filter(
                     Insight.dedupe_key.in_(keys),
@@ -1420,6 +1662,7 @@ class TaxInsightEngine:
                 ).all()
                 for row in rows:
                     existing[row.dedupe_key] = self._row_snapshot(row)
+                    existing_meta[row.dedupe_key] = {"resolved_note": row.resolved_note}
 
             # 3 — atomic upserts (rule-version stamped)
             created = updated = 0
@@ -1499,12 +1742,36 @@ class TaxInsightEngine:
 
             resolved = reopened = 0
             if housekeeping:
-                # 4a — reopen dismissed/actioned insights whose impact moved > threshold
+                # 4a — reopen a dismissed/actioned insight when it is live again.
+                # TWO independent triggers, because the impact test alone is
+                # blind to cards that carry no money figure:
+                #
+                #   1. Its RM impact moved by more than the threshold.
+                #   2. It was AUTO-resolved (the rule had stopped emitting it,
+                #      so the condition had gone away) and the rule is emitting
+                #      it again — the condition returned. Without this, any card
+                #      whose rm_impact is None (profile_incomplete, the Form B
+                #      headline, formb_missing) could never come back: test 1
+                #      compares None to None and always says "no change", so a
+                #      resolved card stayed parked in Resolved for ever. Case in
+                #      point: completing your profile resolves the card, then
+                #      switching single → married makes the spouse block
+                #      required again — that gap must resurface.
+                #
+                # A user's OWN dismissal or "Mark as done" is respected: only
+                # AUTO_RESOLVED_NOTE cards qualify under trigger 2, so we never
+                # re-nag someone who deliberately put a card away.
                 for c in cards:
                     old = existing.get(c["dedupe_key"])
                     if not old or old["state"] not in ("dismissed", "actioned"):
                         continue
-                    if self._impact_changed_significantly(old["rmImpact"], c["rm_impact"]):
+                    meta = existing_meta.get(c["dedupe_key"], {})
+                    impact_moved = self._impact_changed_significantly(old["rmImpact"], c["rm_impact"])
+                    condition_returned = (
+                        old["state"] == "actioned"
+                        and meta.get("resolved_note") == AUTO_RESOLVED_NOTE
+                    )
+                    if impact_moved or condition_returned:
                         db.query(Insight).filter(
                             Insight.dedupe_key == c["dedupe_key"],
                             Insight.assessment_year == self.ya,
@@ -1517,6 +1784,8 @@ class TaxInsightEngine:
                         }, synchronize_session=False)
                         self.logs.append(
                             f"reopened {c['dedupe_key']}: rm_impact {old['rmImpact']} → {c['rm_impact']}"
+                            if impact_moved else
+                            f"reopened {c['dedupe_key']}: auto-resolved condition re-triggered"
                         )
                         reopened += 1
                         after = self._card_snapshot(c, state="new")
@@ -1573,7 +1842,7 @@ class TaxInsightEngine:
                     for row in stale_rows:
                         before = self._row_snapshot(row)
                         row.state = "actioned"
-                        row.resolved_note = "Resolved automatically — the underlying condition no longer applies."
+                        row.resolved_note = AUTO_RESOLVED_NOTE
                         row.stale = False
                         row.updated_at = now
                         after = {**before, "state": "actioned"}
@@ -1730,6 +1999,11 @@ class TaxInsightEngine:
                 # Insight 4 — Audit Risk Flagging + per-document reviews
                 ("review_pending",  lambda: self._rule_review_pending_docs(cy)),
                 ("review_pending",  lambda: self._rule_audit_risk(cy)),
+                # Personal Information incompleteness — the root cause upstream
+                # of the Form B card below (blank profile ⇒ unfilable form).
+                ("review_pending",  lambda: self._rule_profile_incomplete(facts.get("missing_profile_fields", []))),
+                # Form B incompleteness — unclassified/failed docs + headline
+                ("review_pending",  lambda: self._rule_formb_incomplete(cy, facts.get("unresolved_docs", []))),
                 # Insight 5 — Saving Opportunities (aggregated relief headroom)
                 ("relief_headroom", lambda: self._rule_relief_headroom_aggregate(cy)),
                 # Insight 1 — Smart Deduction Tracker
