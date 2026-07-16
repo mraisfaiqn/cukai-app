@@ -1837,6 +1837,17 @@ function CukaiAccount() {
     const p = new URLSearchParams(window.location.search).get('filter');
     return ['needs_review', 'failed', 'archived'].includes(p) ? p : null;
   })();
+  // Insight deep-link: /account?doc=<id>&action=reclassify|classify opens that
+  // document's modal directly (see UploadTab's deep-link effect).
+  const deepLink = (() => {
+    const p = new URLSearchParams(window.location.search);
+    const docId = parseInt(p.get('doc') || '', 10);
+    const action = p.get('action');
+    return {
+      docId: Number.isFinite(docId) ? docId : null,
+      action: ['reclassify', 'classify'].includes(action) ? action : null,
+    };
+  })();
   const [docs, setDocs]     = useState([]);       // resolved backend docs (mapped)
   const [uploads, setUploads] = useState([]);     // in-flight upload entries
   const [docsLoading, setDocsLoading] = useState(true);
@@ -2365,6 +2376,8 @@ function CukaiAccount() {
                 onReset={resetDoc}
                 onManualAdd={manualAddDoc}
                 initialStateFilter={initialStateFilter}
+                initialDocTarget={deepLink.docId}
+                initialDocAction={deepLink.action}
               />
             )}
           </div>
