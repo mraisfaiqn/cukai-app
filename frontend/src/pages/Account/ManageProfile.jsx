@@ -3,6 +3,7 @@ import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import cukaiLogo from '../../assets/cukai-logo.png';
 import { currentFilingYear, buildFormData, fmtAmt } from '../../data/formB';
+import { getOpeningBalanceSuggestion } from '../../services/api';
 
 // A4 page geometry used by renderNodeToPdfBlob below.
 const PDF_PAGE_WIDTH_MM = 210;
@@ -256,21 +257,40 @@ async function renderNodeToPdfBlob(node, filingYear) {
   // fully settled, so html2canvas's clone can't lose any of them.
   freezeComputedColors(node);
 
-  // Measure atomic row rects (in unscaled CSS px, relative to the node) before
-  // rasterizing — html2canvas gives us pixels, not the DOM, so this is our
-  // only chance to know where a "row" begins and ends.
-  const containerRect = node.getBoundingClientRect();
-  const rowRectsCss = Array.from(node.querySelectorAll('[data-pdf-row]')).map((el) => {
-    const r = el.getBoundingClientRect();
-    return { top: r.top - containerRect.top, bottom: r.bottom - containerRect.top };
-  });
+  // Hide every in-app editing aid (provenance dots, review dots, the
+  // legend, and the clickable Review badges) for the duration of the
+  // capture — these help the person get the numbers right while editing,
+  // but aren't part of the actual filed document, so they must not appear
+  // in the downloaded PDF. Measuring row rects and calling html2canvas both
+  // happen AFTER this so the measured positions reflect what's actually
+  // rasterized (hiding the legend, in particular, shifts row positions —
+  // measuring before hiding would produce stale offsets). Restored in a
+  // finally block so a failed capture never leaves these permanently
+  // hidden in the live, on-screen editing view.
+  const annotationEls = Array.from(node.querySelectorAll('[data-form-annotation]'));
+  const prevAnnotationDisplays = annotationEls.map((el) => el.style.display);
+  annotationEls.forEach((el) => { el.style.display = 'none'; });
 
-  const canvas = await html2canvas(node, {
-    scale: PDF_RENDER_SCALE,
-    useCORS: true,
-    backgroundColor: '#ffffff',
-    windowWidth: PDF_SOURCE_WIDTH_PX,
-  });
+  let containerRect, rowRectsCss, canvas;
+  try {
+    // Measure atomic row rects (in unscaled CSS px, relative to the node) before
+    // rasterizing — html2canvas gives us pixels, not the DOM, so this is our
+    // only chance to know where a "row" begins and ends.
+    containerRect = node.getBoundingClientRect();
+    rowRectsCss = Array.from(node.querySelectorAll('[data-pdf-row]')).map((el) => {
+      const r = el.getBoundingClientRect();
+      return { top: r.top - containerRect.top, bottom: r.bottom - containerRect.top };
+    });
+
+    canvas = await html2canvas(node, {
+      scale: PDF_RENDER_SCALE,
+      useCORS: true,
+      backgroundColor: '#ffffff',
+      windowWidth: PDF_SOURCE_WIDTH_PX,
+    });
+  } finally {
+    annotationEls.forEach((el, i) => { el.style.display = prevAnnotationDisplays[i]; });
+  }
 
   // Actual px-per-CSS-px the canvas ended up at (normally === PDF_RENDER_SCALE,
   // but deriving it from the real output avoids drift if html2canvas rounds
@@ -421,6 +441,11 @@ const BLANK_SOLE_PROP = {
   netProfitLoss: '',
   totalAssets: '',
   totalLiabilities: '',
+  // Opening carry-forward balances (Phase 3) — seed for the multi-year
+  // business-loss (B5/M1) and capital-allowance (M2) engine.
+  openingUnabsorbedBusinessLossMyr: '',
+  openingUnabsorbedCapitalAllowanceMyr: '',
+  openingBalanceYear: '',
 };
 
 const BLANK_PERSONAL_PROFILE = {
@@ -441,7 +466,12 @@ const BLANK_PERSONAL_PROFILE = {
   spouseDob: '',
   assessmentType: '',
   numberOfChildren: '0',
-  hasDisabledDependents: false,
+  isDisabledSelf: false,
+  spouseIsDisabled: false,
+  alimonyPaidMyr: '',
+  spouseTotalIncomeMyr: '',
+  spouseForeignIncomeMyr: '',
+  passportNoLhdnm: '',
   // Contact
   phone: '',
   email: '',
@@ -561,8 +591,173 @@ const PersonalProfileSummary = ({ profile, onOpen }) => {
   );
 };
 
-const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
+// ── ChildrenEditor ────────────────────────────────────────────────────────────
+// Per-child records feeding real H16a/b/c tiering (Phase 3, 14 Jul 2026) —
+// replaces the old flat "Number of children" count. One child can be
+// edited (or a new one added) at a time via an inline form; the rest render
+// as compact summary rows.
+function childSummaryLine(child) {
+  if (child.isDisabled) return 'Disabled child (H16c)';
+  const dob = child.dateOfBirth ? new Date(child.dateOfBirth) : null;
+  if (!dob) return 'Age unknown — add date of birth';
+  const age = Math.floor((Date.now() - dob.getTime()) / (365.25 * 24 * 3600 * 1000));
+  if (age < 18) return `Age ${age} — under 18 (H16a)`;
+  if (child.isFullTimeStudent) return `Age ${age} — studying (H16b)`;
+  return `Age ${age} — not studying or disabled, not eligible`;
+}
+
+const BLANK_CHILD = {
+  name: '', identificationNo: '', dateOfBirth: '',
+  isDisabled: false, isFullTimeStudent: false, isHigherEducation: false,
+  ownIncomeMyr: '', ownIncomeIsExemptType: false,
+  eligibilityPct: 100,
+};
+
+function ChildrenEditor({ children, onAdd, onUpdate, onDelete }) {
+  const [editingId, setEditingId] = useState(null); // null = none; 'new' = adding; else child.id
+  const [form, setForm] = useState(BLANK_CHILD);
+  const list = children || [];
+
+  const startAdd = () => { setForm(BLANK_CHILD); setEditingId('new'); };
+  const startEdit = (child) => {
+    setForm({
+      name: child.name || '', identificationNo: child.identificationNo || '',
+      dateOfBirth: child.dateOfBirth || '', isDisabled: !!child.isDisabled,
+      isFullTimeStudent: !!child.isFullTimeStudent, isHigherEducation: !!child.isHigherEducation,
+      ownIncomeMyr: child.ownIncomeMyr != null ? String(child.ownIncomeMyr) : '',
+      ownIncomeIsExemptType: !!child.ownIncomeIsExemptType,
+      eligibilityPct: child.eligibilityPct || 100,
+    });
+    setEditingId(child.id);
+  };
+  const cancel = () => { setEditingId(null); setForm(BLANK_CHILD); };
+
+  const save = async () => {
+    if (!form.name.trim() || !form.dateOfBirth) {
+      alert('Name and date of birth are required.');
+      return;
+    }
+    const ok = editingId === 'new' ? await onAdd(form) : await onUpdate(editingId, form);
+    if (ok) cancel();
+    else alert('Could not save this child record. Please try again.');
+  };
+
+  const remove = async (child) => {
+    if (!window.confirm(`Remove ${child.name} from your child relief records?`)) return;
+    await onDelete(child.id);
+  };
+
+  const isAdultAge = (() => {
+    if (!form.dateOfBirth) return false;
+    const age = Math.floor((Date.now() - new Date(form.dateOfBirth).getTime()) / (365.25 * 24 * 3600 * 1000));
+    return age >= 18;
+  })();
+
+  return (
+    <div className="mb-1">
+      {list.length === 0 && editingId === null && (
+        <p className="text-[10px] text-muted mb-2">No child records yet — add one below for accurate H16 tiering.</p>
+      )}
+      <div className="flex flex-col gap-1.5 mb-2">
+        {list.map((child) => (
+          editingId === child.id ? null : (
+            <div key={child.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-2.5 py-2">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-headings truncate">{child.name}</p>
+                <p className="text-[10px] text-muted">{childSummaryLine(child)}{child.eligibilityPct !== 100 ? ` · ${child.eligibilityPct}% eligibility` : ''}</p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button type="button" onClick={() => startEdit(child)} className="text-[10px] font-semibold text-primary hover:text-primary-hover">Edit</button>
+                <button type="button" onClick={() => remove(child)} className="text-[10px] font-semibold text-critical hover:opacity-80">Remove</button>
+              </div>
+            </div>
+          )
+        ))}
+      </div>
+
+      {editingId !== null ? (
+        <div className="rounded-lg border border-primary/30 bg-primary-tint/30 p-3 flex flex-col gap-2.5">
+          <Field label="Child's name" required>
+            <TextInput value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Full name" />
+          </Field>
+          <div className="grid grid-cols-2 gap-2.5">
+            <Field label="IC / passport no.">
+              <TextInput value={form.identificationNo} onChange={(e) => setForm({ ...form, identificationNo: e.target.value })} />
+            </Field>
+            <Field label="Date of birth" required>
+              <input type="date" className={inputClass} value={form.dateOfBirth} onChange={(e) => setForm({ ...form, dateOfBirth: e.target.value })} />
+            </Field>
+          </div>
+          <ToggleRow label="Disabled child (H16c)" checked={form.isDisabled} onChange={(v) => setForm({ ...form, isDisabled: v })} />
+          {isAdultAge && (
+            <>
+              <ToggleRow
+                label="Full-time student"
+                hint="18 or above — required for any H16b/H16c relief"
+                checked={form.isFullTimeStudent}
+                onChange={(v) => setForm({ ...form, isFullTimeStudent: v })}
+              />
+              {form.isFullTimeStudent && (
+                <ToggleRow
+                  label="Qualifying higher-education programme"
+                  hint="Local university/college (excl. matriculation/pre-degree/A-Level), trade articles, or a full degree outside Malaysia — RM8,000 tier instead of RM2,000"
+                  checked={form.isHigherEducation}
+                  onChange={(v) => setForm({ ...form, isHigherEducation: v })}
+                />
+              )}
+            </>
+          )}
+          <Field
+            label="Child's own income this year (RM)"
+            hint="Subsection 48(5): if this exceeds the relief otherwise due, the relief is disallowed entirely — unless it's scholarship/grant income or articled-service pay"
+          >
+            <TextInput
+              value={form.ownIncomeMyr}
+              onChange={(e) => setForm({ ...form, ownIncomeMyr: e.target.value })}
+              inputMode="decimal"
+              placeholder="0.00 — leave blank if none"
+            />
+          </Field>
+          {form.ownIncomeMyr && parseFloat(form.ownIncomeMyr) > 0 && (
+            <ToggleRow
+              label="This income is scholarship/grant or articled-service pay"
+              hint="Excluded from the subsection 48(5) test per LHDN's own wording — tick this if it applies so the relief isn't wrongly disallowed"
+              checked={form.ownIncomeIsExemptType}
+              onChange={(v) => setForm({ ...form, ownIncomeIsExemptType: v })}
+            />
+          )}
+          <Field label="Eligibility" hint="50% only applies when co-parenting the same relief with another filer">
+            <SelectInput value={form.eligibilityPct} onChange={(e) => setForm({ ...form, eligibilityPct: parseInt(e.target.value, 10) })}>
+              <option value={100}>100%</option>
+              <option value={50}>50%</option>
+            </SelectInput>
+          </Field>
+          <div className="flex items-center gap-2 mt-1">
+            <button type="button" onClick={save} className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary-hover">
+              Save child
+            </button>
+            <button type="button" onClick={cancel} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-muted hover:bg-slate-50">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={startAdd}
+          className="w-full rounded-lg border border-dashed border-slate-300 py-2 text-xs font-semibold text-primary hover:bg-primary-tint/30"
+        >
+          + Add a child
+        </button>
+      )}
+    </div>
+  );
+}
+
+const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, onUpdateChild, onDeleteChild, taxSummary }) => {
   const [draft, setDraft] = useState(profile);
+  const childrenList = children || [];
+  const legacyChildCount = parseInt(draft.numberOfChildren || '0', 10) || 0;
 
   React.useEffect(() => {
     if (profile) {
@@ -572,6 +767,17 @@ const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
 
   const set = (key) => (e) => setDraft({ ...draft, [key]: e.target.value });
   const setVal = (key) => (val) => setDraft({ ...draft, [key]: val });
+
+  // Phase 7 follow-up (14 Jul 2026): surfaces the same Form EA employer TIN
+  // suggestion that already auto-fills D3 on the generated Form B, but here
+  // as an explicit "Use this" button in the editable profile — the person
+  // sees WHERE the number came from and opts in, rather than it only
+  // silently appearing downstream on the generated document. Never
+  // overwrites anything already typed; only offered while the field is
+  // still blank. d3EmployerTinSuggestion lives at the top level of the
+  // currentYear summary (a sibling of `totals`), not inside totals.
+  const d3Suggestion = taxSummary?.currentYear?.d3EmployerTinSuggestion || null;
+  const showTinSuggestion = !draft.employerTin && d3Suggestion?.value;
 
   const isMarried = draft.maritalStatus === 'married';
 
@@ -621,9 +827,15 @@ const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
           <div className="grid grid-cols-2 gap-2.5">
             <Field label="Gender">
               <SelectInput value={draft.gender} onChange={set('gender')}>
+                <option value="" disabled>Select…</option>
                 <option value="male">Male</option>
                 <option value="female">Female</option>
               </SelectInput>
+              {!draft.gender && (isMarried && (draft.assessmentType === 'joint-husband' || draft.assessmentType === 'joint-wife')) && (
+                <p className="mt-1 text-[10px] text-warning">
+                  Required to determine whether this return aggregates the household's income under joint assessment (B21/B22).
+                </p>
+              )}
             </Field>
             <Field label="Date of birth">
               <input type="date" className={inputClass} value={draft.dateOfBirth} onChange={set('dateOfBirth')} />
@@ -632,7 +844,27 @@ const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
 
           <SectionLabel><span className="mt-2 block">Marital Status & Dependents</span></SectionLabel>
           <Field label="Marital status as at 31 Dec">
-            <SelectInput value={draft.maritalStatus} onChange={set('maritalStatus')}>
+            <SelectInput
+              value={draft.maritalStatus}
+              onChange={(e) => {
+                const newStatus = e.target.value;
+                // Root-cause fix (Phase 4 review, 14 Jul 2026): the joint-
+                // assessment dropdown only renders while married — moving
+                // away from married hides it, but without this reset its
+                // last-selected value ('joint-husband'/'joint-wife') would
+                // otherwise persist invisibly and could resurface if the
+                // person remarries later. The backend independently guards
+                // against this too (assessment_type is only honoured while
+                // marital_status === 'married'), but resetting it here means
+                // the UI's own state stays honest rather than relying on
+                // that downstream defense alone.
+                if (newStatus !== 'married' && (draft.assessmentType === 'joint-husband' || draft.assessmentType === 'joint-wife')) {
+                  setDraft({ ...draft, maritalStatus: newStatus, assessmentType: '', spouseTotalIncomeMyr: '', spouseForeignIncomeMyr: '' });
+                } else {
+                  setDraft({ ...draft, maritalStatus: newStatus });
+                }
+              }}
+            >
               <option value="single">Single</option>
               <option value="married">Married</option>
               <option value="divorced-widowed">Divorcee / Widow / Widower</option>
@@ -677,6 +909,35 @@ const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
                 <option value="separate">Separate</option>
                 <option value="self-spouse-no-income">Self whose spouse has no income, no source of income or has tax exempt income</option>
               </SelectInput>
+              {/* Joint assessment aggregates the spouse's income into B21/B22
+                  (Phase 4, 14 Jul 2026) — but only on the return in whose
+                  name the assessment is actually raised, per LHDN's own
+                  rule. Which return that is depends on THIS filer's own
+                  gender matching the election direction (joint-husband +
+                  male, or joint-wife + female) — if gender doesn't match,
+                  this return correctly does NOT aggregate (the spouse's own
+                  return does instead); if gender isn't set at all, the
+                  generated draft will flag it as needing review rather than
+                  guessing. See totals.jointAssessment on the generated
+                  draft for the resolved outcome for this specific filer. */}
+              {(draft.assessmentType === 'joint-husband' || draft.assessmentType === 'joint-wife') && (
+                <>
+                  <p className="mt-1.5 flex items-start gap-1.5 rounded-lg bg-primary-tint px-2.5 py-2 text-[10px] leading-relaxed text-primary">
+                    <span aria-hidden="true">ℹ</span>
+                    <span>
+                      Whether this specific return aggregates the household's income depends on
+                      your own gender matching the election above — set gender in Basic
+                      Particulars if you haven't already. The generated Form B draft will show
+                      exactly which way it resolved.
+                    </span>
+                  </p>
+                  <div className="mt-2">
+                    <Field label="Spouse's total income (RM)" hint="Aggregated into B21/B22 automatically when this return is the one raising the joint assessment">
+                      <TextInput value={draft.spouseTotalIncomeMyr} onChange={set('spouseTotalIncomeMyr')} inputMode="decimal" placeholder="0.00" />
+                    </Field>
+                  </div>
+                </>
+              )}
             </Field>
           ) : (
             <Field label="Type of assessment" hint="Automatic — no election needed when not married">
@@ -685,18 +946,51 @@ const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
               </div>
             </Field>
           )}
-          <div className="grid grid-cols-2 gap-2.5">
-            <Field label="Number of children">
-              <TextInput value={draft.numberOfChildren} onChange={set('numberOfChildren')} inputMode="numeric" placeholder="0" />
+          {isMarried && (draft.assessmentType === 'joint-husband' || draft.assessmentType === 'joint-wife' || draft.assessmentType === 'self-spouse-no-income') && (
+            <Field
+              label="Spouse's foreign-sourced income (RM)"
+              hint="H14's RM4,000 spouse relief is disallowed if your spouse (unless disabled) has more than RM4,000 in income from sources OUTSIDE Malaysia — leave blank or 0 if none"
+            >
+              <TextInput value={draft.spouseForeignIncomeMyr} onChange={set('spouseForeignIncomeMyr')} inputMode="decimal" placeholder="0.00" />
             </Field>
+          )}
+          {draft.maritalStatus === 'divorced-widowed' && (
+            <Field label="Alimony paid to former wife (RM)" hint="H14 — combined with any spouse relief under the same RM4,000 cap">
+              <TextInput value={draft.alimonyPaidMyr} onChange={set('alimonyPaidMyr')} inputMode="decimal" placeholder="0.00" />
+            </Field>
+          )}
+          <div className="grid grid-cols-2 gap-2.5">
             <div className="flex items-end pb-2">
               <ToggleRow
-                label="Disabled dependents"
-                checked={draft.hasDisabledDependents}
-                onChange={setVal('hasDisabledDependents')}
+                label="I am a disabled person (H4)"
+                checked={draft.isDisabledSelf}
+                onChange={setVal('isDisabledSelf')}
               />
             </div>
+            {isMarried && (
+              <div className="flex items-end pb-2">
+                <ToggleRow
+                  label="My spouse is a disabled person (H15)"
+                  checked={draft.spouseIsDisabled}
+                  onChange={setVal('spouseIsDisabled')}
+                />
+              </div>
+            )}
           </div>
+
+          <SectionLabel><span className="mt-2 block">Children (H16 relief)</span></SectionLabel>
+          <ChildrenEditor
+            children={childrenList}
+            onAdd={onAddChild}
+            onUpdate={onUpdateChild}
+            onDelete={onDeleteChild}
+          />
+          {legacyChildCount > 0 && childrenList.length === 0 && (
+            <p className="text-[10px] text-muted -mt-1.5">
+              This profile still has a legacy child count ({legacyChildCount}) with no per-child records —
+              a flat RM2,000/child estimate is used until you add real records above.
+            </p>
+          )}
 
           <SectionLabel><span className="mt-2 block">Contact & Correspondence</span></SectionLabel>
           <div className="grid grid-cols-2 gap-2.5">
@@ -726,9 +1020,24 @@ const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
           </div>
 
           <SectionLabel><span className="mt-2 block">Other Particulars</span></SectionLabel>
-          <Field label="Employer's TIN" hint="From your Form EA, or enter manually">
-            <TextInput value={draft.employerTin} onChange={set('employerTin')} placeholder="C 12345678090" />
+          <Field label="Employer's TIN" hint="Auto-filled on your generated Form B from a Form EA upload if left blank here — enter manually to override">
+            <TextInput value={draft.employerTin} onChange={set('employerTin')} placeholder="E 12345678090" />
           </Field>
+          {showTinSuggestion && (
+            <div className="-mt-2 flex items-center justify-between gap-2 rounded-lg bg-primary-tint/50 px-3 py-2 text-xs text-body-text">
+              <span>
+                Found <span className="font-semibold text-headings">{d3Suggestion.value}</span> on your uploaded Form EA
+                {d3Suggestion.hasMultipleEmployers && ' (you had more than one employer this year — verify this is the right one)'}.
+              </span>
+              <button
+                type="button"
+                onClick={() => setVal('employerTin')(d3Suggestion.value)}
+                className="shrink-0 rounded-md bg-primary px-2.5 py-1 font-semibold text-white hover:bg-primary-hover"
+              >
+                Use this
+              </button>
+            </div>
+          )}
           {draft.employerTin && (
             <ToggleRow
               label="Tax borne by employer"
@@ -737,12 +1046,6 @@ const PersonalProfilePanel = ({ profile, onClose, onSave }) => {
               onChange={setVal('taxBorneByEmployer')}
             />
           )}
-          <ToggleRow
-            label="Foreign financial accounts"
-            hint="You hold account(s) at financial institutions outside Malaysia"
-            checked={draft.hasForeignAccounts}
-            onChange={setVal('hasForeignAccounts')}
-          />
           <ToggleRow
             label="Carries on e-Commerce"
             hint="You run an online / e-commerce business"
@@ -963,6 +1266,39 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClo
   const [saving, setSaving] = useState(false);
   const set = (key) => (e) => setDraft({ ...draft, [key]: e.target.value });
   const canSave = isNew ? !!(draft.name && draft.ssmNo) : true;
+
+  // Opening-balance suggestion (15 Jul 2026) — if this entity has NO
+  // opening balance year set yet, check whether a prior filed Form B
+  // (already uploaded and extracted) can suggest one, rather than leaving
+  // this as pure manual entry when the exact figures are sitting in an
+  // already-processed document. Read-only: never writes anything here —
+  // applying the suggestion just pre-fills the existing form fields below,
+  // so the user still reviews and clicks the normal Save button.
+  const [openingSuggestion, setOpeningSuggestion] = useState(null);
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false);
+
+  useEffect(() => {
+    if (isNew || !entity.id || draft.openingBalanceYear) return;
+    const userId = localStorage.getItem('userId');
+    let cancelled = false;
+    getOpeningBalanceSuggestion(entity.id, currentFilingYear(), userId)
+      .then((res) => { if (!cancelled && res?.available) setOpeningSuggestion(res); })
+      .catch(() => { /* suggestion is best-effort — silently skip on failure */ });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entity.id, isNew]);
+
+  const applyOpeningSuggestion = () => {
+    if (!openingSuggestion) return;
+    setDraft({
+      ...draft,
+      openingBalanceYear: String(openingSuggestion.suggestedOpeningBalanceYear),
+      openingUnabsorbedBusinessLossMyr: String(openingSuggestion.suggestedOpeningUnabsorbedBusinessLossMyr ?? '0'),
+      openingUnabsorbedCapitalAllowanceMyr: String(openingSuggestion.suggestedOpeningUnabsorbedCapitalAllowanceMyr ?? '0'),
+    });
+    setSuggestionDismissed(true);
+  };
+
   const handleSave = async () => {
     if (!canSave || saving) return;
     setSaving(true);
@@ -1049,6 +1385,67 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClo
             </Field>
             <Field label="Total liabilities">
               <TextInput value={draft.totalLiabilities} onChange={set('totalLiabilities')} placeholder="0.00" inputMode="decimal" />
+            </Field>
+          </div>
+
+          {/* Opening carry-forward balances (Phase 3) — one-time seed values
+              for the auto-tracked B5/M1 (business loss) and M2 (capital
+              allowance) multi-year schedule. Only needed once, to cover
+              history from BEFORE this business started using cukai.ai —
+              everything after opening_balance_year is computed automatically
+              from actual documents, never re-entered manually. */}
+          <SectionLabel><span className="mt-2 block">Opening Carry-Forward Balances (Part M)</span></SectionLabel>
+          <p className="text-[10px] text-[#94A3B8] -mt-1.5 mb-1">
+            Optional — only needed if this business had unabsorbed losses or capital allowance
+            BEFORE using cukai.ai. Enter the balance as of the end of a specific year; everything
+            after that is tracked automatically from your documents.
+          </p>
+          <Field label="As of end of year of assessment" hint="Anchor year for both balances below">
+            <TextInput value={draft.openingBalanceYear} onChange={set('openingBalanceYear')} inputMode="numeric" placeholder="e.g. 2023" />
+          </Field>
+
+          {/* Suggested from a prior filed Form B — same visual pattern as
+              SupportingDocumentsCard's "Suggested Match", so a suggestion
+              always reads as "confirm before use", never as an already-
+              applied fact. Only shown once, and only until dismissed or
+              applied. */}
+          {openingSuggestion && !suggestionDismissed && !draft.openingBalanceYear && (
+            <div className="flex items-center mb-1 rounded-lg border border-dashed border-primary bg-primary-tint/50 p-3">
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] font-medium text-primary">
+                  Suggested from your YA{openingSuggestion.sourceYear} Form B
+                </p>
+                <p className="mt-0.5 text-xs text-headings">
+                  Unabsorbed losses: RM{fmtAmt(openingSuggestion.suggestedOpeningUnabsorbedBusinessLossMyr)} ·
+                  Unabsorbed CA: RM{fmtAmt(openingSuggestion.suggestedOpeningUnabsorbedCapitalAllowanceMyr)}
+                </p>
+                <p className="mt-1 text-[10px] text-muted">{openingSuggestion.note}</p>
+              </div>
+              <div className="flex shrink-0 flex-col gap-1.5 pl-3">
+                <button
+                  type="button"
+                  onClick={applyOpeningSuggestion}
+                  className="rounded-lg bg-primary px-3 py-1.5 text-[11px] font-semibold text-white transition-colors duration-150 hover:bg-primary-hover"
+                >
+                  Use these figures
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSuggestionDismissed(true)}
+                  className="text-[10px] font-medium text-muted hover:text-headings"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <Field label="Unabsorbed business losses (RM)">
+              <TextInput value={draft.openingUnabsorbedBusinessLossMyr} onChange={set('openingUnabsorbedBusinessLossMyr')} inputMode="decimal" placeholder="0.00" />
+            </Field>
+            <Field label="Unabsorbed capital allowance (RM)">
+              <TextInput value={draft.openingUnabsorbedCapitalAllowanceMyr} onChange={set('openingUnabsorbedCapitalAllowanceMyr')} inputMode="decimal" placeholder="0.00" />
             </Field>
           </div>
 
@@ -1196,15 +1593,63 @@ const EntityPreviewPanel = ({ entity, active, isOnlyEntity, isNew = false, onClo
 // subsequent Part shares the previous Part's bottom border as its top edge,
 // so two 1px borders never sit flush against each other (which is its own
 // source of stray dark seams once rasterized).
-const FPart = ({ code, title, children }) => (
-  <div className="border-x border-b border-[#CBD5E1] first:border-t">
-    <div data-pdf-row="true" className="flex items-center gap-2 bg-[#E2E8F0] border-b border-[#CBD5E1] px-2 py-1">
-      {code && <span className="text-[10px] font-bold text-[#0F172A]">{code}</span>}
-      <span className="text-[10px] font-bold uppercase tracking-wide text-[#0F172A]">{title}</span>
+// Shared by FPart's own Review badge and the review guide panel below, so
+// clicking either one does the exact same thing: scroll to the row, flash
+// its background briefly so the eye lands in the right place.
+function scrollToRowAndFlash(rowEl) {
+  if (!rowEl) return;
+  rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const prevBg = rowEl.style.backgroundColor;
+  const prevTransition = rowEl.style.transition;
+  rowEl.style.transition = 'background-color 0.3s ease';
+  rowEl.style.backgroundColor = '#FEF3C7';
+  setTimeout(() => {
+    rowEl.style.backgroundColor = prevBg;
+    setTimeout(() => { rowEl.style.transition = prevTransition; }, 350);
+  }, 1200);
+}
+
+const FPart = ({ code, title, children }) => {
+  const bodyRef = React.useRef(null);
+  // Detected via a DOM scan of this Part's own rendered children rather than
+  // requiring every FPart call site to separately declare which codes it
+  // contains — there are only ~14 FPart sections vs ~190 FRow rows, but
+  // this still avoids adding a prop to any of them. Re-checked on every
+  // render since which rows carry a review dot can change as fd updates.
+  const [hasReview, setHasReview] = React.useState(false);
+  React.useEffect(() => {
+    setHasReview(!!bodyRef.current?.querySelector('[data-review-dot="true"]'));
+  });
+
+  const handleReviewClick = () => {
+    const dot = bodyRef.current?.querySelector('[data-review-dot="true"]');
+    const targetRow = dot?.closest('[id^="row-"]');
+    scrollToRowAndFlash(targetRow);
+  };
+
+  return (
+    <div className="border-x border-b border-[#CBD5E1] first:border-t" data-part-code={code || ''} data-part-title={title}>
+      <div data-pdf-row="true" className="flex items-center justify-between gap-2 bg-[#E2E8F0] border-b border-[#CBD5E1] px-2 py-1">
+        <div className="flex items-center gap-2">
+          {code && <span className="text-[10px] font-bold text-[#0F172A]">{code}</span>}
+          <span className="text-[10px] font-bold uppercase tracking-wide text-[#0F172A]">{title}</span>
+        </div>
+        {hasReview && (
+          <button
+            type="button"
+            onClick={handleReviewClick}
+            data-form-annotation="true"
+            className="shrink-0 rounded-full px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wide transition-colors hover:opacity-80"
+            style={{ backgroundColor: REVIEW_BADGE_BG, color: REVIEW_BADGE_TEXT }}
+          >
+            Review
+          </button>
+        )}
+      </div>
+      <div ref={bodyRef} className="divide-y divide-[#EDF1F5]">{children}</div>
     </div>
-    <div className="divide-y divide-[#EDF1F5]">{children}</div>
-  </div>
-);
+  );
+};
 
 // `data-pdf-row` marks this as an atomic unit for PDF pagination — see
 // renderNodeToPdfBlob — so a page break is never allowed to land inside a
@@ -1218,13 +1663,124 @@ const FPart = ({ code, title, children }) => (
 // a much older, much more reliably-supported primitive, and table-fixed
 // layout guarantees the code/value columns land at the same x-position on
 // every single row instead of drifting with each row's own content.
-const FRow = ({ code, label, value, sub, strong, highlight, flatLabel }) => (
-  <div data-pdf-row="true" className={`table w-full table-fixed text-[10px] ${highlight ? 'bg-[#F0FDF4]' : ''}`}>
-    <div className="table-cell w-9 align-middle border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">{code || ''}</div>
-    <div className={`table-cell align-middle px-2 py-1 text-left ${flatLabel ? 'text-[#334155]' : `${sub ? 'pl-4 text-[#64748B]' : 'text-[#334155]'} ${strong ? 'font-semibold text-[#0F172A]' : ''}`}`}>{label}</div>
-    <div className={`table-cell w-36 align-middle border-l border-[#EDF1F5] px-2 py-1 text-right tabular-nums ${strong ? 'font-bold text-[#0F172A]' : (highlight ? 'text-[#0F6E56] font-semibold' : 'text-[#0F172A]')}`}>{value}</div>
-  </div>
-);
+// Phase 7 follow-up (14 Jul 2026): two INDEPENDENT signals, not one.
+// Provenance (below) answers "where did this figure come from" — Document /
+// Profile / Estimate / Automatic. Review (further below) answers a
+// completely different question — "does this specific figure need the
+// person's active attention before filing."
+//
+// Review is driven by TWO things now, not just one:
+//   1. An explicit backend 'warning' (fd.reviewCodes) — e.g. a disposal's
+//      balancing charge, an ambiguous multi-employer TIN pick, a low-
+//      confidence extraction. These need review even though they already
+//      HAVE a value.
+//   2. Any in-scope row that's simply BLANK — no value at all yet. Most
+//      fields on a brand-new account are blank and genuinely do need
+//      attention (upload a document, fill in a profile field, etc.) — this
+//      is the expected, correct initial state, not noise to suppress. A
+//      row is exempted from this only when its provenance is explicitly
+//      'out_of_scope' (a feature that will never be available, e.g.
+//      partnership income) — there's nothing to review there because
+//      there's nothing to do.
+// Both funnel into the SAME review dot/badge, so a row's status changes
+// automatically as the person fills things in or clears them — no separate
+// "confirmed" flag to maintain.
+//
+// Simplified (14 Jul 2026) — provenance dots (Document/Profile/Automatic/
+// No data) removed entirely per product decision; only the review signal
+// remains. 'out_of_scope' is still tracked (as a plain string check, not a
+// rendered category) since review logic needs to know which codes should
+// NEVER be flagged — a genuinely unavailable feature (partnerships, foreign
+// business income, the H2i/H2ii/H5i-iii/H6i-iv/H7*/H8* sub-lines, etc.)
+// has nothing to review, which is different from a blank in-scope field.
+//
+// ReviewContext avoids re-touching every one of the ~190 FRow call sites a
+// second time — FRow looks up its own review status internally via
+// useContext, keyed by the `code` prop it already receives.
+const ReviewContext = React.createContext(new Set());
+
+// Matches the pastel yellow already used for review/action buttons
+// elsewhere in the app (ActionBanner's warning tokens: bg #FAEEDA / text
+// #BA7517) — used for the Review badge in FPart's title bar, the only
+// visible review signal left (legend and per-row dot both removed per
+// product decision, 14 Jul 2026).
+const REVIEW_BADGE_BG = '#FAEEDA';
+const REVIEW_BADGE_TEXT = '#BA7517';
+
+// No longer renders a visible dot (legend + per-row dot removed, badge-only
+// now) — but still renders an INVISIBLE marker carrying the same
+// data-review-dot attribute, because FPart's "does this section have
+// anything needing review" check and its click-to-scroll-to-the-first-
+// flagged-row behavior both work by querying the DOM for
+// `[data-review-dot="true"]`. Removing the marker entirely would silently
+// break the Review badge too, not just the dot — this keeps that
+// mechanism intact while showing nothing on screen.
+const ReviewDot = ({ needsReview }) => {
+  if (!needsReview) return null;
+  return <span data-form-annotation="true" data-review-dot="true" style={{ display: 'none' }} />;
+};
+
+// A row is considered "blank" for auto-review purposes using the same
+// dash/empty conventions already used throughout this document (dash() /
+// hv() / fmtAmt's own '—' fallback) — checked directly against whatever
+// was actually passed as `value`, so this stays correct automatically as
+// new fields get wired up rather than needing a second parallel "is this
+// field empty" data source.
+const isBlankValue = (value) => value === '—' || value === '' || value === null || value === undefined;
+
+const FRow = ({ code, label, value, sub, strong, highlight, flatLabel, provenance }) => {
+  const reviewCodes = React.useContext(ReviewContext);
+  const isOutOfScope = provenance === 'out_of_scope';
+  const explicitlyFlagged = !!code && reviewCodes.has(code);
+  // Out-of-scope rows never need review — there's nothing to do, the
+  // feature just isn't available. Everything else needing review is either
+  // explicitly flagged by the backend OR simply blank and in scope.
+  const needsReview = !isOutOfScope && !!code && (explicitlyFlagged || isBlankValue(value));
+
+  return (
+    <div id={code ? `row-${code}` : undefined} data-pdf-row="true" className={`table w-full table-fixed text-[10px] ${highlight ? 'bg-[#F0FDF4]' : ''}`}>
+      <div className="table-cell w-14 align-middle border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">
+        <ReviewDot needsReview={needsReview} />
+        {code || ''}
+      </div>
+      <div data-row-label={typeof label === 'string' ? label : undefined} className={`table-cell align-middle px-2 py-1 text-left ${flatLabel ? 'text-[#334155]' : `${sub ? 'pl-4 text-[#64748B]' : 'text-[#334155]'} ${strong ? 'font-semibold text-[#0F172A]' : ''}`}`}>
+        {label}
+      </div>
+      <div className={`table-cell w-36 align-middle border-l border-[#EDF1F5] px-2 py-1 text-right tabular-nums ${strong ? 'font-bold text-[#0F172A]' : (highlight ? 'text-[#0F6E56] font-semibold' : 'text-[#0F172A]')}`}>{value}</div>
+    </div>
+  );
+};
+
+// One-off for B21, whose code column spans two sub-rows (the transferred-
+// income total and the income-type note) — can't reuse plain FRow, but
+// follows the exact same context-lookup pattern for its review dot. B21 is
+// always a real number (0 for most filers, who aren't on joint assessment
+// at all) — never blank — so only the explicit backend flag (gender-
+// ambiguity on joint assessment) can trigger review here.
+const B21Row = ({ fd }) => {
+  const reviewCodes = React.useContext(ReviewContext);
+  const needsReview = reviewCodes.has('B21');
+  return (
+    <div id="row-B21" data-pdf-row="true" className="flex items-stretch text-[10px]">
+      <div className="w-14 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium flex items-center">
+        <ReviewDot needsReview={needsReview} />
+        B21
+      </div>
+      <div className="flex-1 flex flex-col divide-y divide-[#EDF1F5]">
+        <div className="flex items-stretch">
+          <div data-row-label="Total income transferred from husband / wife for joint assessment" className="flex-1 px-2 py-1 text-left text-[#334155]">
+            TOTAL INCOME TRANSFERRED FROM HUSBAND / WIFE * FOR JOINT ASSESSMENT
+          </div>
+          <div className="w-36 shrink-0 border-l border-[#EDF1F5] px-2 py-1 text-right tabular-nums text-[#0F172A]">{fmtAmt(fd.b21)}</div>
+        </div>
+        <div className="flex items-stretch">
+          <div className="flex-1 px-2 py-1 text-left text-[#334155]">* Type of income transferred from HUSBAND / WIFE</div>
+          <div className="w-36 shrink-0 border-l border-[#EDF1F5] px-2 py-1 text-right tabular-nums text-[#334155]">{fd.b21 > 0 ? 'Not tracked' : '—'}</div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // ─── The full Form B document (Basic Particulars → Part P) ───────────────────
 // Faithful to the LHDN Form B (CP4A) skeleton: every part is present and
@@ -1236,11 +1792,29 @@ const FRow = ({ code, label, value, sub, strong, highlight, flatLabel }) => (
 // the title, header row, and two blank data rows stacked to its right.
 // Column 1's width (w-9) matches the standard code-column width used
 // throughout the rest of the document, not a table-specific size.
-function IncentiveClaimTable({ code, title, firstColLabel }) {
+// Both J1 and J2 are out of scope (14 Jul 2026 — see form-b-roadmap.md), so
+// `rows` is never passed anymore and this always falls back to the blank
+// i./ii. placeholder lines below, same as J2 always has.
+function PartJClaimTable({ code, title, firstColLabel, rows }) {
   const gridCols = 'grid grid-cols-[28px_repeat(5,minmax(0,1fr))]';
+  const displayRows = rows && rows.length
+    ? rows.map((r, i) => ({
+        roman: ['i.', 'ii.', 'iii.', 'iv.', 'v.'][i] || `${i + 1}.`,
+        firstCol: `${r.claimCode} — ${r.label}${r.needsReview ? ' ⚠' : ''}`,
+        balanceBroughtForward: fmtAmt(r.balanceBroughtForward),
+        amountClaimed: fmtAmt(r.amountClaimed),
+        amountAbsorbed: fmtAmt(r.amountAbsorbed),
+        balanceCarriedForward: fmtAmt(r.balanceCarriedForward),
+        note: r.note,
+      }))
+    : ['i.', 'ii.'].map((roman) => ({
+        roman, firstCol: '—', balanceBroughtForward: '—', amountClaimed: '—',
+        amountAbsorbed: '—', balanceCarriedForward: '—', note: null,
+      }));
+
   return (
     <div className="flex items-stretch text-[10px]">
-      <div className="w-9 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium flex items-center">{code}</div>
+      <div className="w-14 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium flex items-center">{code}</div>
       <div className="flex-1 flex flex-col divide-y divide-[#EDF1F5]">
         <div data-pdf-row="true" className="px-2 py-1 text-[#334155]">{title}</div>
         <div data-pdf-row="true" className={`items-center ${gridCols} text-[9px] font-semibold uppercase tracking-wide text-[#64748B] bg-[#F8FAFC]`}>
@@ -1250,16 +1824,21 @@ function IncentiveClaimTable({ code, title, firstColLabel }) {
           <div className="border-r border-[#EDF1F5] px-2 py-1">Amount Absorbed</div>
           <div className="px-2 py-1">Balance Carried Forward</div>
         </div>
-        {['i.', 'ii.'].map((roman) => (
-          <div key={roman} data-pdf-row="true" className={`items-center ${gridCols} text-[10px] text-[#334155]`}>
-            <div className="border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">{roman}</div>
-            <div className="border-r border-[#EDF1F5] px-2 py-1">—</div>
-            <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">—</div>
-            <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">—</div>
-            <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">—</div>
-            <div className="px-2 py-1 text-right tabular-nums">—</div>
+        {displayRows.map((row) => (
+          <div key={row.roman} data-pdf-row="true" className={`items-center ${gridCols} text-[10px] text-[#334155]`}>
+            <div className="border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">{row.roman}</div>
+            <div className="border-r border-[#EDF1F5] px-2 py-1">{row.firstCol}</div>
+            <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">{row.balanceBroughtForward}</div>
+            <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">{row.amountClaimed}</div>
+            <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">{row.amountAbsorbed}</div>
+            <div className="px-2 py-1 text-right tabular-nums">{row.balanceCarriedForward}</div>
           </div>
         ))}
+        {rows && rows.some((r) => r.note) && (
+          <div className="px-2 py-1 text-[9px] italic text-[#94A3B8]">
+            {rows.filter((r) => r.note).map((r) => `${r.claimCode}: ${r.note}`).join(' ')}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1272,6 +1851,22 @@ const FormBDocument = ({ fd, filingYear, embedded = false }) => {
   // this yet" rather than a misleading 0.
   const hv = (code) =>
     (fd.reliefByCode && fd.reliefByCode[code] != null) ? fmtAmt(fd.reliefByCode[code]) : '—';
+
+  // Phase 7 (14 Jul 2026): per-row provenance lookup for H-codes and
+  // N-codes. H2/H5/H6/H7/H8 have all now been split into their real,
+  // individually-tracked LHDN sub-line categories (see main.py's
+  // RELIEF_CAP_GROUPS) — this set is empty. H9/H10 still fold their own
+  // sub-items into one combined category each, but since neither has an
+  // internal sub-cap needing separate enforcement, they're a lower-priority
+  // display-only gap, not wired through this "never tracked" mechanism.
+  const NEVER_TRACKED_H_SUBLINES = new Set([]);
+  const gp = (code) => {
+    if (NEVER_TRACKED_H_SUBLINES.has(code)) return 'out_of_scope';
+    return (fd.reliefProvenanceByCode && fd.reliefProvenanceByCode[code])
+      || (fd.nProvenance && fd.nProvenance[code])
+      || (fd.otherLineProvenance && fd.otherLineProvenance[code])
+      || null;
+  };
   // Always full width of whatever container renders it — both the embedded
   // (Generate Forms tab) and non-embedded (PDF generation) cases. The old
   // fixed 620px width for the non-embedded case is gone: it left the content
@@ -1281,6 +1876,7 @@ const FormBDocument = ({ fd, filingYear, embedded = false }) => {
   // GenerateFormsPanel, so the form itself always fills the full printable
   // width between those margins.
   return (
+    <ReviewContext.Provider value={new Set(fd.reviewCodes || [])}>
     <div className="bg-white text-[#0F172A] w-full">
       {/* Masthead — cukai.ai branded. No LHDN marks, form-code badge, or
           statutory citation: this is a preparation aid, not an LHDN document.
@@ -1338,120 +1934,114 @@ const FormBDocument = ({ fd, filingYear, embedded = false }) => {
 
       <div className="px-5 py-3">
         <FPart title="Basic Particulars">
-          <FRow code="1" label="Name (as per identification document)" value={fd.name} />
-          <FRow code="2" label="Tax Identification No. (TIN)" value={fd.tin} />
-          <FRow code="3" label="Identification no." value={fd.idNo} />
-          <FRow code="4" label="Current passport no." value={fd.passportNo} />
-          <FRow code="5" label="Passport no. registered with LHDNM" value="—" />
+          <FRow code="1" provenance={gp('1')} label="Name (as per identification document)" value={fd.name} />
+          <FRow code="2" provenance={gp('2')} label="Tax Identification No. (TIN)" value={fd.tin} />
+          <FRow code="3" provenance={gp('3')} label="Identification no." value={fd.idNo} />
+          <FRow code="4" provenance={gp('4')} label="Current passport no." value={fd.passportNo} />
+          <FRow code="5" provenance={gp('5')} label="Passport no. registered with LHDNM" value={fd.passportNoLhdnm} />
         </FPart>
 
         <FPart code="A" title="Particulars of Individual">
-          <FRow code="A1" label="Citizen (country code)" value={fd.citizen} />
-          <FRow code="A2" label="Gender" value={fd.gender} />
-          <FRow code="A3" label="Date of birth" value={fd.dob} />
-          <FRow code="A4" label={`Status as at 31-12-${filingYear}`} value={fd.marital} />
-          <FRow code="A5" label="Date of marriage / divorce / demise" value={fd.maritalEventDate} />
-          <FRow code="A6" label="Record-keeping" value={fd.recordKeeping} />
-          <FRow code="A7" label="Type of assessment" value={fd.assessment} />
+          <FRow code="A1" provenance={gp('A1')} label="Citizen (country code)" value={fd.citizen} />
+          <FRow code="A2" provenance={gp('A2')} label="Gender" value={fd.gender} />
+          <FRow code="A3" provenance={gp('A3')} label="Date of birth" value={fd.dob} />
+          <FRow code="A4" provenance={gp('A4')} label={`Status as at 31-12-${filingYear}`} value={fd.marital} />
+          <FRow code="A5" provenance={gp('A5')} label="Date of marriage / divorce / demise" value={fd.maritalEventDate} />
+          <FRow code="A6" provenance={gp('A6')} label="Record-keeping" value={fd.recordKeeping} />
+          <FRow code="A7" provenance={gp('A7')} label="Type of assessment" value={fd.assessment} />
         </FPart>
 
         <FPart code="B" title="Computation of Income Tax">
-          <FRow code="B1"  label="Statutory income from sources of businesses in Malaysia" value={fmtAmt(fd.b1)} flatLabel />
-          <FRow code="B1a" label="Number of businesses" value="—" flatLabel />
-          <FRow code="B2"  label="Statutory income from sources of partnerships in Malaysia" value={fmtAmt(0)} flatLabel />
-          <FRow code="B2a" label="Number of partnerships" value="—" flatLabel />
-          <FRow code="B3"  label="Aggregate statutory income from sources of business and partnership outside Malaysia received in Malaysia (Amount from E4)" value={fmtAmt(0)} flatLabel />
-          <FRow code="B4"  label="Aggregate statutory income from businesses ( B1 + B2 + B3 )" value={fmtAmt(fd.b4)} flatLabel />
-          <FRow code="B5"  label="LESS: Business losses brought forward (Restricted to B4)" value={fmtAmt(0)} flatLabel />
-          <FRow code="B6"  label="TOTAL ( B4 – B5 )" value={fmtAmt(fd.b6)} flatLabel />
-          <FRow code="B7"  label="Statutory income from sources of employment in Malaysia" value={fmtAmt(fd.b7)} flatLabel />
-          <FRow code="B7a" label="Number of employment" value="—" flatLabel />
-          <FRow code="B8"  label="Statutory income from sources of rents in Malaysia" value={fmtAmt(fd.b8)} flatLabel />
-          <FRow code="B9"  label="Statutory income from sources of interest, discounts, royalties, premiums, pensions, annuities, other periodical payments, other gains or profits and additions pursuant to paragraph 43(1)(c) in Malaysia" value={fmtAmt(fd.b9)} flatLabel />
-          <FRow code="B10" label="Aggregate of other statutory income from sources outside Malaysia received in Malaysia (Amount from F4)" value={fmtAmt(0)} flatLabel />
-          <FRow code="B11" label="AGGREGATE INCOME ( B6 + B7 + B8 + B9 + B10 )" value={fmtAmt(fd.b11)} strong flatLabel />
-          <FRow code="B12" label="LESS: Approved investment under angel investor tax incentive (Restricted to B11)" value={fmtAmt(0)} flatLabel />
-          <FRow code="B13" label="TOTAL [ B11 – B12 ] (Enter '0' if value is negative)" value={fmtAmt(fd.b13)} flatLabel />
-          <FRow code="B14" label="LESS: Current year business losses (Restricted to B13)" value={fmtAmt(0)} flatLabel />
-          <FRow code="B15" label="TOTAL [ B13 – B14 ] (Enter '0' if value is negative)" value={fmtAmt(fd.b15)} flatLabel />
-          <FRow code="B16" label="LESS: Other expenses [Qualifying prospecting expenditure – Schedule 4] (Restricted to B15)" value={fmtAmt(0)} flatLabel />
-          <FRow code="B17" label="LESS: Approved donations / gifts / contributions (Amount from G8)" value={fmtAmt(fd.donationsG8)} flatLabel />
-          <FRow code="B18" label="TOTAL [ B15 – B16 – B17 ] (Enter '0' if value is negative)" value={fmtAmt(fd.b18)} flatLabel />
-          <FRow code="B19" label="TAXABLE PIONEER INCOME" value={fmtAmt(0)} flatLabel />
-          <FRow code="B20" label="TOTAL INCOME [SELF] ( B18 + B19 )" value={fmtAmt(fd.b20)} strong flatLabel />
+          <FRow code="B1" provenance={gp('B1')}  label="Statutory income from sources of businesses in Malaysia" value={fmtAmt(fd.b1)} flatLabel />
+          <FRow code="B1a" provenance={gp('B1a')} label="Number of businesses" value={String(fd.entityCount)} flatLabel />
+          <FRow code="B2" provenance={gp('B2')}  label="Statutory income from sources of partnerships in Malaysia" value={fmtAmt(0)} flatLabel />
+          <FRow code="B2a" provenance={gp('B2a')} label="Number of partnerships" value="—" flatLabel />
+          <FRow code="B3" provenance={gp('B3')}  label="Aggregate statutory income from sources of business and partnership outside Malaysia received in Malaysia (Amount from E4)" value={fmtAmt(0)} flatLabel />
+          <FRow code="B4" provenance={gp('B4')}  label="Aggregate statutory income from businesses ( B1 + B2 + B3 )" value={fmtAmt(fd.b4)} flatLabel />
+          <FRow code="B5" provenance={gp('B5')}  label="LESS: Business losses brought forward (Restricted to B4)" value={fmtAmt(fd.b5)} flatLabel />
+          <FRow code="B6" provenance={gp('B6')}  label="TOTAL ( B4 – B5 )" value={fmtAmt(fd.b6)} flatLabel />
+          <FRow code="B7" provenance={gp('B7')}  label="Statutory income from sources of employment in Malaysia" value={fmtAmt(fd.b7)} flatLabel />
+          <FRow code="B7a" provenance={gp('B7a')} label="Number of employment" value={fmtAmt(fd.b7aSuggestedCount ?? 0)} flatLabel />
+          <FRow code="B8" provenance={gp('B8')}  label="Statutory income from sources of rents in Malaysia" value={fmtAmt(fd.b8)} flatLabel />
+          <FRow code="B9" provenance={gp('B9')}  label="Statutory income from sources of interest, discounts, royalties, premiums, pensions, annuities, other periodical payments, other gains or profits and additions pursuant to paragraph 43(1)(c) in Malaysia" value={fmtAmt(fd.b9)} flatLabel />
+          <FRow code="B10" provenance={gp('B10')} label="Aggregate of other statutory income from sources outside Malaysia received in Malaysia (Amount from F4)" value={fmtAmt(0)} flatLabel />
+          <FRow code="B11" provenance={gp('B11')} label="AGGREGATE INCOME ( B6 + B7 + B8 + B9 + B10 )" value={fmtAmt(fd.b11)} strong highlight flatLabel />
+          <FRow code="B12" provenance={gp('B12')} label="LESS: Approved investment under angel investor tax incentive (Restricted to B11)" value={fmtAmt(0)} flatLabel />
+          <FRow code="B13" provenance={gp('B13')} label="TOTAL [ B11 – B12 ] (Enter '0' if value is negative)" value={fmtAmt(fd.b13)} flatLabel />
+          <FRow code="B14" provenance={gp('B14')} label="LESS: Current year business losses (Restricted to B13)" value={fmtAmt(fd.b14)} flatLabel />
+          <FRow code="B15" provenance={gp('B15')} label="TOTAL [ B13 – B14 ] (Enter '0' if value is negative)" value={fmtAmt(fd.b15)} flatLabel />
+          <FRow code="B16" provenance={gp('B16')} label="LESS: Other expenses [Qualifying prospecting expenditure – Schedule 4] (Restricted to B15)" value={fmtAmt(0)} flatLabel />
+          <FRow code="B17" provenance={gp('B17')} label="LESS: Approved donations / gifts / contributions (Amount from G8)" value={fmtAmt(fd.donationsG8)} flatLabel />
+          <FRow code="B18" provenance={gp('B18')} label="TOTAL [ B15 – B16 – B17 ] (Enter '0' if value is negative)" value={fmtAmt(fd.b18)} flatLabel />
+          <FRow code="B19" provenance={gp('B19')} label="TAXABLE PIONEER INCOME" value={fmtAmt(0)} flatLabel />
+          <FRow code="B20" provenance={gp('B20')} label="TOTAL INCOME [SELF] ( B18 + B19 )" value={fmtAmt(fd.b20)} strong highlight flatLabel />
 
           {/* B21 — code column merges across both rows: row 1 is the main
-              transferred-income total, row 2 is the income-type note. */}
-          <div className="flex items-stretch text-[10px]">
-            <div className="w-9 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium flex items-center">B21</div>
-            <div className="flex-1 flex flex-col divide-y divide-[#EDF1F5]">
-              <div className="flex items-stretch">
-                <div className="flex-1 px-2 py-1 text-left text-[#334155]">TOTAL INCOME TRANSFERRED FROM HUSBAND / WIFE * FOR JOINT ASSESSMENT</div>
-                <div className="w-36 shrink-0 border-l border-[#EDF1F5] px-2 py-1 text-right tabular-nums text-[#0F172A]">{fmtAmt(0)}</div>
-              </div>
-              <div className="flex items-stretch">
-                <div className="flex-1 px-2 py-1 text-left text-[#334155]">* Type of income transferred from HUSBAND / WIFE</div>
-                <div className="w-36 shrink-0 border-l border-[#EDF1F5] px-2 py-1 text-right tabular-nums text-[#334155]">—</div>
-              </div>
-            </div>
-          </div>
+              transferred-income total, row 2 is the income-type note.
+              Custom layout (not FRow) since the code column spans two
+              sub-rows, so its dots are wired in manually here instead of
+              through FRow's own rendering. B21 is always a real number
+              (0 for most filers, who aren't on joint assessment at all) —
+              never a blank dash — so only the explicit backend flag
+              (gender-ambiguity on joint assessment) can trigger review
+              here, not the generic blank-value check FRow uses. */}
+          <B21Row fd={fd} />
+          <FRow code="B22" provenance={gp('B22')} label="AGGREGATE OF TOTAL INCOME ( B20 + B21 )" value={fmtAmt(fd.b22)} strong highlight flatLabel />
+          <FRow code="B23" provenance={gp('B23')} label="Total relief (Amount from H22)" value={fmtAmt(fd.b23)} flatLabel />
+          <FRow code="B24" provenance={gp('B24')} label="CHARGEABLE INCOME [ ( B20 – B23 ) or ( B22 – B23 ) ] (Enter '0' if value is negative)" value={fmtAmt(fd.b24)} highlight flatLabel />
 
-          <FRow code="B22" label="AGGREGATE OF TOTAL INCOME ( B20 + B21 )" value={fmtAmt(fd.b22)} flatLabel />
-          <FRow code="B23" label="Total relief (Amount from H22)" value={fmtAmt(fd.b23)} flatLabel />
-          <FRow code="B24" label="CHARGEABLE INCOME [ ( B20 – B23 ) or ( B22 – B23 ) ] (Enter '0' if value is negative)" value={fmtAmt(fd.b24)} highlight flatLabel />
-
-          <FRow code="B25a" label="Tax on the first" value="—" flatLabel />
-          <FRow code="B25b" label="Tax on the balance, at rate —%" value="—" flatLabel />
-          <FRow code="B26" label="TOTAL INCOME TAX ( B25a + B25b )" value={fmtAmt(fd.b26)} flatLabel />
-          <FRow code="B27i"   label="Rebate — Self" value={fmtAmt(fd.lowIncomeRebate)} flatLabel />
-          <FRow code="B27ii"  label="Rebate — Husband / Wife" value="—" flatLabel />
-          <FRow code="B27iii" label="Rebate — Departure levy for umrah travel / religious travel for other religions (Restricted to 2 trips in a lifetime)" value="—" flatLabel />
-          <FRow code="B27iv"  label="Rebate — No. of trips" value="—" flatLabel />
-          <FRow code="B27v"   label="Rebate — Zakat and fitrah" value={fmtAmt(fd.zakatRebate)} flatLabel />
-          <FRow code="B27"    label="TOTAL REBATE" value={fmtAmt(fd.b27)} flatLabel />
-          <FRow code="B28" label="TOTAL TAX CHARGED (B26 − B27) (Enter '0' if value is negative)" value={fmtAmt(fd.b28)} strong flatLabel />
-          <FRow code="B29" label="LESS: Section 110 tax deduction (others)" value={fmtAmt(0)} flatLabel />
-          <FRow code="B30i"  label="LESS: Section 132 tax relief (Restricted to B28)" value={fmtAmt(0)} flatLabel />
-          <FRow code="B30ii" label="LESS: Section 133 tax relief (Restricted to B28)" value={fmtAmt(0)} flatLabel />
-          <FRow code="B30"   label="TOTAL Section 132 / 133 tax relief" value={fmtAmt(0)} flatLabel />
-          <FRow code="B31" label="TAX PAYABLE [B28 − (B29 + B30)]" value={fmtAmt(fd.b31)} highlight flatLabel />
-          <FRow code="B32" label="OR: TAX REPAYABLE [(B29 + B30) − B28]" value="—" flatLabel />
-          <FRow code="B33i"   label="Payment made — Monthly Tax Deductions (MTD)" value={fmtAmt(fd.mtdWithheld)} flatLabel />
-          <FRow code="B33ii"  label="Payment made — Section 107D" value="—" flatLabel />
-          <FRow code="B33iii" label="Payment made — Self installments / CP500" value={fmtAmt(fd.cp500Paid)} flatLabel />
-          <FRow code="B33"    label={`Payment made for ${filingYear} income – SELF and HUSBAND / WIFE for joint assessment`} value={fmtAmt(fd.b33)} flatLabel />
-          <FRow code="B34" label="Balance of tax payable (B31 − B33) / Tax paid in excess (B33 − B31)" value={fmtAmt(Math.abs(fd.b34))} highlight flatLabel />
+          <FRow code="B25a" provenance={gp('B25a')} label={`Tax on the first RM${fmtAmt(fd.b25aLowerBoundMyr)}`} value={fmtAmt(fd.b25aTaxMyr)} flatLabel />
+          <FRow code="B25b" provenance={gp('B25b')} label={`Tax on the balance RM${fmtAmt(fd.b25bAmountMyr)}, at rate ${fd.b25bRatePct}%`} value={fmtAmt(fd.b25bTaxMyr)} flatLabel />
+          <FRow code="B26" provenance={gp('B26')} label="TOTAL INCOME TAX ( B25a + B25b )" value={fmtAmt(fd.b26)} strong highlight flatLabel />
+          <FRow code="B27i" provenance={gp('B27i')}   label="Rebate — Self" value={fmtAmt(fd.lowIncomeRebate)} flatLabel />
+          <FRow code="B27ii" provenance={gp('B27ii')}  label="Rebate — Husband / Wife" value={fmtAmt(fd.spouseRebate)} flatLabel />
+          <FRow code="B27iii" provenance={gp('B27iii')} label="Rebate — Departure levy for umrah travel / religious travel for other religions (Restricted to 2 trips in a lifetime)" value={fmtAmt(fd.departureLevyRebate)} flatLabel />
+          <FRow code="B27iv" provenance={gp('B27iv')}  label="Rebate — No. of trips" value={fd.departureLevyTripsThisYear != null ? String(fd.departureLevyTripsThisYear) : '—'} flatLabel />
+          <FRow code="B27v" provenance={gp('B27v')}   label="Rebate — Zakat and fitrah" value={fmtAmt(fd.zakatRebate)} flatLabel />
+          <FRow code="B27" provenance={gp('B27')}    label="TOTAL REBATE" value={fmtAmt(fd.b27)} flatLabel />
+          <FRow code="B28" provenance={gp('B28')} label="TOTAL TAX CHARGED (B26 − B27) (Enter '0' if value is negative)" value={fmtAmt(fd.b28)} strong highlight flatLabel />
+          <FRow code="B29" provenance={gp('B29')} label="LESS: Section 110 tax deduction (others)" value={fmtAmt(fd.b29)} flatLabel />
+          <FRow code="B30i" provenance={gp('B30i')}  label="LESS: Section 132 tax relief (Restricted to B28)" value={fmtAmt(0)} flatLabel />
+          <FRow code="B30ii" provenance={gp('B30ii')} label="LESS: Section 133 tax relief (Restricted to B28)" value={fmtAmt(0)} flatLabel />
+          <FRow code="B30" provenance={gp('B30')}   label="TOTAL Section 132 / 133 tax relief" value={fmtAmt(0)} flatLabel />
+          <FRow code="B31" provenance={gp('B31')} label="TAX PAYABLE [B28 − (B29 + B30)]" value={fmtAmt(fd.b31)} highlight flatLabel />
+          <FRow code="B32" provenance={gp('B32')} label="OR: TAX REPAYABLE [(B29 + B30) − B28]" value={fmtAmt(fd.b32)} flatLabel />
+          <FRow code="B33i" provenance={gp('B33i')}   label="Payment made — Monthly Tax Deductions (MTD)" value={fmtAmt(fd.mtdWithheld)} flatLabel />
+          <FRow code="B33ii" provenance={gp('B33ii')}  label="Payment made — Section 107D" value={fmtAmt(fd.section107d)} flatLabel />
+          <FRow code="B33iii" provenance={gp('B33iii')} label="Payment made — Self installments / CP500" value={fmtAmt(fd.cp500Paid)} flatLabel />
+          <FRow code="B33" provenance={gp('B33')}    label={`Payment made for ${filingYear} income – SELF and HUSBAND / WIFE for joint assessment`} value={fmtAmt(fd.b33)} flatLabel />
+          <FRow code="B34" provenance={gp('B34')} label="Balance of tax payable (B31 − B33) / Tax paid in excess (B33 − B31)" value={fmtAmt(Math.abs(fd.b34))} highlight flatLabel />
         </FPart>
 
         <FPart code="C" title="Particulars of Husband / Wife">
-          <FRow code="C1" label="Name of husband / wife (as per identification document)" value={fd.spouseName} />
-          <FRow code="C2" label="Identification no." value={fd.spouseIdNo} />
-          <FRow code="C3" label="Date of birth" value={fd.spouseDob} />
-          <FRow code="C4" label="Passport no." value={fd.spousePassportNo} />
+          <FRow code="C1" provenance={gp('C1')} label="Name of husband / wife (as per identification document)" value={fd.spouseName} />
+          <FRow code="C2" provenance={gp('C2')} label="Identification no." value={fd.spouseIdNo} />
+          <FRow code="C3" provenance={gp('C3')} label="Date of birth" value={fd.spouseDob} />
+          <FRow code="C4" provenance={gp('C4')} label="Passport no." value={fd.spousePassportNo} />
         </FPart>
 
         <FPart code="D" title="Other Particulars">
-          <FRow code="D1" label="Telephone no. / Handphone no." value={fd.phone} flatLabel />
-          <FRow code="D2" label="E-mail" value={fd.email} flatLabel />
-          <FRow code="D3" label="Employer's TIN" value={fd.employerTin} flatLabel />
-          <FRow code="D4" label="Tax borne by employer" value={fd.taxBorneByEmployer} flatLabel />
-          <FRow code="D5" label="Financial account(s) outside Malaysia" value={fd.hasForeignAccounts} flatLabel />
-          <FRow code="D6a" label="Carries on e-Commerce" value={fd.carriesOnEcommerce} flatLabel />
-          <FRow code="D6b" label="e-Commerce business model" value={fd.ecommerceModel} flatLabel />
-          <FRow code="D7" label="Address of business premise" value={fd.businessAddress} flatLabel />
-          <FRow code="D8" label="Correspondence address" value={fd.correspondenceAddress} flatLabel />
-          <FRow code="D9" label="Method of payment for tax refund" value={fd.refundMethod} flatLabel />
-          <FRow code="D10a" label="Name of bank" value={fd.bankName} flatLabel />
-          <FRow code="D10b" label="Bank account no." value={fd.bankAccountNo} flatLabel />
-          <FRow code="D11a" label="DuitNow — identification type (self)" value={fd.duitnowIdType} flatLabel />
-          <FRow code="D11b" label="DuitNow — passport no. (if applicable)" value={fd.duitnowPassportNo} flatLabel />
-          <FRow code="D12a" label="Disposal of asset under the Real Property Gains Tax Act 1976" value={fd.rpgtDisposal} flatLabel />
-          <FRow code="D12b" label="Disposal declared to LHDNM" value={fd.disposalDeclared} flatLabel />
+          <FRow code="D1" provenance={gp('D1')} label="Telephone no. / Handphone no." value={fd.phone} flatLabel />
+          <FRow code="D2" provenance={gp('D2')} label="E-mail" value={fd.email} flatLabel />
+          <FRow code="D3" label="Employer's TIN" value={fd.employerTin} provenance={fd.employerTinProvenance} flatLabel />
+          <FRow code="D4" provenance={gp('D4')} label="Tax borne by employer" value={fd.taxBorneByEmployer} flatLabel />
+          <FRow code="D5" provenance={gp('D5')} label="Financial account(s) outside Malaysia" value={fd.hasForeignAccounts} flatLabel />
+          <FRow code="D6a" provenance={gp('D6a')} label="Carries on e-Commerce" value={fd.carriesOnEcommerce} flatLabel />
+          <FRow code="D6b" provenance={gp('D6b')} label="e-Commerce business model" value={fd.ecommerceModel} flatLabel />
+          <FRow code="D7" provenance={gp('D7')} label="Address of business premise" value={fd.businessAddress} flatLabel />
+          <FRow code="D8" provenance={gp('D8')} label="Correspondence address" value={fd.correspondenceAddress} flatLabel />
+          <FRow code="D9" provenance={gp('D9')} label="Method of payment for tax refund" value={fd.refundMethod} flatLabel />
+          <FRow code="D10a" provenance={gp('D10a')} label="Name of bank" value={fd.bankName} flatLabel />
+          <FRow code="D10b" provenance={gp('D10b')} label="Bank account no." value={fd.bankAccountNo} flatLabel />
+          <FRow code="D11a" provenance={gp('D11a')} label="DuitNow — identification type (self)" value={fd.duitnowIdType} flatLabel />
+          <FRow code="D11b" provenance={gp('D11b')} label="DuitNow — passport no. (if applicable)" value={fd.duitnowPassportNo} flatLabel />
+          <FRow code="D12a" provenance={gp('D12a')} label="Disposal of asset under the Real Property Gains Tax Act 1976" value={fd.rpgtDisposal} flatLabel />
+          <FRow code="D12b" provenance={gp('D12b')} label="Disposal declared to LHDNM" value={fd.disposalDeclared} flatLabel />
         </FPart>
 
         <FPart code="E" title="Statutory Income — Business(es) and Partnership(s) Outside Malaysia Received in Malaysia">
           <div data-pdf-row="true" className="flex items-center text-[9px] font-semibold uppercase tracking-wide text-[#64748B] bg-[#F8FAFC]">
-            <div className="w-9 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1">No.</div>
+            <div className="w-14 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1">No.</div>
             <div className="flex-[2] border-r border-[#EDF1F5] px-2 py-1">Business and partnership identification</div>
             <div className="flex-1 border-r border-[#EDF1F5] px-2 py-1">Business code</div>
             <div className="flex-1 border-r border-[#EDF1F5] px-2 py-1">Country (use country code)</div>
@@ -1464,7 +2054,7 @@ const FormBDocument = ({ fd, filingYear, embedded = false }) => {
             ['E3', 'Business 2 + Partnership 2 and so forth'],
           ].map(([code, identification]) => (
             <div key={code} data-pdf-row="true" className="flex items-center text-[10px] text-[#334155]">
-              <div className="w-9 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">{code}</div>
+              <div className="w-14 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">{code}</div>
               <div className="flex-[2] border-r border-[#EDF1F5] px-2 py-1">{identification}</div>
               <div className="flex-1 border-r border-[#EDF1F5] px-2 py-1">—</div>
               <div className="flex-1 border-r border-[#EDF1F5] px-2 py-1">—</div>
@@ -1472,15 +2062,12 @@ const FormBDocument = ({ fd, filingYear, embedded = false }) => {
               <div className="flex-1 px-2 py-1 text-right tabular-nums">—</div>
             </div>
           ))}
-          <FRow code="E4" label="TOTAL (Transfer this amount to item B3)" value={fmtAmt(0)} flatLabel />
-          <p className="px-2 py-2 text-[9px] italic text-[#94A3B8] leading-relaxed">
-            Foreign business/partnership income isn't supported yet — feature coming in a future update.
-          </p>
+          <FRow code="E4" provenance={gp('E4')} label="TOTAL (Transfer this amount to item B3)" value={fmtAmt(0)} flatLabel />
         </FPart>
 
         <FPart code="F" title="Other Statutory Income From Outside Malaysia Received in Malaysia">
           <div data-pdf-row="true" className="flex items-center text-[9px] font-semibold uppercase tracking-wide text-[#64748B] bg-[#F8FAFC]">
-            <div className="w-9 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1">No.</div>
+            <div className="w-14 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1">No.</div>
             <div className="flex-1 border-r border-[#EDF1F5] px-2 py-1">Country (use country code)</div>
             <div className="flex-1 border-r border-[#EDF1F5] px-2 py-1">Business code</div>
             <div className="flex-1 border-r border-[#EDF1F5] px-2 py-1">Type of income*</div>
@@ -1489,7 +2076,7 @@ const FormBDocument = ({ fd, filingYear, embedded = false }) => {
           </div>
           {['F1', 'F2', 'F3'].map((code) => (
             <div key={code} data-pdf-row="true" className="flex items-center text-[10px] text-[#334155]">
-              <div className="w-9 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">{code}</div>
+              <div className="w-14 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">{code}</div>
               <div className="flex-1 border-r border-[#EDF1F5] px-2 py-1">—</div>
               <div className="flex-1 border-r border-[#EDF1F5] px-2 py-1">—</div>
               <div className="flex-1 border-r border-[#EDF1F5] px-2 py-1">—</div>
@@ -1497,110 +2084,109 @@ const FormBDocument = ({ fd, filingYear, embedded = false }) => {
               <div className="flex-1 px-2 py-1 text-right tabular-nums">—</div>
             </div>
           ))}
-          <FRow code="F4" label="TOTAL (Transfer this amount to item B10)" value={fmtAmt(0)} flatLabel />
-          <p className="px-2 py-2 text-[9px] italic text-[#94A3B8] leading-relaxed">
-            Other foreign-source income isn't supported yet — feature coming in a future update.
-          </p>
+          <FRow code="F4" provenance={gp('F4')} label="TOTAL (Transfer this amount to item B10)" value={fmtAmt(0)} flatLabel />
         </FPart>
 
         <FPart code="G" title="Donations / Gifts / Contributions">
-          <FRow code="G1"  label="Gift of money to the Government / State Government / local authority" value={fmtAmt(0)} flatLabel />
-          <FRow code="G2a" label="Gift of money to approved institutions / organisations / funds" value={fmtAmt(0)} flatLabel />
-          <FRow code="G2b" label="Gift of money for any sports activity approved by the Minister of Finance" value={fmtAmt(0)} flatLabel />
-          <FRow code="G2c" label="Gift of money or cost of contribution in kind for any project of national interest approved by the Minister of Finance" value={fmtAmt(0)} flatLabel />
-          <FRow code="G2d" label="Gift of money in the form of wakaf to religious authority / religious body / public university, or gift of money in the form of endowment to public university" value={fmtAmt(0)} flatLabel />
-          <FRow code="G2"  label="Subtotal G2 (restricted to 10% of B11)" value={fmtAmt(0)} flatLabel />
-          <FRow code="G3"  label="Gift of artefacts / manuscripts / paintings to the Government or State Government" value={fmtAmt(0)} flatLabel />
-          <FRow code="G4"  label="Gift of money for the provision of library facilities or to libraries (restricted to 20,000)" value={fmtAmt(0)} flatLabel />
-          <FRow code="G5"  label="Gift of money or contribution in kind for the provision of facilities in public places for the benefit of disabled persons" value={fmtAmt(0)} flatLabel />
-          <FRow code="G6"  label="Gift of money / cost / value of gift of medical equipment to any healthcare facility approved by the Ministry of Health (restricted to 20,000)" value={fmtAmt(0)} flatLabel />
-          <FRow code="G7"  label="Gift of paintings to the National Art Gallery or any state art gallery" value={fmtAmt(0)} flatLabel />
-          <FRow code="G8"  label="Total approved donations / gifts / contributions [G1 to G7] (Transfer this amount to B17)" value={fmtAmt(fd.donationsG8)} highlight flatLabel />
+          <FRow code="G1" provenance={gp('G1')}  label="Gift of money to the Government / State Government / local authority" value={fmtAmt(fd.g1)} flatLabel />
+          <FRow code="G2a" provenance={gp('G2a')} label="Gift of money to approved institutions / organisations / funds" value={fmtAmt(fd.g2a)} flatLabel />
+          <FRow code="G2b" provenance={gp('G2b')} label="Gift of money for any sports activity approved by the Minister of Finance" value={fmtAmt(fd.g2b)} flatLabel />
+          <FRow code="G2c" provenance={gp('G2c')} label="Gift of money or cost of contribution in kind for any project of national interest approved by the Minister of Finance" value={fmtAmt(fd.g2c)} flatLabel />
+          <FRow code="G2d" provenance={gp('G2d')} label="Gift of money in the form of wakaf to religious authority / religious body / public university, or gift of money in the form of endowment to public university" value={fmtAmt(fd.g2d)} flatLabel />
+          <FRow code="G2" provenance={gp('G2')}  label="Subtotal G2 (restricted to 10% of B11)" value={fmtAmt(fd.g2)} flatLabel />
+          <FRow code="G3" provenance={gp('G3')}  label="Gift of artefacts / manuscripts / paintings to the Government or State Government" value={fmtAmt(fd.g3)} flatLabel />
+          <FRow code="G4" provenance={gp('G4')}  label="Gift of money for the provision of library facilities or to libraries (restricted to 20,000)" value={fmtAmt(fd.g4)} flatLabel />
+          <FRow code="G5" provenance={gp('G5')}  label="Gift of money or contribution in kind for the provision of facilities in public places for the benefit of disabled persons" value={fmtAmt(fd.g5)} flatLabel />
+          <FRow code="G6" provenance={gp('G6')}  label="Gift of money / cost / value of gift of medical equipment to any healthcare facility approved by the Ministry of Health (restricted to 20,000)" value={fmtAmt(fd.g6)} flatLabel />
+          <FRow code="G7" provenance={gp('G7')}  label="Gift of paintings to the National Art Gallery or any state art gallery" value={fmtAmt(fd.g7)} flatLabel />
+          <FRow code="G8" provenance={gp('G8')}  label="Total approved donations / gifts / contributions [G1 to G7] (Transfer this amount to B17)" value={fmtAmt(fd.donationsG8)} highlight flatLabel />
         </FPart>
 
         <FPart code="H" title="Relief">
-          <FRow code="H1" label="Individual and dependent relatives (automatic)" value={fmtAmt(fd.reliefByCode.H1 ?? 0)} flatLabel />
-          <FRow code="H2i"  label="Expenses for parents — medical, dental treatment, special needs or carer" value={hv('H2i')} flatLabel />
-          <FRow code="H2ii" label="Expenses for parents — complete medical examination (restricted to 1,000)" value={hv('H2ii')} flatLabel />
-          <FRow code="H2" label="Subtotal H2 (restricted to 8,000)" value={hv('H2')} flatLabel />
-          <FRow code="H3" label="Basic supporting equipment for disabled self, spouse, child or parent (restricted to 6,000)" value={hv('H3')} flatLabel />
-          <FRow code="H4" label="Disabled individual (6,000)" value={hv('H4')} flatLabel />
-          <FRow code="H5i"   label="Education fees — other than degree at masters/doctorate level" value={hv('H5i')} flatLabel />
-          <FRow code="H5ii"  label="Education fees — degree at masters or doctorate level, any course" value={hv('H5ii')} flatLabel />
-          <FRow code="H5iii" label="Education fees — upskilling / self-enhancement (restricted to 2,000)" value={hv('H5iii')} flatLabel />
-          <FRow code="H5" label="Subtotal H5 (restricted to 7,000)" value={hv('H5')} flatLabel />
-          <FRow code="H6i"   label="Medical expenses — serious diseases for self, spouse or child" value={hv('H6i')} flatLabel />
-          <FRow code="H6ii"  label="Medical expenses — fertility treatment for self or spouse" value={hv('H6ii')} flatLabel />
-          <FRow code="H6iii" label="Medical expenses — vaccination (restricted to 1,000)" value={hv('H6iii')} flatLabel />
-          <FRow code="H6iv"  label="Medical expenses — dental examination and treatment" value={hv('H6iv')} flatLabel />
-          <FRow code="H6" label="Subtotal H6 (restricted to 10,000)" value={hv('H6')} flatLabel />
-          <FRow code="H7i"   label="Complete medical examination for self, spouse or child" value={hv('H7i')} flatLabel />
-          <FRow code="H7ii"  label="COVID-19 detection test / self-detection test kit" value={hv('H7ii')} flatLabel />
-          <FRow code="H7iii" label="Mental health examination or consultation" value={hv('H7iii')} flatLabel />
-          <FRow code="H7" label="Subtotal H7 (restricted to 1,000)" value={hv('H7')} flatLabel />
-          <FRow code="H8i"  label="Assessment for diagnosis of learning disability (child ≤18)" value={hv('H8i')} flatLabel />
-          <FRow code="H8ii" label="Early intervention / rehabilitation for learning disability" value={hv('H8ii')} flatLabel />
-          <FRow code="H8" label="Subtotal H8 (restricted to 4,000)" value={hv('H8')} flatLabel />
-          <FRow code="H9" label="Lifestyle — books, PC/smartphone/tablet, internet, upskilling courses (restricted to 2,500)" value={hv('H9')} flatLabel />
-          <FRow code="H10" label="Lifestyle — additional relief for sports equipment/facilities/competitions/gym (restricted to 1,000)" value={hv('H10')} flatLabel />
-          <FRow code="H11" label="Breastfeeding equipment, child ≤2 years, once per 2 YAs (restricted to 1,000)" value={hv('H11')} flatLabel />
-          <FRow code="H12" label="Child care fees — registered centre/kindergarten, child ≤6 (restricted to 3,000)" value={hv('H12')} flatLabel />
-          <FRow code="H13" label="Net SSPN deposit (restricted to 8,000)" value={hv('H13')} flatLabel />
-          <FRow code="H14" label="Husband / wife / alimony to former wife (restricted to 4,000)" value={hv('H14')} flatLabel />
-          <FRow code="H15" label="Disabled husband / wife (5,000)" value={hv('H15')} flatLabel />
-          <FRow code="H16a" label="Child — under 18 years (2,000 each)" value={hv('H16a')} flatLabel />
-          <FRow code="H16b" label="Child — 18+ and studying (2,000 / 8,000 tiered)" value={hv('H16b')} flatLabel />
-          <FRow code="H16c" label="Child — disabled (6,000 / 14,000 tiered)" value={hv('H16c')} flatLabel />
+          <FRow code="H1" provenance={gp('H1')} label="Individual and dependent relatives (automatic)" value={fmtAmt(fd.reliefByCode.H1 ?? 0)} flatLabel />
+          <FRow code="H2i" provenance={gp('H2i')}  label="Expenses for parents — medical, dental treatment, special needs or carer" value={hv('H2i')} flatLabel />
+          <FRow code="H2ii" provenance={gp('H2ii')} label="Expenses for parents — complete medical examination (restricted to 1,000)" value={hv('H2ii')} flatLabel />
+          <FRow code="H2" provenance={gp('H2')} label="Subtotal H2 (restricted to 8,000)" value={fmtAmt((fd.reliefByCode.H2i || 0) + (fd.reliefByCode.H2ii || 0))} flatLabel />
+          <FRow code="H3" provenance={gp('H3')} label="Basic supporting equipment for disabled self, spouse, child or parent (restricted to 6,000)" value={hv('H3')} flatLabel />
+          <FRow code="H4" provenance={gp('H4')} label="Disabled individual (6,000)" value={hv('H4')} flatLabel />
+          <FRow code="H5i" provenance={gp('H5i')}   label="Education fees — other than degree at masters/doctorate level" value={hv('H5i')} flatLabel />
+          <FRow code="H5ii" provenance={gp('H5ii')}  label="Education fees — degree at masters or doctorate level, any course" value={hv('H5ii')} flatLabel />
+          <FRow code="H5iii" provenance={gp('H5iii')} label="Education fees — upskilling / self-enhancement (restricted to 2,000)" value={hv('H5iii')} flatLabel />
+          <FRow code="H5" provenance={gp('H5')} label="Subtotal H5 (restricted to 7,000)" value={fmtAmt((fd.reliefByCode.H5i || 0) + (fd.reliefByCode.H5ii || 0) + (fd.reliefByCode.H5iii || 0))} flatLabel />
+          <FRow code="H6i" provenance={gp('H6i')}   label="Medical expenses — serious diseases for self, spouse or child" value={hv('H6i')} flatLabel />
+          <FRow code="H6ii" provenance={gp('H6ii')}  label="Medical expenses — fertility treatment for self or spouse" value={hv('H6ii')} flatLabel />
+          <FRow code="H6iii" provenance={gp('H6iii')} label="Medical expenses — vaccination (restricted to 1,000)" value={hv('H6iii')} flatLabel />
+          <FRow code="H6iv" provenance={gp('H6iv')}  label="Medical expenses — dental examination and treatment" value={hv('H6iv')} flatLabel />
+          <FRow code="H6" provenance={gp('H6')} label="Subtotal H6 (restricted to 10,000 combined with H7 and H8)" value={fmtAmt((fd.reliefByCode.H6i || 0) + (fd.reliefByCode.H6ii || 0) + (fd.reliefByCode.H6iii || 0) + (fd.reliefByCode.H6iv || 0))} flatLabel />
+          <FRow code="H7i" provenance={gp('H7i')}   label="Complete medical examination for self, spouse or child" value={hv('H7i')} flatLabel />
+          <FRow code="H7ii" provenance={gp('H7ii')}  label="COVID-19 detection test / self-detection test kit" value={hv('H7ii')} flatLabel />
+          <FRow code="H7iii" provenance={gp('H7iii')} label="Mental health examination or consultation" value={hv('H7iii')} flatLabel />
+          <FRow code="H7" provenance={gp('H7')} label="Subtotal H7 (restricted to 1,000, combined with H6 and H8)" value={fmtAmt((fd.reliefByCode.H7i || 0) + (fd.reliefByCode.H7ii || 0) + (fd.reliefByCode.H7iii || 0))} flatLabel />
+          <FRow code="H8i" provenance={gp('H8i')}  label="Assessment for diagnosis of learning disability (child ≤18)" value={hv('H8i')} flatLabel />
+          <FRow code="H8ii" provenance={gp('H8ii')} label="Early intervention / rehabilitation for learning disability" value={hv('H8ii')} flatLabel />
+          <FRow code="H8" provenance={gp('H8')} label="Subtotal H8 (restricted to 4,000, combined with H6 and H7)" value={fmtAmt((fd.reliefByCode.H8i || 0) + (fd.reliefByCode.H8ii || 0))} flatLabel />
+          <FRow code="H9i" provenance={gp('H9i')} label="Lifestyle — books, journals, magazines, newspapers" value={hv('H9i')} flatLabel />
+          <FRow code="H9ii" provenance={gp('H9ii')} label="Lifestyle — personal computer, smartphone or tablet" value={hv('H9ii')} flatLabel />
+          <FRow code="H9iii" provenance={gp('H9iii')} label="Lifestyle — internet subscription" value={hv('H9iii')} flatLabel />
+          <FRow code="H9iv" provenance={gp('H9iv')} label="Lifestyle — personal enrichment / hobby course (other than H5(iii))" value={hv('H9iv')} flatLabel />
+          <FRow code="H9" provenance={gp('H9')} label="Subtotal H9 (restricted to 2,500)" value={fmtAmt((fd.reliefByCode.H9i || 0) + (fd.reliefByCode.H9ii || 0) + (fd.reliefByCode.H9iii || 0) + (fd.reliefByCode.H9iv || 0))} flatLabel />
+          <FRow code="H10i" provenance={gp('H10i')} label="Sports — equipment purchase" value={hv('H10i')} flatLabel />
+          <FRow code="H10ii" provenance={gp('H10ii')} label="Sports — facility rental / entrance fee" value={hv('H10ii')} flatLabel />
+          <FRow code="H10iii" provenance={gp('H10iii')} label="Sports — competition registration fee" value={hv('H10iii')} flatLabel />
+          <FRow code="H10iv" provenance={gp('H10iv')} label="Sports — gym membership / sports training fee" value={hv('H10iv')} flatLabel />
+          <FRow code="H10" provenance={gp('H10')} label="Subtotal H10 (restricted to 1,000)" value={fmtAmt((fd.reliefByCode.H10i || 0) + (fd.reliefByCode.H10ii || 0) + (fd.reliefByCode.H10iii || 0) + (fd.reliefByCode.H10iv || 0))} flatLabel />
+          <FRow code="H11" provenance={gp('H11')} label="Breastfeeding equipment, child ≤2 years, once per 2 YAs (restricted to 1,000)" value={hv('H11')} flatLabel />
+          <FRow code="H12" provenance={gp('H12')} label="Child care fees — registered centre/kindergarten, child ≤6 (restricted to 3,000)" value={hv('H12')} flatLabel />
+          <FRow code="H13" provenance={gp('H13')} label="Net SSPN deposit (restricted to 8,000)" value={hv('H13')} flatLabel />
+          <FRow code="H14" provenance={gp('H14')} label="Husband / wife / alimony to former wife (restricted to 4,000)" value={hv('H14')} flatLabel />
+          <FRow code="H15" provenance={gp('H15')} label="Disabled husband / wife (5,000)" value={hv('H15')} flatLabel />
+          <FRow code="H16a" provenance={gp('H16a')} label="Child — under 18 years (2,000 each)" value={hv('H16a')} flatLabel />
+          <FRow code="H16b" provenance={gp('H16b')} label="Child — 18+ and studying (2,000 / 8,000 tiered)" value={hv('H16b')} flatLabel />
+          <FRow code="H16c" provenance={gp('H16c')} label="Child — disabled (6,000 / 14,000 tiered)" value={hv('H16c')} flatLabel />
           {fd.reliefByCode.H16 != null && (
             <FRow label="⚠ Child-relief documents on file, not yet split into H16a/b/c (see Data Coverage)" value={hv('H16')} flatLabel />
           )}
-          <FRow code="H17i"  label="Life insurance premium / EPF voluntary contribution (restricted to 3,000)" value={hv('H17i')} flatLabel />
-          <FRow code="H17ii" label="EPF (voluntary or compulsory) / approved scheme (restricted to 4,000)" value={hv('H17ii')} flatLabel />
-          <FRow code="H17" label="Subtotal H17 (restricted to 7,000)" value={fmtAmt((fd.reliefByCode.H17i || 0) + (fd.reliefByCode.H17ii || 0))} flatLabel />
-          <FRow code="H18" label="Private retirement scheme and deferred annuity (restricted to 3,000)" value={hv('H18')} flatLabel />
-          <FRow code="H19" label="Education and medical insurance (restricted to 3,000)" value={hv('H19')} flatLabel />
-          <FRow code="H20" label="SOCSO / EIS contribution (restricted to 350)" value={hv('H20')} flatLabel />
-          <FRow code="H21" label="EV charging equipment/installation, not for business use (restricted to 2,500)" value={hv('H21')} flatLabel />
-          <FRow code="H22" label="TOTAL RELIEF [H1 to H21] (transfer to B23)" value={fmtAmt(fd.reliefTotal)} highlight flatLabel />
+          <FRow code="H17i" provenance={gp('H17i')}  label="Life insurance premium / EPF voluntary contribution (restricted to 3,000)" value={hv('H17i')} flatLabel />
+          <FRow code="H17ii" provenance={gp('H17ii')} label="EPF (voluntary or compulsory) / approved scheme (restricted to 4,000)" value={hv('H17ii')} flatLabel />
+          <FRow code="H17" provenance={gp('H17')} label="Subtotal H17 (restricted to 7,000)" value={fmtAmt((fd.reliefByCode.H17i || 0) + (fd.reliefByCode.H17ii || 0))} flatLabel />
+          <FRow code="H18" provenance={gp('H18')} label="Private retirement scheme and deferred annuity (restricted to 3,000)" value={hv('H18')} flatLabel />
+          <FRow code="H19" provenance={gp('H19')} label="Education and medical insurance (restricted to 3,000)" value={hv('H19')} flatLabel />
+          <FRow code="H20" provenance={gp('H20')} label="SOCSO / EIS contribution (restricted to 350)" value={hv('H20')} flatLabel />
+          <FRow code="H21" provenance={gp('H21')} label="EV charging equipment/installation, not for business use (restricted to 2,500)" value={hv('H21')} flatLabel />
+          <FRow code="H22" provenance={gp('H22')} label="TOTAL RELIEF [H1 to H21] (transfer to B23)" value={fmtAmt(fd.reliefTotal)} highlight flatLabel />
         </FPart>
 
         <FPart code="J" title="Incentive Claim">
-          <IncentiveClaimTable
+          <PartJClaimTable
             code="J1"
             title="Claim Special Deduction(s) / Further Deduction(s) / Double Deduction(s) / Incentive(s) under paragraph 127(3)(b) of Income Tax Act 1967"
             firstColLabel="Claim Code"
           />
-          <IncentiveClaimTable
+          <PartJClaimTable
             code="J2"
             title="Claim for incentive(s) under subsection 127(3A) of Income Tax Act 1967"
             firstColLabel="Incentive Approval No."
           />
-          <p className="px-2 py-2 text-[9px] italic text-[#94A3B8] leading-relaxed">
-            Incentive claims aren't supported yet — feature coming in a future update.
-          </p>
         </FPart>
 
         <FPart code="K" title="Non-Employment Income of Preceding Years Not Declared">
-          <div data-pdf-row="true" className="items-center grid grid-cols-[36px_repeat(3,minmax(0,1fr))] text-[9px] font-semibold uppercase tracking-wide text-[#64748B] bg-[#F8FAFC]">
+          <div data-pdf-row="true" className="items-center grid grid-cols-[56px_repeat(3,minmax(0,1fr))] text-[9px] font-semibold uppercase tracking-wide text-[#64748B] bg-[#F8FAFC]">
             <div className="col-span-2 border-r border-[#EDF1F5] px-2 py-1">Type of Income</div>
             <div className="border-r border-[#EDF1F5] px-2 py-1">Year of Assessment</div>
             <div className="px-2 py-1">Amount (RM)</div>
           </div>
-          {['K1', 'K2'].map((code) => (
-            <div key={code} data-pdf-row="true" className="items-center grid grid-cols-[36px_repeat(3,minmax(0,1fr))] text-[10px] text-[#334155]">
-              <div className="border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">{code}</div>
-              <div className="border-r border-[#EDF1F5] px-2 py-1">—</div>
-              <div className="border-r border-[#EDF1F5] px-2 py-1">—</div>
-              <div className="px-2 py-1 text-right tabular-nums">—</div>
+          {(fd.kDisclosures && fd.kDisclosures.length ? fd.kDisclosures : [null, null]).slice(0, 2).map((disclosure, i) => (
+            <div key={disclosure?.documentId ?? `K${i + 1}`} data-pdf-row="true" className="items-center grid grid-cols-[56px_repeat(3,minmax(0,1fr))] text-[10px] text-[#334155]">
+              <div className="border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">{`K${i + 1}`}</div>
+              <div className="border-r border-[#EDF1F5] px-2 py-1">{disclosure?.incomeType || '—'}</div>
+              <div className="border-r border-[#EDF1F5] px-2 py-1">{disclosure?.disclosedYa || '—'}</div>
+              <div className="px-2 py-1 text-right tabular-nums">{disclosure ? fmtAmt(disclosure.amountNumeric) : '—'}</div>
             </div>
           ))}
-          <p className="px-2 py-2 text-[9px] italic text-[#94A3B8] leading-relaxed">
-            Non-employment income declarations aren't supported yet — feature coming in a future update.
-          </p>
         </FPart>
 
         <FPart code="L" title="Tax Exempt Income From Sources Outside Malaysia Received in Malaysia">
-          <div data-pdf-row="true" className="items-center grid grid-cols-[36px_repeat(7,minmax(0,1fr))] text-[9px] font-semibold uppercase tracking-wide text-[#64748B] bg-[#F8FAFC]">
+          <div data-pdf-row="true" className="items-center grid grid-cols-[56px_repeat(7,minmax(0,1fr))] text-[9px] font-semibold uppercase tracking-wide text-[#64748B] bg-[#F8FAFC]">
             <div className="border-r border-[#EDF1F5] px-1.5 py-1">No.</div>
             <div className="border-r border-[#EDF1F5] px-2 py-1">Country (use country code)</div>
             <div className="border-r border-[#EDF1F5] px-2 py-1">Type of income*</div>
@@ -1611,7 +2197,7 @@ const FormBDocument = ({ fd, filingYear, embedded = false }) => {
             <div className="px-2 py-1 text-right">Amount of income remitted (RM)</div>
           </div>
           {['L1', 'L2', 'L3', 'L4'].map((code) => (
-            <div key={code} data-pdf-row="true" className="items-center grid grid-cols-[36px_repeat(7,minmax(0,1fr))] text-[10px] text-[#334155]">
+            <div key={code} data-pdf-row="true" className="items-center grid grid-cols-[56px_repeat(7,minmax(0,1fr))] text-[10px] text-[#334155]">
               <div className="border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">{code}</div>
               <div className="border-r border-[#EDF1F5] px-2 py-1">—</div>
               <div className="border-r border-[#EDF1F5] px-2 py-1">—</div>
@@ -1622,19 +2208,16 @@ const FormBDocument = ({ fd, filingYear, embedded = false }) => {
               <div className="px-2 py-1 text-right tabular-nums">—</div>
             </div>
           ))}
-          <div data-pdf-row="true" className="items-center grid grid-cols-[36px_repeat(7,minmax(0,1fr))] text-[10px] text-[#334155]">
+          <div data-pdf-row="true" className="items-center grid grid-cols-[56px_repeat(7,minmax(0,1fr))] text-[10px] text-[#334155]">
             <div className="border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">L5</div>
             <div className="col-span-6 border-r border-[#EDF1F5] px-2 py-1">TOTAL</div>
             <div className="px-2 py-1 text-right tabular-nums">{fmtAmt(0)}</div>
           </div>
-          <p className="px-2 py-2 text-[9px] italic text-[#94A3B8] leading-relaxed">
-            Tax-exempt foreign-source income isn't supported yet — feature coming in a future update.
-          </p>
         </FPart>
 
         <FPart code="M" title="Particulars of Business Income (Losses)">
           <div data-pdf-row="true" className="flex items-center text-[10px] text-[#334155]">
-            <div className="w-9 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">M1</div>
+            <div className="w-14 shrink-0 border-r border-[#EDF1F5] px-1.5 py-1 text-[#94A3B8] font-medium">M1</div>
             <div className="flex-1 px-2 py-1">
               Summary of business and partnership losses subject to loss restriction
             </div>
@@ -1650,31 +2233,27 @@ const FormBDocument = ({ fd, filingYear, embedded = false }) => {
             <div className="px-2 py-1">(d) Balance carried forward (d = a − b − c)</div>
           </div>
           <div data-pdf-row="true" className="items-center grid grid-cols-4 text-[10px] text-[#334155]">
-            <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">—</div>
-            <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">—</div>
-            <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">—</div>
-            <div className="px-2 py-1 text-right tabular-nums">—</div>
+            <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">{fmtAmt(fd.currentYearBusinessLossRawMyr)}</div>
+            <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">{fmtAmt(0)}</div>
+            <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">{fmtAmt(fd.b14)}</div>
+            <div className="px-2 py-1 text-right tabular-nums">{fmtAmt(Math.max(0, fd.currentYearBusinessLossRawMyr - fd.b14))}</div>
           </div>
 
           <div data-pdf-row="true" className="bg-[#F1F5F9] px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-[#475569]">
             Losses of Prior Years of Assessment
           </div>
-          <div data-pdf-row="true" className="items-center grid grid-cols-[minmax(90px,1.2fr)_repeat(8,minmax(0,1fr))] text-[9px] font-semibold text-[#64748B] bg-[#F8FAFC]">
-            <div className="border-r border-[#EDF1F5] px-2 py-1">Year of assessment in which losses are incurred</div>
-            <div className="col-span-4 border-r border-[#EDF1F5] px-2 py-1 text-center">Unabsorbed losses position at the beginning of the current year of assessment</div>
-            <div className="col-span-3 border-r border-[#EDF1F5] px-2 py-1 text-center">Losses absorbed / Disregarded in the current year of assessment</div>
-            <div className="px-2 py-1" />
-          </div>
-          <div data-pdf-row="true" className="items-center grid grid-cols-[minmax(90px,1.2fr)_repeat(8,minmax(0,1fr))] text-[9px] font-semibold text-[#64748B] bg-[#F8FAFC]">
-            <div className="border-r border-[#EDF1F5] px-2 py-1" />
-            <div className="border-r border-[#EDF1F5] px-2 py-1">(e) Original amount of losses in the YA first incurred</div>
+          <div data-pdf-row="true" className="grid grid-rows-2 grid-cols-[minmax(90px,1.2fr)_repeat(8,minmax(0,1fr))] text-[9px] font-semibold text-[#64748B] bg-[#F8FAFC]">
+            <div className="row-span-2 flex items-center border-r border-b border-[#EDF1F5] px-2 py-1">Year of assessment in which losses are incurred</div>
+            <div className="row-span-2 flex items-center border-r border-b border-[#EDF1F5] px-2 py-1">(e) Original amount of losses in the YA first incurred</div>
+            <div className="col-span-3 border-r border-b border-[#EDF1F5] px-2 py-1 text-center">Unabsorbed losses position at the beginning of the current year of assessment</div>
+            <div className="col-span-3 border-r border-b border-[#EDF1F5] px-2 py-1 text-center">Losses absorbed / Disregarded in the current year of assessment</div>
+            <div className="row-span-2 flex items-center border-b border-[#EDF1F5] px-2 py-1">(n) Balance carried forward (n = h − j − k − m)</div>
             <div className="border-r border-[#EDF1F5] px-2 py-1">(f) Amount absorbed from tax exempt income of pioneer business</div>
             <div className="border-r border-[#EDF1F5] px-2 py-1">(g) Amount absorbed (accumulated)</div>
             <div className="border-r border-[#EDF1F5] px-2 py-1">(h) Balance unabsorbed (h = e − f − g)</div>
             <div className="border-r border-[#EDF1F5] px-2 py-1">(j) Amount disregarded under s.44(5F)</div>
             <div className="border-r border-[#EDF1F5] px-2 py-1">(k) Amount disregarded under s.25(5) PIA 1986</div>
-            <div className="border-r border-[#EDF1F5] px-2 py-1">(m) Amount absorbed</div>
-            <div className="px-2 py-1">(n) Balance carried forward (n = h − j − k − m)</div>
+            <div className="px-2 py-1">(m) Amount absorbed</div>
           </div>
           {(() => {
             // Always the 5 YAs immediately before the current filing year,
@@ -1682,107 +2261,116 @@ const FormBDocument = ({ fd, filingYear, embedded = false }) => {
             // this stays correct as filingYear rolls forward each year
             // rather than drifting out of date like a hardcoded list would.
             const oldestCutoff = filingYear - 6;
+            const vintages = fd.businessLossVintages || [];
+            const rowFor = (yr, isOldestBucket) => {
+              const matches = isOldestBucket
+                ? vintages.filter((v) => v.yearArose <= oldestCutoff)
+                : vintages.filter((v) => v.yearArose === Number(yr));
+              if (matches.length === 0) return null;
+              const sum = (key) => matches.reduce((s, v) => s + (Number(v[key]) || 0), 0);
+              return { original: sum('originalMyr'), absorbed: sum('absorbedMyr'), remaining: sum('remainingMyr') };
+            };
             const priorYears = [
               `${oldestCutoff} and before`,
               ...Array.from({ length: 5 }, (_, i) => String(oldestCutoff + 1 + i)),
             ];
-            return priorYears.map((yr) => (
-            <div key={yr} data-pdf-row="true" className="items-center grid grid-cols-[minmax(90px,1.2fr)_repeat(8,minmax(0,1fr))] text-[10px] text-[#334155]">
-              <div className="border-r border-[#EDF1F5] px-2 py-1 text-[#94A3B8] font-medium">{yr}</div>
-              <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">—</div>
-              <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">—</div>
-              <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">—</div>
-              <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">—</div>
-              <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">—</div>
-              <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">—</div>
-              <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">—</div>
-              <div className="px-2 py-1 text-right tabular-nums">—</div>
-            </div>
-            ));
+            return priorYears.map((yr, i) => {
+              const row = rowFor(i === 0 ? oldestCutoff : yr, i === 0);
+              return (
+              <div key={yr} data-pdf-row="true" className="items-center grid grid-cols-[minmax(90px,1.2fr)_repeat(8,minmax(0,1fr))] text-[10px] text-[#334155]">
+                <div className="border-r border-[#EDF1F5] px-2 py-1 text-[#94A3B8] font-medium">{yr}</div>
+                <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">{row ? fmtAmt(row.original) : '—'}</div>
+                <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">{row ? fmtAmt(0) : '—'}</div>
+                <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">{row ? fmtAmt(row.absorbed) : '—'}</div>
+                <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">{row ? fmtAmt(row.remaining) : '—'}</div>
+                <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">{row ? fmtAmt(0) : '—'}</div>
+                <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">{row ? fmtAmt(0) : '—'}</div>
+                <div className="border-r border-[#EDF1F5] px-2 py-1 text-right tabular-nums">{row ? fmtAmt(0) : '—'}</div>
+                <div className="px-2 py-1 text-right tabular-nums">{row ? fmtAmt(row.remaining) : '—'}</div>
+              </div>
+              );
+            });
           })()}
 
-          <FRow code="M2" label="Business capital allowances carried forward" value={fmtAmt(0)} />
-          <FRow code="M3" label="Partnership capital allowances carried forward" value={fmtAmt(0)} />
-          <p className="px-2 py-2 text-[9px] italic text-[#94A3B8] leading-relaxed">
-            Business-loss carry-forward tracking isn't supported yet — feature coming in a future update.
-          </p>
+          <FRow code="M2" provenance={gp('M2')} label="Business capital allowances carried forward" value={fmtAmt(fd.m2UnabsorbedCapitalAllowanceMyr)} />
+          <FRow code="M3" provenance={gp('M3')} label="Partnership capital allowances carried forward" value={fmtAmt(0)} />
         </FPart>
 
-        <FPart code="N" title={`Financial Particulars of Individual (Main Business Only)${fd.entityCount > 1 ? ` — combined across ${fd.entityCount} entities` : ''}`}>
-          <FRow code="N1" label="Name of business" value={fd.businessName} flatLabel />
-          <FRow code="N1a" label="Registration no." value={fd.businessRegNo} flatLabel />
-          <FRow code="N2" label="Business code" value={fd.businessCode} flatLabel />
-          <FRow code="N2a" label="Type of business activity" value={fd.businessActivity} flatLabel />
+        <FPart code="N" title={`Financial Particulars of Individual (Main Business Only)${fd.entityCount > 1 ? ` — ${fd.businessName}, main of ${fd.entityCount} businesses (see B1 for the combined total)` : ''}`}>
+          <FRow code="N1" provenance={gp('N1')} label="Name of business" value={fd.businessName} flatLabel />
+          <FRow code="N1a" provenance={gp('N1a')} label="Registration no." value={fd.businessRegNo} flatLabel />
+          <FRow code="N2" provenance={gp('N2')} label="Business code" value={fd.businessCode} flatLabel />
+          <FRow code="N2a" provenance={gp('N2a')} label="Type of business activity" value={fd.businessActivity} flatLabel />
 
           <div className="bg-[#F1F5F9] px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-[#475569]">Statement of Profit or Loss</div>
-          <FRow code="N3"  label="Sales or turnover" value={fmtAmt(fd.n3)} flatLabel />
+          <FRow code="N3" provenance={gp('N3')}  label="Sales or turnover" value={fmtAmt(fd.n3)} flatLabel />
           <div className="bg-[#FAFBFC] px-2 py-0.5 text-[8.5px] font-bold uppercase tracking-wide text-[#94A3B8]">Less:</div>
-          <FRow code="N4"  label="Opening inventory" value="—" flatLabel />
-          <FRow code="N5"  label="Purchases and cost of production" value={fmtAmt(fd.n5)} flatLabel />
-          <FRow code="N6"  label="Closing inventory" value="—" flatLabel />
-          <FRow code="N7"  label="Cost of sales (N4 + N5 − N6)" value={fmtAmt(fd.n7)} flatLabel />
-          <FRow code="N8"  label="GROSS PROFIT / LOSS (N3 − N7)" value={fmtAmt(fd.n8)} strong flatLabel />
+          <FRow code="N4" provenance={gp('N4')}  label="Opening inventory" value={fmtAmt(fd.n4)} flatLabel />
+          <FRow code="N5" provenance={gp('N5')}  label="Purchases and cost of production" value={fmtAmt(fd.n5)} flatLabel />
+          <FRow code="N6" provenance={gp('N6')}  label="Closing inventory" value={fmtAmt(fd.n6)} flatLabel />
+          <FRow code="N7" provenance={gp('N7')}  label="Cost of sales (N4 + N5 − N6)" value={fmtAmt(fd.n7)} flatLabel />
+          <FRow code="N8" provenance={gp('N8')}  label="GROSS PROFIT / LOSS (N3 − N7)" value={fmtAmt(fd.n8)} strong flatLabel />
           <div className="bg-[#FAFBFC] px-2 py-0.5 text-[8.5px] font-bold uppercase tracking-wide text-[#94A3B8]">Other income:</div>
-          <FRow code="N9"  label="Other business(es)" value="—" flatLabel />
-          <FRow code="N10" label="Dividends" value="—" flatLabel />
-          <FRow code="N11" label="Interest and discounts" value={fmtAmt(fd.n11)} flatLabel />
-          <FRow code="N12" label="Rents, royalties and premiums" value="—" flatLabel />
-          <FRow code="N13" label="Other income" value={fmtAmt(fd.n13)} flatLabel />
-          <FRow code="N14" label="TOTAL (N9 to N13)" value={fmtAmt(fd.n14)} strong flatLabel />
+          <FRow code="N9" provenance={gp('N9')}  label="Other business(es)" value={fmtAmt(fd.n9)} flatLabel />
+          <FRow code="N10" provenance={gp('N10')} label="Dividends" value={fmtAmt(fd.n10)} flatLabel />
+          <FRow code="N11" provenance={gp('N11')} label="Interest and discounts" value={fmtAmt(fd.n11)} flatLabel />
+          <FRow code="N12" provenance={gp('N12')} label="Rents, royalties and premiums" value={fmtAmt(fd.n12)} flatLabel />
+          <FRow code="N13" provenance={gp('N13')} label="Other income" value={fmtAmt(fd.n13)} flatLabel />
+          <FRow code="N14" provenance={gp('N14')} label="TOTAL (N9 to N13)" value={fmtAmt(fd.n14)} strong flatLabel />
           <div className="bg-[#FAFBFC] px-2 py-0.5 text-[8.5px] font-bold uppercase tracking-wide text-[#94A3B8]">Expenses:</div>
-          <FRow code="N15" label="Loan interest" value={fmtAmt(fd.n15)} flatLabel />
-          <FRow code="N16" label="Salaries and wages" value={fmtAmt(fd.n16)} flatLabel />
-          <FRow code="N17" label="Rental / lease" value={fmtAmt(fd.n17)} flatLabel />
-          <FRow code="N18" label="Contract and subcontracts" value="—" flatLabel />
-          <FRow code="N19" label="Commissions" value={fmtAmt(fd.n19)} flatLabel />
-          <FRow code="N20" label="Bad debts" value="—" flatLabel />
-          <FRow code="N21" label="Travelling and transport" value={fmtAmt(fd.n21)} flatLabel />
-          <FRow code="N22" label="Repairs and maintenance" value={fmtAmt(fd.n22)} flatLabel />
-          <FRow code="N23" label="Promotion and advertisement" value={fmtAmt(fd.n23)} flatLabel />
-          <FRow code="N24" label="Other expenses" value={fmtAmt(fd.n24)} flatLabel />
-          <FRow code="N25" label="TOTAL EXPENDITURE (N15 to N24)" value={fmtAmt(fd.n25)} strong flatLabel />
-          <FRow code="N26" label="NET PROFIT / LOSS" value={fmtAmt(fd.n26)} highlight flatLabel />
-          <FRow code="N27" label="Non-allowable expenses (apportioned/disallowed portion)" value={fmtAmt(fd.n27)} flatLabel />
+          <FRow code="N15" provenance={gp('N15')} label="Loan interest" value={fmtAmt(fd.n15)} flatLabel />
+          <FRow code="N16" provenance={gp('N16')} label="Salaries and wages" value={fmtAmt(fd.n16)} flatLabel />
+          <FRow code="N17" provenance={gp('N17')} label="Rental / lease" value={fmtAmt(fd.n17)} flatLabel />
+          <FRow code="N18" provenance={gp('N18')} label="Contract and subcontracts" value={fmtAmt(fd.n18)} flatLabel />
+          <FRow code="N19" provenance={gp('N19')} label="Commissions" value={fmtAmt(fd.n19)} flatLabel />
+          <FRow code="N20" provenance={gp('N20')} label="Bad debts" value={fmtAmt(fd.n20)} flatLabel />
+          <FRow code="N21" provenance={gp('N21')} label="Travelling and transport" value={fmtAmt(fd.n21)} flatLabel />
+          <FRow code="N22" provenance={gp('N22')} label="Repairs and maintenance" value={fmtAmt(fd.n22)} flatLabel />
+          <FRow code="N23" provenance={gp('N23')} label="Promotion and advertisement" value={fmtAmt(fd.n23)} flatLabel />
+          <FRow code="N24" provenance={gp('N24')} label="Other expenses" value={fmtAmt(fd.n24)} flatLabel />
+          <FRow code="N25" provenance={gp('N25')} label="TOTAL EXPENDITURE (N15 to N24)" value={fmtAmt(fd.n25)} strong flatLabel />
+          <FRow code="N26" provenance={gp('N26')} label="NET PROFIT / LOSS" value={fmtAmt(fd.n26)} highlight flatLabel />
+          <FRow code="N27" provenance={gp('N27')} label="Non-allowable expenses (apportioned/disallowed portion)" value={fmtAmt(fd.n27)} flatLabel />
           <FRow label="LESS: Capital allowance (Schedule 3, current-year IA+AA)" value={fmtAmt(fd.capitalAllowance)} flatLabel />
 
           <div className="bg-[#F1F5F9] px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-[#475569]">Statement of Financial Position</div>
+          {/* Phase 6 (14 Jul 2026): populated from an uploaded Balance Sheet's
+              structured extraction (FinancialStatementProfile) when present.
+              Genuinely blank (not just 0) until a Balance Sheet is uploaded —
+              see fd.hasBalanceSheet and the dataGap this drives. */}
           <div className="bg-[#FAFBFC] px-2 py-0.5 text-[8.5px] font-bold uppercase tracking-wide text-[#94A3B8]">Non-current assets:</div>
-          <FRow code="N28" label="Land and buildings" value="—" flatLabel />
-          <FRow code="N29" label="Plant and machinery" value="—" flatLabel />
-          <FRow code="N30" label="Motor vehicles" value="—" flatLabel />
-          <FRow code="N31" label="Other non-current assets" value="—" flatLabel />
-          <FRow code="N32" label="TOTAL NON-CURRENT ASSETS (N28 to N31)" value="—" strong flatLabel />
-          <FRow code="N33" label="Investments" value="—" flatLabel />
+          <FRow code="N28" provenance={gp('N28')} label="Land and buildings" value={fd.hasBalanceSheet ? fmtAmt(fd.n28) : '—'} flatLabel />
+          <FRow code="N29" provenance={gp('N29')} label="Plant and machinery" value={fd.hasBalanceSheet ? fmtAmt(fd.n29) : '—'} flatLabel />
+          <FRow code="N30" provenance={gp('N30')} label="Motor vehicles" value={fd.hasBalanceSheet ? fmtAmt(fd.n30) : '—'} flatLabel />
+          <FRow code="N31" provenance={gp('N31')} label="Other non-current assets" value={fd.hasBalanceSheet ? fmtAmt(fd.n31) : '—'} flatLabel />
+          <FRow code="N32" provenance={gp('N32')} label="TOTAL NON-CURRENT ASSETS (N28 to N31)" value={fd.hasBalanceSheet ? fmtAmt(fd.n32) : '—'} strong flatLabel />
+          <FRow code="N33" provenance={gp('N33')} label="Investments" value={fd.hasBalanceSheet ? fmtAmt(fd.n33) : '—'} flatLabel />
           <div className="bg-[#FAFBFC] px-2 py-0.5 text-[8.5px] font-bold uppercase tracking-wide text-[#94A3B8]">Current assets:</div>
-          <FRow code="N34" label="Inventory" value="—" flatLabel />
-          <FRow code="N35" label="Trade debtors" value="—" flatLabel />
-          <FRow code="N36" label="Sundry debtors" value="—" flatLabel />
-          <FRow code="N37" label="Cash in hand" value="—" flatLabel />
-          <FRow code="N38" label="Cash at bank" value="—" flatLabel />
-          <FRow code="N39" label="Other current assets" value="—" flatLabel />
-          <FRow code="N40" label="TOTAL CURRENT ASSETS (N34 to N39)" value="—" strong flatLabel />
-          <FRow code="N41" label="TOTAL ASSETS (N32 + N33 + N40)" value="—" highlight flatLabel />
+          <FRow code="N34" provenance={gp('N34')} label="Inventory" value={fd.hasBalanceSheet ? fmtAmt(fd.n34) : '—'} flatLabel />
+          <FRow code="N35" provenance={gp('N35')} label="Trade debtors" value={fd.hasBalanceSheet ? fmtAmt(fd.n35) : '—'} flatLabel />
+          <FRow code="N36" provenance={gp('N36')} label="Sundry debtors" value={fd.hasBalanceSheet ? fmtAmt(fd.n36) : '—'} flatLabel />
+          <FRow code="N37" provenance={gp('N37')} label="Cash in hand" value={fd.hasBalanceSheet ? fmtAmt(fd.n37) : '—'} flatLabel />
+          <FRow code="N38" provenance={gp('N38')} label="Cash at bank" value={fd.hasBalanceSheet ? fmtAmt(fd.n38) : '—'} flatLabel />
+          <FRow code="N39" provenance={gp('N39')} label="Other current assets" value={fd.hasBalanceSheet ? fmtAmt(fd.n39) : '—'} flatLabel />
+          <FRow code="N40" provenance={gp('N40')} label="TOTAL CURRENT ASSETS (N34 to N39)" value={fd.hasBalanceSheet ? fmtAmt(fd.n40) : '—'} strong flatLabel />
+          <FRow code="N41" provenance={gp('N41')} label="TOTAL ASSETS (N32 + N33 + N40)" value={fd.hasBalanceSheet ? fmtAmt(fd.n41) : '—'} highlight flatLabel />
           <div className="bg-[#FAFBFC] px-2 py-0.5 text-[8.5px] font-bold uppercase tracking-wide text-[#94A3B8]">Liabilities:</div>
-          <FRow code="N42" label="Loans and overdrafts" value="—" flatLabel />
-          <FRow code="N43" label="Trade creditors" value="—" flatLabel />
-          <FRow code="N44" label="Sundry creditors" value="—" flatLabel />
-          <FRow code="N45" label="TOTAL LIABILITIES (N42 to N44)" value="—" strong flatLabel />
+          <FRow code="N42" provenance={gp('N42')} label="Loans and overdrafts" value={fd.hasBalanceSheet ? fmtAmt(fd.n42) : '—'} flatLabel />
+          <FRow code="N43" provenance={gp('N43')} label="Trade creditors" value={fd.hasBalanceSheet ? fmtAmt(fd.n43) : '—'} flatLabel />
+          <FRow code="N44" provenance={gp('N44')} label="Sundry creditors" value={fd.hasBalanceSheet ? fmtAmt(fd.n44) : '—'} flatLabel />
+          <FRow code="N45" provenance={gp('N45')} label="TOTAL LIABILITIES (N42 to N44)" value={fd.hasBalanceSheet ? fmtAmt(fd.n45) : '—'} strong flatLabel />
           <div className="bg-[#FAFBFC] px-2 py-0.5 text-[8.5px] font-bold uppercase tracking-wide text-[#94A3B8]">Owner's equity:</div>
-          <FRow code="N46" label="Capital account" value="—" flatLabel />
-          <FRow code="N47" label="Current account balance brought forward" value="—" flatLabel />
-          <FRow code="N48" label="Current year profit / loss" value="—" flatLabel />
-          <FRow code="N49" label="Drawings / advance (Net)" value="—" flatLabel />
-          <FRow code="N50" label="Current account balance carried forward" value="—" strong flatLabel />
-          <p className="px-2 py-2 text-[9px] italic text-[#94A3B8] leading-relaxed">
-            Balance sheet not yet populated — pending structured Balance Sheet
-            document extraction on the backend.
-          </p>
+          <FRow code="N46" provenance={gp('N46')} label="Capital account" value={fd.hasBalanceSheet ? fmtAmt(fd.n46) : '—'} flatLabel />
+          <FRow code="N47" provenance={gp('N47')} label="Current account balance brought forward" value={fd.hasBalanceSheet ? fmtAmt(fd.n47) : '—'} flatLabel />
+          <FRow code="N48" provenance={gp('N48')} label="Current year profit / loss" value={fd.hasBalanceSheet ? fmtAmt(fd.n48) : '—'} flatLabel />
+          <FRow code="N49" provenance={gp('N49')} label="Drawings / advance (Net)" value={fd.hasBalanceSheet ? fmtAmt(fd.n49) : '—'} flatLabel />
+          <FRow code="N50" provenance={gp('N50')} label="Current account balance carried forward" value={fd.hasBalanceSheet ? fmtAmt(fd.n50) : '—'} strong flatLabel />
         </FPart>
 
-        <div data-pdf-row="true" className="mt-3 border border-[#CBD5E1]">
-          <div className="bg-[#E2E8F0] px-2 py-1 text-[10px] font-bold uppercase tracking-wide">Declaration</div>
-          <p className="px-2 py-2 text-[9px] leading-relaxed text-[#475569]">
-            I, <span className="font-semibold text-[#0F172A]">{fd.name}</span> (Identification no. {fd.idNo}), hereby declare that the information regarding the income and claim for deductions and reliefs given by me in this return form and in any document attached is true, correct and complete.
+        <div data-pdf-row="true" className="mt-3 border-2 border-[#0F172A] shadow-sm">
+          <div className="bg-[#0F172A] px-2 py-1.5 text-[11px] font-bold uppercase tracking-wide text-primary-hover">Declaration</div>
+          <p className="px-2 py-2.5 text-[10px] leading-relaxed text-[#000000] bg-[#EFF6FF]">
+            I, <span className="font-semibold">{fd.name}</span> (Identification no. {fd.idNo}), hereby declare that the information regarding the income and claim for deductions and reliefs given by me in this return form and in any document attached is true, correct and complete.
           </p>
         </div>
 
@@ -1793,6 +2381,7 @@ const FormBDocument = ({ fd, filingYear, embedded = false }) => {
         )}
       </div>
     </div>
+    </ReviewContext.Provider>
   );
 };
 
@@ -1801,7 +2390,7 @@ const FormBDocument = ({ fd, filingYear, embedded = false }) => {
 // <embed>, so the browser's own PDF viewer chrome is what the user sees — no
 // custom zoom controls, and (since this isn't the browser print dialog) none
 // of the print stylesheet's date/title/URL headers either.
-function FormBPreview({ pdfUrl, filingYear, onClose }) {
+function FormBPreview({ pdfUrl, pdfError, filingYear, onRetry, onClose }) {
   const [visible, setVisible] = useState(false);
   useEffect(() => { requestAnimationFrame(() => setVisible(true)); }, []);
   const handleClose = () => { setVisible(false); setTimeout(onClose, 300); };
@@ -1832,6 +2421,21 @@ function FormBPreview({ pdfUrl, filingYear, onClose }) {
         <div className="flex-1 min-h-0 bg-[#E8EBEF]">
           {pdfUrl ? (
             <embed src={pdfUrl} type="application/pdf" className="w-full h-full" title={`Form B Draft YA ${filingYear}`} />
+          ) : pdfError ? (
+            <div className="flex h-full items-center justify-center flex-col gap-3 p-8 text-center">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-critical-bg text-critical">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+              </div>
+              <p className="text-xs text-critical max-w-xs">{pdfError}</p>
+              <button
+                onClick={onRetry}
+                className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary-hover transition-colors duration-150"
+              >
+                Try again
+              </button>
+            </div>
           ) : (
             <div className="flex h-full items-center justify-center flex-col gap-3 p-8 text-center">
               <div className="h-8 w-8 rounded-full border-4 border-primary border-t-transparent animate-spin" />
@@ -1858,35 +2462,280 @@ function InlineSummary({ title, children }) {
   );
 }
 
-// ─── Data Coverage panel — surfaces fd.dataGaps so gaps are visible to
-// whoever's reviewing the draft, not just buried in formB.js comments.
-const GAP_SEVERITY_STYLE = {
-  blocking:       { label: 'Blocking',      color: 'text-critical bg-critical-bg border-critical/30' },
-  gap:            { label: 'Gap',           color: 'text-warning bg-warning-bg border-warning/30' },
-  warning:        { label: 'Check',         color: 'text-warning bg-warning-bg border-warning/30' },
-  info:           { label: 'Info',          color: 'text-muted bg-slate-50 border-border' },
-  'out-of-scope-v1': { label: 'Out of scope (v1)', color: 'text-muted bg-slate-50 border-border' },
+// ─── Review guide (formerly "Data Coverage") ──────────────────────────────────
+// Full rewrite (16 Jul 2026): the old version showed formB.js's internal
+// dataGaps list, translated through a hand-written copy table. That worked,
+// but it was a SEPARATE signal from the "Review" badges actually shown on
+// the form itself (FPart's own hasReview state) — so a person could see a
+// Review badge on the form with no obvious explanation of what it meant, or
+// see a Data Coverage item that didn't visibly correspond to anything.
+//
+// This version reads the EXACT SAME signal the badges use: after the
+// embedded form renders, it scans for every `[data-review-dot="true"]`
+// marker (the same one FPart itself queries for), and for each one found,
+// walks up to the row's own id/label and its containing Part's code/title
+// (via the `data-part-code`/`data-part-title` FPart now carries, and the
+// `data-row-label` FRow now carries). The two can never drift apart, because
+// there's only one signal now, read in two places.
+//
+// For WHY a row needs review, two cases:
+//   - It's blank (no document/profile data yet) — by far the common case on
+//     a fresh account. Framed as "add this" rather than "wrong".
+//   - It's explicitly flagged by the backend (a genuine fact that can't be
+//     confirmed automatically, e.g. a disposal's balancing figure, an
+//     ambiguous multi-employer pick) — framed with the specific reason,
+//     reusing the same hand-written copy from REVIEW_REASON_COPY below.
+const REVIEW_REASON_COPY = {
+  'D3 (employer\'s TIN)': 'We found an employer\u2019s TIN from your Form EA upload(s) — confirm it\u2019s the right one, or add one manually if you have outside employment.',
+  'B21/B22 (joint assessment)': 'Confirm the income transferred from your spouse for joint assessment — gender and election details affect which return this appears on.',
+  'G3, G5, G7 (donation valuations)': 'This donation type needs an official third-party valuation a receipt can\u2019t confirm on its own — check you have one on file.',
+  'B7a (number of employments)': 'We estimated this from your Form EA uploads — worth a quick check if you changed jobs mid-year.',
+  'H11 (breastfeeding equipment)': 'Confirm you\u2019re a breastfeeding mother claiming for your own child aged 2 or below — this can\u2019t be confirmed from the receipt alone.',
+  'B27iii (departure levy)': 'This relief is capped at 2 trips in a lifetime, and we can only count trips we\u2019ve seen a document for — confirm this is genuinely within your allowance.',
+  'Capital asset disposal(s)': 'An asset was disposed of this year — the figures shown are a standard-case estimate. Confirm with a tax agent if this was a related-party transfer.',
+  'N ↔ B1 reconciliation': 'Your business figures in Part N don\u2019t quite add up to the total used elsewhere on the form — worth a look before filing.',
 };
-function DataCoveragePanel({ dataGaps }) {
-  if (!dataGaps || dataGaps.length === 0) return null;
+
+// Per-code guidance for BLANK rows — replaces the old single repeated
+// sentence with something that actually explains (a) what this specific
+// line is asking for, in plain language drawn from LHDN's own Explanatory
+// Notes, and (b) exactly how to complete it: upload a document, or fill in
+// a specific field in your profile. Covers every code realistically likely
+// to ever show up blank in this panel; anything not listed falls back to
+// PART_FALLBACK_GUIDANCE below rather than a blank/generic message.
+const CODE_GUIDANCE = {
+  // Basic Particulars (items 1-5, before Part A — this section has no
+  // letter code of its own, which is exactly why these fell through to
+  // the fully generic fallback before this fix).
+  1: { text: 'Your full name, exactly as it appears on your identification document.', source: 'profile', howTo: 'Add this in Identity & Residency.' },
+  2: { text: 'Your Tax Identification Number (TIN), issued by LHDN.', source: 'profile', howTo: 'Add this in Identity & Residency.' },
+  3: { text: 'Your MyKad, army, or police identification number.', source: 'profile', howTo: 'Add this in Identity & Residency.' },
+  4: { text: 'Your current passport number, if you have one.', source: 'profile', howTo: 'Add this in Identity & Residency.' },
+  5: { text: 'Your PREVIOUS passport number, last filed with LHDN before your current one — not your current passport (that\u2019s item 4).', source: 'profile', howTo: 'Add this in Identity & Residency.' },
+  // Part A — Basic Particulars (all profile fields)
+  A1: { text: 'Your citizenship.', source: 'profile', howTo: 'Add this in Identity & Residency (enter "MYS" if Malaysian).' },
+  A2: { text: 'Your gender — needed to correctly apply gender-specific rules like joint-assessment direction and spouse relief.', source: 'profile', howTo: 'Add this in Identity & Residency.' },
+  A3: { text: 'Your date of birth — used for age-based reliefs.', source: 'profile', howTo: 'Add this in Identity & Residency.' },
+  A4: { text: 'Your marital status as at 31 December.', source: 'profile', howTo: 'Add this in Marital Status & Dependents.' },
+  A5: { text: 'The date of marriage, divorce, or demise — only needed if your status changed this year.', source: 'profile', howTo: 'Add this in Marital Status & Dependents if it applies to you.' },
+  A6: { text: 'Whether you keep sufficient business records as required under the Income Tax Act 1967.', source: 'profile', howTo: 'Add this in Record Keeping.' },
+  A7: { text: 'Your assessment election — joint, separate, or self.', source: 'profile', howTo: 'Add this in Marital Status & Dependents.' },
+  // Part C — Particulars of Husband / Wife (profile, only relevant if married)
+  C1: { text: 'Your spouse\u2019s name, as it appears on their identification document.', source: 'profile', howTo: 'Add this in Marital Status & Dependents.' },
+  C2: { text: 'Your spouse\u2019s identification number.', source: 'profile', howTo: 'Add this in Marital Status & Dependents.' },
+  C3: { text: 'Your spouse\u2019s date of birth.', source: 'profile', howTo: 'Add this in Marital Status & Dependents.' },
+  C4: { text: 'Your spouse\u2019s passport number, if relevant.', source: 'profile', howTo: 'Add this in Marital Status & Dependents.' },
+  // Part D — Other Particulars (mostly profile)
+  D1: { text: 'A telephone number LHDN can reach you on.', source: 'profile', howTo: 'Add this in Contact & Correspondence.' },
+  D2: { text: 'An email address — compulsory if you\u2019re filing through e-Filing.', source: 'profile', howTo: 'Add this in Contact & Correspondence.' },
+  D4: { text: 'Whether your income tax is borne by your employer (a taxable perquisite under paragraph 13(1)(a)).', source: 'profile', howTo: 'Add this in Other Particulars.' },
+  D6a: { text: 'Whether you carry on e-commerce business.', source: 'profile', howTo: 'Add this in Other Particulars.' },
+  D6b: { text: 'Which e-commerce business model applies to you, if any.', source: 'profile', howTo: 'Add this in Other Particulars.' },
+  D7: { text: 'The address of your main business premises.', source: 'profile', howTo: 'Add this in Business Premise.' },
+  D8: { text: 'The address LHDN should correspond with you at.', source: 'profile', howTo: 'Add this in Contact & Correspondence.' },
+  D9: { text: 'How you\u2019d like any tax refund paid — bank account or DuitNow.', source: 'profile', howTo: 'Add this in Other Particulars.' },
+  D10a: { text: 'The bank your tax refund should be paid to.', source: 'profile', howTo: 'Add this in Other Particulars, under bank account details.' },
+  D10b: { text: 'Your bank account number for tax refunds.', source: 'profile', howTo: 'Add this in Other Particulars, under bank account details.' },
+  D11a: { text: 'Whether your DuitNow ID is registered with an IC or passport number.', source: 'profile', howTo: 'Add this in Other Particulars, under DuitNow details.' },
+  D11b: { text: 'Your passport number, if your DuitNow ID uses one.', source: 'profile', howTo: 'Add this in Other Particulars, under DuitNow details.' },
+  // Part G — Donations (all document/receipt-sourced)
+  G1: { text: 'Donations to the Government, a State Government, or a local authority.', source: 'document', howTo: 'Upload the donation receipt.' },
+  G2a: { text: 'Donations to an institution, organisation, or fund approved by the Director General.', source: 'document', howTo: 'Upload the donation receipt.' },
+  G2b: { text: 'Donations for a sports activity approved by the Minister of Finance.', source: 'document', howTo: 'Upload the donation receipt.' },
+  G2c: { text: 'Donations for a national-interest project approved by the Minister of Finance.', source: 'document', howTo: 'Upload the donation receipt.' },
+  G2d: { text: 'Wakaf or endowment donations to a religious authority or public university.', source: 'document', howTo: 'Upload the donation receipt.' },
+  G3: { text: 'Donated artefacts, manuscripts, or paintings to the Government — needs an official valuation from the Museums Department or National Archives.', source: 'document', howTo: 'Upload the donation receipt along with the official valuation.' },
+  G4: { text: 'Donations for library facilities, up to RM20,000.', source: 'document', howTo: 'Upload the donation receipt.' },
+  G5: { text: 'Money or goods donated for disabled-persons\u2019 facilities, valued by the local authority.', source: 'document', howTo: 'Upload the donation receipt or the local authority\u2019s valuation.' },
+  G6: { text: 'Donated medical equipment to an approved healthcare facility, up to RM20,000.', source: 'document', howTo: 'Upload the donation receipt or the Ministry of Health\u2019s valuation.' },
+  G7: { text: 'Donated paintings to the National Art Gallery or a state art gallery — needs an official valuation.', source: 'document', howTo: 'Upload the donation receipt along with the gallery\u2019s valuation.' },
+  // Part H — Relief (mostly document; a few are profile toggles)
+  H2: { text: 'Medical, dental, or carer expenses for your parents, up to RM8,000.', source: 'document', howTo: 'Upload the medical/dental/carer receipt.' },
+  H3: { text: 'Basic supporting equipment for a disabled self, spouse, child, or parent registered with the Department of Social Welfare.', source: 'document', howTo: 'Upload the equipment purchase receipt.' },
+  H4: { text: 'An additional relief if you are a disabled individual, certified by the Department of Social Welfare.', source: 'profile', howTo: 'Add this in Marital Status & Dependents.' },
+  H5: { text: 'Your own education fees for an approved course.', source: 'document', howTo: 'Upload the tuition fee receipt.' },
+  H6: { text: 'Medical expenses for serious disease, fertility treatment, vaccination, or dental care.', source: 'document', howTo: 'Upload the medical receipt.' },
+  H7: { text: 'A complete medical examination, COVID-19 test, or mental health consultation.', source: 'document', howTo: 'Upload the medical receipt.' },
+  H8: { text: 'Diagnosis, early intervention, or rehabilitation for a child\u2019s learning disability.', source: 'document', howTo: 'Upload the assessment or treatment receipt.' },
+  H9: { text: 'Lifestyle expenses — books, a personal computer/phone/tablet, internet, or a self-enhancement course.', source: 'document', howTo: 'Upload the purchase receipt.' },
+  H10: { text: 'Sports equipment, facility fees, or competition/gym fees under the Sports Development Act 1997.', source: 'document', howTo: 'Upload the receipt.' },
+  H11: { text: 'Breastfeeding equipment for your own child aged 2 or below — allowed once every 2 years of assessment.', source: 'document', howTo: 'Upload the equipment purchase receipt.' },
+  H12: { text: 'Registered childcare centre or kindergarten fees for a child aged 6 or below (or 7\u201312 from YA2026).', source: 'document', howTo: 'Upload the fee receipt.' },
+  H13: { text: 'Net SSPN deposits (total deposited minus withdrawn) for your children\u2019s education.', source: 'document', howTo: 'Upload your SSPN statement.' },
+  H14: { text: 'Relief for a spouse with no income, or alimony paid to a former wife.', source: 'profile', howTo: 'Add this in Marital Status & Dependents.' },
+  H15: { text: 'An additional relief if your spouse is disabled, certified by the Department of Social Welfare.', source: 'profile', howTo: 'Add this in Marital Status & Dependents.' },
+  H16a: { text: 'Relief for a child under 18.', source: 'profile', howTo: 'Add this child in Children (H16 relief).' },
+  H16b: { text: 'Relief for a child 18 or above who is still studying full-time.', source: 'profile', howTo: 'Add this child in Children (H16 relief), and mark them as a full-time student.' },
+  H16c: { text: 'Relief for a disabled child.', source: 'profile', howTo: 'Add this child in Children (H16 relief), and mark them as disabled.' },
+  H17: { text: 'Life insurance premiums, takaful contributions, or voluntary EPF contributions.', source: 'document', howTo: 'Upload your insurance/EPF statement.' },
+  H18: { text: 'Private Retirement Scheme contributions or deferred annuity premiums.', source: 'document', howTo: 'Upload your PRS/annuity statement.' },
+  H19: { text: 'Education or medical insurance premiums.', source: 'document', howTo: 'Upload your insurance statement.' },
+  H20: { text: 'SOCSO or Employment Insurance System contributions.', source: 'document', howTo: 'Upload your SOCSO/EIS statement.' },
+  H21: { text: 'EV charging equipment, or (from YA2026) a food waste machine or home CCTV.', source: 'document', howTo: 'Upload the purchase/installation receipt.' },
+  // Part K
+  K: { text: 'Non-employment income from a PRIOR year of assessment that you\u2019re only now declaring.', source: 'document', howTo: 'Upload the relevant document.' },
+  // Part N — Financial Particulars (business name/code is profile; the rest is document)
+  N1: { text: 'The name of your main business.', source: 'profile', howTo: 'Add this in Business Particulars.' },
+  N1a: { text: 'Your business registration number.', source: 'profile', howTo: 'Add this in Business Particulars.' },
+  N2: { text: 'Your business code, from LHDN\u2019s list of business classifications.', source: 'profile', howTo: 'Add this in Business Particulars.' },
+  N2a: { text: 'A short description of what your business actually does.', source: 'profile', howTo: 'Add this in Business Particulars.' },
+};
+
+// Codes not in CODE_GUIDANCE above still get a targeted-as-possible message,
+// based on which Part they're in — better than one generic sentence, even
+// without a hand-written entry for the exact code.
+const PART_FALLBACK_GUIDANCE = {
+  // Bug fix (16 Jul 2026): the "Basic Particulars" section (items 1-5) has
+  // no letter code of its own — its rows' partCode resolves to the '—'
+  // fallback used when no data-part-code is found at all, which had no
+  // entry here either, so it fell all the way through to the fully
+  // generic message. Covered individually in CODE_GUIDANCE above now, but
+  // this stays as a safety net for anything not explicitly listed there.
+  '—': { text: 'A basic identification detail.', source: 'profile', howTo: 'Add this in Identity & Residency.' },
+  A: { text: 'A basic particular about you.', source: 'profile', howTo: 'Add this in Identity & Residency.' },
+  B: { text: 'A figure in your income tax computation.', source: 'document', howTo: 'This is usually derived automatically from your documents — check the relevant category has been uploaded.' },
+  C: { text: 'A particular about your spouse.', source: 'profile', howTo: 'Add this in Marital Status & Dependents.' },
+  D: { text: 'A contact or administrative detail.', source: 'profile', howTo: 'Add this in Other Particulars or Contact & Correspondence.' },
+  G: { text: 'A donation or contribution.', source: 'document', howTo: 'Upload the donation receipt.' },
+  H: { text: 'A relief or deduction.', source: 'document', howTo: 'Upload the relevant receipt, or check your profile if it\u2019s based on a personal circumstance rather than a purchase.' },
+  K: { text: 'Prior-year income you\u2019re disclosing now.', source: 'document', howTo: 'Upload the relevant document.' },
+  M: { text: 'A carried-forward business loss or capital allowance balance.', source: 'profile', howTo: 'Check your entity\u2019s Opening Carry-Forward Balances.' },
+  N: { text: 'A business financial figure.', source: 'document', howTo: 'Upload your Profit & Loss statement or Balance Sheet.' },
+};
+
+const GENERIC_FALLBACK_GUIDANCE = { text: 'A figure or detail on your return.', source: 'document', howTo: 'Upload the relevant document, or check your profile.' };
+
+// Composes the full blank-row message: what this line needs, then exactly
+// how to complete it (document upload vs a specific profile screen), then
+// the one constant closing line every blank row shares regardless of code.
+function buildBlankReason(code, partCode) {
+  const g = CODE_GUIDANCE[code] || PART_FALLBACK_GUIDANCE[partCode] || GENERIC_FALLBACK_GUIDANCE;
+  return `${g.text} ${g.howTo} If it doesn\u2019t apply to you, it\u2019s fine to leave blank.`;
+}
+
+function DataCoveragePanel({ formRef, dataGaps }) {
+  const [flaggedByPart, setFlaggedByPart] = React.useState([]);
+
+  // Re-scans on every render of the parent (mirrors FPart's own
+  // no-dependency-array effect) so this stays in sync as `fd` changes —
+  // e.g. a document finishes processing and a row that was blank now has a
+  // value, or a new backend warning appears.
+  React.useEffect(() => {
+    const root = formRef?.current;
+    // Bug fix (16 Jul 2026): this effect has no dependency array by design
+    // (mirrors FPart's own re-check-every-render pattern), but FPart's
+    // version sets a BOOLEAN — React bails out via Object.is when the value
+    // is unchanged, so it naturally stabilises after one extra render. This
+    // effect was building a brand-new array every single run and calling
+    // setState with it unconditionally — a new array is always a new
+    // reference, so React never bailed out, the effect re-ran immediately
+    // after its own state update, and the whole thing looped forever,
+    // pegging the tab. Fixed by comparing against the PREVIOUS result
+    // (via the functional setState form, so flaggedByPart doesn't need to
+    // be a dependency either) and only actually updating state when the
+    // set of flagged items has genuinely changed.
+    const snapshot = (list) => list.map((p) => `${p.partCode}:${p.items.map((i) => i.code).join(',')}`).join('|');
+
+    if (!root) {
+      setFlaggedByPart((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+
+    const dots = Array.from(root.querySelectorAll('[data-review-dot="true"]'));
+    const byPart = new Map();
+
+    for (const dot of dots) {
+      const rowEl = dot.closest('[id^="row-"]');
+      const partEl = dot.closest('[data-part-code]');
+      if (!rowEl) continue;
+      const code = rowEl.id.replace(/^row-/, '');
+      const labelEl = rowEl.querySelector('[data-row-label]');
+      const label = labelEl?.getAttribute('data-row-label') || code;
+      const partCode = partEl?.getAttribute('data-part-code') || '—';
+      const partTitle = partEl?.getAttribute('data-part-title') || 'General';
+
+      // Was this row explicitly flagged by the backend (a real dataGap with
+      // this code in its affectedCodes), or is it just blank? Explicit
+      // flags get their own specific reason; blanks get a targeted one
+      // built from CODE_GUIDANCE — what this line needs and exactly how
+      // to complete it, rather than one repeated generic sentence.
+      const explicitGap = (dataGaps || []).find((g) => (g.affectedCodes || []).includes(code));
+      const reason = explicitGap
+        ? (REVIEW_REASON_COPY[explicitGap.part] || explicitGap.note || buildBlankReason(code, partCode))
+        : buildBlankReason(code, partCode);
+
+      const key = partCode;
+      if (!byPart.has(key)) byPart.set(key, { partCode, partTitle, items: [] });
+      byPart.get(key).items.push({ code, label, reason, isExplicit: !!explicitGap });
+    }
+
+    // Stable order: by Part code, matching the form's own top-to-bottom
+    // sequence rather than the arbitrary order dots were found in.
+    const grouped = Array.from(byPart.values()).sort((a, b) => a.partCode.localeCompare(b.partCode, undefined, { numeric: true }));
+    setFlaggedByPart((prev) => (snapshot(prev) === snapshot(grouped) ? prev : grouped));
+  });
+
+  const totalItems = flaggedByPart.reduce((s, p) => s + p.items.length, 0);
+  const jumpTo = (code) => {
+    const rowEl = formRef?.current?.querySelector(`#row-${CSS.escape(code)}`);
+    scrollToRowAndFlash(rowEl);
+  };
+
   return (
-    <InlineSummary title={`Data Coverage — ${dataGaps.length} item${dataGaps.length === 1 ? '' : 's'} to review`}>
-      <div className="divide-y divide-[#F1F5F9]">
-        {dataGaps.map((g, i) => {
-          const style = GAP_SEVERITY_STYLE[g.severity] || GAP_SEVERITY_STYLE.info;
-          return (
-            <div key={i} className="flex items-start gap-2 px-3 py-2">
-              <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${style.color}`}>
-                {style.label}
-              </span>
-              <div className="min-w-0">
-                <p className="text-[10px] font-semibold text-headings">{g.part}</p>
-                <p className="text-[10px] text-muted mt-0.5 leading-relaxed">{g.note}</p>
-              </div>
-            </div>
-          );
-        })}
+    <InlineSummary title="Form B Readiness">
+      {/* Always-visible explanation of what the Review badge actually means
+          — this is the piece that was previously missing entirely: a person
+          seeing the amber "Review" badge on the form above had no
+          explanation of what it was asking them to do. */}
+      <div className="flex items-start gap-2 bg-warning-bg/40 px-3 py-2">
+        <span
+          className="shrink-0 mt-0.5 rounded-full px-2 py-0.5 text-[8.5px] font-semibold uppercase tracking-wide"
+          style={{ backgroundColor: REVIEW_BADGE_BG, color: REVIEW_BADGE_TEXT }}
+        >
+          Review
+        </span>
+        <p className="text-[10px] text-muted leading-relaxed">
+          {totalItems > 0
+            ? <>An amber <span className="font-semibold text-headings">Review</span> badge marks any section below that still needs attention. Click a badge, or an item below, to go straight to it.</>
+            : <>Nothing needs your attention right now — every section is either filled in or genuinely doesn\u2019t apply to you.</>}
+        </p>
       </div>
+
+      {totalItems === 0 ? (
+        <div className="flex items-center gap-2 px-3 py-3">
+          <span className="shrink-0 rounded-full border border-success/30 bg-success-bg px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-success">
+            Ready
+          </span>
+          <p className="text-[10px] text-muted leading-relaxed">Your Form B draft is fully populated — give it a final read in Preview before filing.</p>
+        </div>
+      ) : (
+        flaggedByPart.map((part) => (
+          <div key={part.partCode}>
+            <div className="bg-[#F8FAFC] px-3 py-1.5 text-[9px] font-bold uppercase tracking-wide text-[#64748B]">
+              {part.partCode && part.partCode !== '—' ? `Part ${part.partCode} — ${part.partTitle}` : part.partTitle} · {part.items.length} to check
+            </div>
+            <div className="divide-y divide-[#F1F5F9]">
+              {part.items.map((item) => (
+                <button
+                  key={item.code}
+                  type="button"
+                  onClick={() => jumpTo(item.code)}
+                  className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-slate-50 transition-colors duration-150"
+                >
+                  <span className="shrink-0 mt-0.5 rounded-full border border-warning/30 bg-warning-bg px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-warning">
+                    {item.code}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[10px] font-semibold text-headings">{item.label}</p>
+                    <p className="text-[10px] text-muted mt-0.5 leading-relaxed">{item.reason}</p>
+                  </div>
+                  <span className="shrink-0 text-[9px] font-medium text-primary self-center">Jump to it →</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))
+      )}
     </InlineSummary>
   );
 }
@@ -1900,7 +2749,23 @@ const GenerateFormsPanel = ({ profile, entities, taxSummary, taxSummaryLoading }
   const [showPreview, setShowPreview] = useState(false);
   const [pdfUrl, setPdfUrl] = useState(null);
   const [pdfBusy, setPdfBusy] = useState(null); // which button triggered generation: 'preview' | 'export' | null
+  // Bug fix (15 Jul 2026, production-readiness review): neither handler below
+  // had a try/catch — if renderNodeToPdfBlob (html2canvas, font loading, the
+  // header-flattening canvas step, etc.) threw for ANY reason, pdfBusy never
+  // got reset, permanently disabling both buttons, and — if the failure
+  // happened during Preview — the slide-over was left showing its "Rendering
+  // your draft…" spinner forever, with no error message and no way to
+  // recover short of a full page reload. html2canvas failures are common
+  // enough in practice (memory limits on long documents, browser quirks,
+  // tainted-canvas edge cases) that this needed real handling, not an
+  // assumption it always succeeds.
+  const [pdfError, setPdfError] = useState(null);
   const pdfSourceRef = useRef(null);
+  // Used by the redesigned Data Coverage / review guide below to scan the
+  // ACTUAL rendered embedded form for review-flagged rows, rather than
+  // maintaining a second, separate list that could drift out of sync with
+  // what the Review badges on the form itself are actually showing.
+  const embeddedFormRef = useRef(null);
   const filingYear = currentFilingYear();
   // "Form B Draft - YA2026.pdf" — used everywhere a filename is needed, so
   // it's never left to default to a random blob id (see generatePdfBlob).
@@ -1931,29 +2796,47 @@ const GenerateFormsPanel = ({ profile, entities, taxSummary, taxSummaryLoading }
   const handlePreview = async () => {
     setShowPreview(true);
     setPdfBusy('preview');
-    const file = await generatePdfBlob();
-    if (file) {
-      if (pdfUrl) URL.revokeObjectURL(pdfUrl);
-      setPdfUrl(URL.createObjectURL(file));
+    setPdfError(null);
+    try {
+      const file = await generatePdfBlob();
+      if (file) {
+        if (pdfUrl) URL.revokeObjectURL(pdfUrl);
+        setPdfUrl(URL.createObjectURL(file));
+      } else {
+        setPdfError('Could not render the draft. Please try again.');
+      }
+    } catch (e) {
+      console.error('[Generate Forms] Preview render failed:', e);
+      setPdfError('Something went wrong while rendering the draft. Please try again — if this keeps happening, use the thumbs-down button to let us know.');
+    } finally {
+      setPdfBusy(null);
     }
-    setPdfBusy(null);
   };
 
   // Export downloads straight away — it never opens the preview panel.
   const handleExport = async () => {
     setPdfBusy('export');
-    const file = await generatePdfBlob();
-    if (file) {
-      const url = URL.createObjectURL(file);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = pdfFileName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+    setPdfError(null);
+    try {
+      const file = await generatePdfBlob();
+      if (file) {
+        const url = URL.createObjectURL(file);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = pdfFileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } else {
+        setPdfError('Could not prepare the PDF for download. Please try again.');
+      }
+    } catch (e) {
+      console.error('[Generate Forms] Export render failed:', e);
+      setPdfError('Something went wrong while preparing the PDF. Please try again — if this keeps happening, use the thumbs-down button to let us know.');
+    } finally {
+      setPdfBusy(null);
     }
-    setPdfBusy(null);
   };
 
   if (owned.length === 0) {
@@ -1995,7 +2878,9 @@ const GenerateFormsPanel = ({ profile, entities, taxSummary, taxSummaryLoading }
       {showPreview && (
         <FormBPreview
           pdfUrl={pdfUrl}
+          pdfError={pdfError}
           filingYear={filingYear}
+          onRetry={handlePreview}
           onClose={() => { setShowPreview(false); if (pdfUrl) { URL.revokeObjectURL(pdfUrl); setPdfUrl(null); } }}
         />
       )}
@@ -2016,8 +2901,8 @@ const GenerateFormsPanel = ({ profile, entities, taxSummary, taxSummaryLoading }
               </p>
               <p className="text-[10px] text-muted mt-0.5">
                 {entityCount > 1
-                  ? `Combined across ${entityCount} entities · Main business: ${fd.businessName}`
-                  : `Based on ${fd.businessName}`} · Draft only — not an LHDN submission
+                  ? `Income combined across ${entityCount} businesses · Part N shows main business: ${fd.businessName}`
+                  : `Based on ${fd.businessName}`} · LHDN Submission Draft
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
@@ -2044,7 +2929,22 @@ const GenerateFormsPanel = ({ profile, entities, taxSummary, taxSummaryLoading }
             </div>
           </div>
 
-          <div className="px-5 py-4">
+          {/* Export failures have no modal to surface an error in (Export
+              downloads directly, it never opens Preview) — show it here
+              instead of leaving the person wondering why nothing happened. */}
+          {pdfError && !showPreview && (
+            <div className="mx-5 mt-3 flex items-center justify-between gap-3 rounded-lg border border-critical/30 bg-critical-bg px-3 py-2">
+              <p className="text-[11px] text-critical">{pdfError}</p>
+              <button
+                onClick={handleExport}
+                className="shrink-0 rounded-md bg-critical px-2.5 py-1 text-[11px] font-semibold text-white hover:opacity-90 transition-opacity duration-150"
+              >
+                Try again
+              </button>
+            </div>
+          )}
+
+          <div className="px-5 py-4" ref={embeddedFormRef}>
             <FormBDocument fd={fd} filingYear={filingYear} embedded />
           </div>
 
@@ -2060,10 +2960,10 @@ const GenerateFormsPanel = ({ profile, entities, taxSummary, taxSummaryLoading }
               </InlineSummary>
             )}
 
-            <DataCoveragePanel dataGaps={dataGaps} />
+            <DataCoveragePanel formRef={embeddedFormRef} dataGaps={dataGaps} />
 
             <p className="text-[10px] text-[#94A3B8] leading-relaxed">
-              Figures marked "auto" or from Part B/N are computed from your classified documents, capital allowance schedule, and prior filings. Figures marked "estimated" come from your personal profile toggles rather than uploaded documents — confirm before filing. Open <span className="font-semibold">Preview</span> to see and download the full draft.
+              This draft was prepared with the help of AI from your uploaded documents and profile details. It can make mistakes, so please review it carefully and check with a tax professional before relying on it. Open <span className="font-semibold">Preview</span> to see and download the full draft.
             </p>
           </div>
         </div>
@@ -2076,10 +2976,15 @@ const GenerateFormsPanel = ({ profile, entities, taxSummary, taxSummaryLoading }
    MAIN COMPONENT
    ========================================================================= */
 
-export default function ManageProfile({ initialProfile, initialEntities, activeEntityId, onSavePersonal, onCreateEntity, onSaveEntity, onDeleteEntity, onSwitchEntity, taxSummary, taxSummaryLoading }) {
+export default function ManageProfile({ initialProfile, initialEntities, activeEntityId, onSavePersonal, onCreateEntity, onSaveEntity, onDeleteEntity, onSwitchEntity, taxSummary, taxSummaryLoading, initialChildren, onCreateChild, onSaveChild, onDeleteChild }) {
   // Use initialProfile if available, otherwise fall back to your static BLANK_PERSONAL_PROFILE structure
   const [personalProfile, setPersonalProfile] = useState(initialProfile || BLANK_PERSONAL_PROFILE);
   const [entities, setEntities] = useState(initialEntities || []);
+  const [children, setChildren] = useState(initialChildren || []);
+
+  React.useEffect(() => {
+    if (initialChildren) setChildren(initialChildren);
+  }, [initialChildren]);
 
   // Watch for when the data finishes downloading from ManageAccount.jsx
   React.useEffect(() => {
@@ -2143,6 +3048,34 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
     if (entity && entity.id && onSwitchEntity) {
       onSwitchEntity(entity.id);
     }
+  };
+
+  // Children (H16 relief records) — thin wrappers around the onCreateChild/
+  // onSaveChild/onDeleteChild props from ManageAccount.jsx, keeping local
+  // `children` state in sync so the ChildrenEditor reflects changes
+  // immediately without waiting for a full profile re-fetch.
+  const handleAddChild = async (draft) => {
+    if (!onCreateChild) return false;
+    const created = await onCreateChild(draft);
+    if (created) {
+      setChildren((prev) => [...prev, created]);
+      return created;
+    }
+    return false;
+  };
+  const handleUpdateChild = async (childId, draft) => {
+    if (!onSaveChild) return false;
+    const ok = await onSaveChild(childId, draft);
+    if (ok) {
+      setChildren((prev) => prev.map((c) => (c.id === childId ? { ...c, ...draft } : c)));
+    }
+    return ok;
+  };
+  const handleDeleteChildRecord = async (childId) => {
+    if (!onDeleteChild) return false;
+    const ok = await onDeleteChild(childId);
+    if (ok) setChildren((prev) => prev.filter((c) => c.id !== childId));
+    return ok;
   };
 
   const handleSaveEdit = async (updatedEntity) => {
@@ -2316,6 +3249,11 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
           profile={personalProfile}
           onClose={() => setShowPersonalPanel(false)}
           onSave={handleSavePersonal}
+          children={children}
+          onAddChild={handleAddChild}
+          onUpdateChild={handleUpdateChild}
+          onDeleteChild={handleDeleteChildRecord}
+          taxSummary={taxSummary}
         />
       )}
 
