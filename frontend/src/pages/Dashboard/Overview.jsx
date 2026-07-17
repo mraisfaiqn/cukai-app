@@ -762,7 +762,8 @@ export default function Overview() {
         { label: 'Total Income', value: fmtRM(totals.totalIncome || 0),
             ...yoy(totals.totalIncome, priorTotals?.totalIncome, 'up'),
             detail: {
-              formula: 'All the money you earned this year, added together — from your business and anywhere else.',
+              formula: 'This consist of all the money earned this year and added together — from your business and anywhere else  (e.g., freelance work, investments, rental).',
+              formula2: 'Business Income + Other Income = Total Income',
               components: incomeComponents,
               equation: equationFromComponents(incomeComponents, totals.totalIncome),
             } },
@@ -771,6 +772,7 @@ export default function Overview() {
             ...yoy(totals.q3TotalDeductions, priorTotals?.q3TotalDeductions, 'up'),
             detail: {
               formula: 'Money you spent running your business, plus a yearly write-off on equipment you bought. LHDN lets you subtract both before your tax is worked out.',
+              formula2: 'Business Expenses + Capital Allowance = Total Deductions',
               components: deductionComponents,
               equation: equationFromComponents(deductionComponents, totals.q3TotalDeductions),
             } },
@@ -778,7 +780,8 @@ export default function Overview() {
           { label: 'Chargeable Income', value: fmtRM(totals.estimatedChargeableIncome || 0),
             ...yoy(totals.estimatedChargeableIncome, priorTotals?.estimatedChargeableIncome, 'down'),
             detail: {
-              formula: 'Total income − total deductions − personal reliefs. This is the part of your money that actually gets taxed.',
+              formula: 'This consist of the part of your money that actually gets taxed.',
+              formula2: 'Total Income − Total Deductions − Reliefs = Chargeable Income',
               equation: fmtRM(totals.totalIncome || 0)
                 + ' − ' + fmtRM(totals.q3TotalDeductions || 0)
                 + ' − ' + fmtRM(reliefsApplied)

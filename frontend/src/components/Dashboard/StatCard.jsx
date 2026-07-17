@@ -162,6 +162,12 @@ function StatCard({
             </p>
           )}
 
+          {detail.formula2 && (
+            <p className="mt-2 rounded-lg border border-border px-2.5 py-1.5 text-center font-mono text-[11px] text-headings">
+              {detail.formula2}
+            </p>
+          )}
+
           {detail.equation && (
             <p className="mt-2 rounded-lg border border-border px-2.5 py-1.5 text-center font-mono text-[11px] text-headings">
               {detail.equation}
