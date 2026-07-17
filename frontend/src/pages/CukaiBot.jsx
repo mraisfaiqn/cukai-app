@@ -188,16 +188,67 @@ const ChevronRightIcon = ({ className = 'h-3.5 w-3.5' }) => (
   </svg>
 );
 
+// ── Topic icons for the empty-state suggestion grid ─────────────────────────
+// Small, single-purpose glyphs so each starter prompt gets a recognizable
+// visual anchor instead of four identical pill shapes.
+const WifiIcon = ({ className = 'h-4 w-4' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M5 12.5a11 11 0 0 1 14 0" />
+    <path d="M8.3 15.9a6.5 6.5 0 0 1 7.4 0" />
+    <path d="M11.6 19.2a2 2 0 0 1 .8-.2c.3 0 .6.07.8.2" />
+    <circle cx="12" cy="19.6" r="0.6" fill="currentColor" stroke="none" />
+  </svg>
+);
+
+const PercentIcon = ({ className = 'h-4 w-4' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="19" y1="5" x2="5" y2="19" />
+    <circle cx="6.5" cy="6.5" r="2.5" />
+    <circle cx="17.5" cy="17.5" r="2.5" />
+  </svg>
+);
+
+const ReceiptIcon = ({ className = 'h-4 w-4' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M6 3h12v18l-2.5-1.5L13 21l-2.5-1.5L8 21l-2-1.5V3Z" />
+    <line x1="9" y1="8" x2="15" y2="8" />
+    <line x1="9" y1="12" x2="15" y2="12" />
+  </svg>
+);
+
+const HeartPulseIcon = ({ className = 'h-4 w-4' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M20.8 8.6c0-2.6-2.1-4.6-4.6-4.6-1.6 0-3 .8-3.9 2-.9-1.2-2.3-2-3.9-2-2.5 0-4.6 2-4.6 4.6 0 4.4 5.4 8.2 8.5 10.9 3.1-2.7 8.5-6.5 8.5-10.9Z" />
+    <polyline points="7 12 9.5 12 10.5 9.5 12.5 14.5 13.5 12 17 12" />
+  </svg>
+);
+
 // ── Mock conversation data ───────────────────────────────────────────────────
 // No longer wired up — kept as reference/fallback. The real conversation now
 // comes from GET /api/chat/{session_id}/history via getChatHistory() in the
 // component below, backed by ChatSession/ChatMessage in Postgres.
 
 const suggestedPrompts = [
-  'Can I claim broadband as a business expense?',
-  'What is the Section 33 deduction limit?',
-  'Explain the 2025 e-invoicing phases.',
-  'How do I claim medical relief for my parents?',
+  {
+    prompt: 'Can I claim broadband as a business expense?',
+    label: 'Broadband as a business expense',
+    icon: WifiIcon,
+  },
+  {
+    prompt: 'What is the Section 33 deduction limit?',
+    label: 'Section 33 deduction limit',
+    icon: PercentIcon,
+  },
+  {
+    prompt: 'Explain the 2025 e-invoicing phases.',
+    label: '2025 e-invoicing phases',
+    icon: ReceiptIcon,
+  },
+  {
+    prompt: 'How do I claim medical relief for my parents?',
+    label: 'Medical relief for parents',
+    icon: HeartPulseIcon,
+  },
 ];
 
 const MOCK_MESSAGES_BY_ENTITY = {
@@ -2215,22 +2266,28 @@ function CukaiBot() {
               
               {/* Empty / welcome state */}
               {showEmptyState && (
-                <div className="flex flex-col items-center justify-center py-10 text-center">
-                  <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary-tint">
-                    <BotIcon className="h-8 w-8 object-contain" />
+                <div className="flex flex-col items-center justify-center py-4 text-center">
+                  <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-2xl bg-primary-tint">
+                    <BotIcon className="h-6 w-6 object-contain" />
                   </div>
-                  <h2 className="font-headings text-2xl font-bold tracking-tight text-headings">How can I assist with your taxes today?</h2>
-                  <p className="mt-2 max-w-xs text-xs text-muted">
+                  <h2 className="font-headings text-xl font-bold tracking-tight text-headings">How can I assist with your taxes today?</h2>
+                  <p className="mt-1.5 max-w-xs text-xs text-muted">
                     Ask me anything about Malaysian tax regulations, deductions, or e-invoicing phases.
                   </p>
-                  <div className="mt-6 flex flex-wrap justify-center gap-2">
-                    {suggestedPrompts.map((prompt) => (
+                  <div className="mt-4 grid w-full max-w-lg grid-cols-1 gap-2 text-left sm:grid-cols-2">
+                    {suggestedPrompts.map(({ prompt, label, icon: Icon }) => (
                       <button
                         key={prompt}
                         onClick={() => handleSend(prompt)}
-                        className="rounded-full border border-border bg-surface px-4 py-2 text-xs font-medium text-[#334155] shadow-sm transition-all hover:border-primary hover:bg-primary-tint hover:text-primary"
+                        className="group flex items-center gap-2.5 rounded-xl border border-border bg-surface px-3 py-2.5 text-left shadow-sm transition-all hover:border-primary hover:bg-primary-tint"
                       >
-                        {prompt}
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary-tint text-primary transition-colors group-hover:bg-surface">
+                          <Icon className="h-3.5 w-3.5" />
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block truncate text-xs font-semibold text-headings">{label}</span>
+                          <span className="block truncate text-[11px] text-muted">{prompt}</span>
+                        </span>
                       </button>
                     ))}
                   </div>
