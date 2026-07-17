@@ -45,3 +45,24 @@ def money(value) -> Decimal:
     except (ValueError, TypeError, InvalidOperation):
       return Decimal("0.00")
   return value.quantize(_CENTS, rounding=ROUND_HALF_UP)
+
+
+def extract_llm_text(response) -> str:
+  """
+  Read the text out of a LangChain chat model response, regardless of
+  whether .content is a plain string (older/other providers) or a list of
+  content-block dicts (Gemini 3+ via langchain-google-genai, which always
+  emits [{"type": "text", "text": "...", ...}, ...] rather than a bare
+  string). A non-text block (e.g. a "thinking" block with no "text" key)
+  contributes "" instead of raising or leaking into the joined output.
+
+  Joins with "" (not " ") since contiguous text blocks are parts of one
+  continuous answer, not separate words.
+  """
+  content = response.content if hasattr(response, "content") else ""
+  if isinstance(content, list):
+    return "".join(
+      block.get("text", "") if isinstance(block, dict) else str(block)
+      for block in content
+    ).strip()
+  return str(content).strip() if content is not None else ""

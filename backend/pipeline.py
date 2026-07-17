@@ -14,7 +14,7 @@ from typing import Literal
 import pandas as pd
 from sqlalchemy.orm import Session
 from models import Document, FormBProfile, CapitalAsset, BreastfeedingEquipmentClaim, FinancialStatementProfile, Entity, CP500Record, OneTimeReliefClaim
-from utils import parse_amount
+from utils import parse_amount, extract_llm_text
 from capital_allowance import resolve_capital_allowance_rates
 
 from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -2702,15 +2702,7 @@ def classify_and_extract_with_llm(
   ]
 
   response = llm.invoke(messages)
-  raw_content = response.content
-
-  if isinstance(raw_content, list):
-    raw = "".join(
-        block.get("text", "") if isinstance(block, dict) else str(block)
-        for block in raw_content
-    ).strip()
-  else:
-    raw = str(raw_content).strip() if raw_content is not None else ""
+  raw = extract_llm_text(response)
 
   if not raw:
     logger.error(f"[Pipeline] LLM returned empty response for '{filename}'")

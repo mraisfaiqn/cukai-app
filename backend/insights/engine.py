@@ -103,6 +103,7 @@ from models import Document, FormBProfile, Person
 from insights.models import Insight, InsightRun, InsightRunChange
 from profile_completeness import missing_profile_fields
 from tax_rules import TAX_RULES_VERSION
+from utils import extract_llm_text
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -184,6 +185,12 @@ REOPEN_IMPACT_CHANGE_PCT = 0.15
 # deciding whether a returning condition may reopen the card (see the reopen
 # rule in _persist_once). Keep in sync with the router's manual-resolve note.
 AUTO_RESOLVED_NOTE = "Resolved automatically — the underlying condition no longer applies."
+
+# Beyond the income line, the deterministic digest fallback surfaces at most
+# this many additional sentences (fixed priority order — see
+# _phrase_digest_fallback), so a user with everything happening at once
+# doesn't get a wall of text just because every fact happens to be present.
+DIGEST_FALLBACK_MAX_SENTENCES = 3
 
 # Gemini bounds (Pipeline B). Explicit HTTP timeout within the mandated
 # 10–15s window; a single transient retry — the circuit breaker below adds
@@ -1432,6 +1439,54 @@ class TaxInsightEngine:
         )
         next_deadline = deadlines[0] if deadlines else None
 
+        # Missed-deduction gaps and bracket warnings carry the sharpest RM
+        # figures of any insight type but were previously invisible to the
+        # digest entirely. Pass each one's own already-composed title rather
+        # than a raw number: doc_gap's two rules use rm_impact for different
+        # things (unclaimed deduction vs. tax-at-risk), and the title already
+        # states which one it is — re-deriving that distinction here would
+        # risk the LLM asserting the wrong unit.
+        doc_gaps = [c for c in other_cards if c["insight_type"] == "doc_gap"]
+        top_doc_gap = max(doc_gaps, key=lambda c: c.get("rm_impact") or 0) if doc_gaps else None
+        # _rule_bracket_warning is the only provision card citing the
+        # progressive-rate schedule (_rule_provision_set_aside cites a
+        # separate "run-rate estimate" string) — this is how the two
+        # provision card shapes are told apart without matching on prose.
+        bracket_card = next(
+            (c for c in other_cards if c["insight_type"] == "provision"
+             and "progressive tax rate schedule" in (c.get("citation") or "")),
+            None,
+        )
+
+        # Net position: the single most "bottom line" figure in the whole
+        # snapshot. Resolve the sign into a status label up front — the LLM
+        # is told never to infer meaning from a number's sign, so it must
+        # never see a bare signed value.
+        balance_raw = totals.get("balancePayableMyr")
+        balance_status = None
+        balance_amount = None
+        if balance_raw is not None:
+            balance_amount = round(abs(float(balance_raw)), 2)
+            if balance_amount == 0:
+                balance_status = "settled"
+            elif float(balance_raw) < 0:
+                balance_status = "refund_due"
+            else:
+                balance_status = "balance_owed"
+
+        # Only surface a P&L-vs-uploaded-income mismatch when one is actually
+        # flagged — cy["reconciliation"] is a list, one entry per P&L
+        # reference document, most of which are unremarkable matches.
+        recon_flagged = [r for r in (cy.get("reconciliation") or []) if r.get("flagged")]
+        reconciliation_note = recon_flagged[0].get("note") if recon_flagged else None
+
+        # Current-year only — projection is None for a past YA, same guard
+        # every other time-sensitive rule in this file already uses.
+        year_progress_pct = (
+            (summary.get("projection") or {}).get("yearProgressPct")
+            if self.is_current_ya else None
+        )
+
         prior_income = None
         for yr in summary.get("yearlyTrend") or []:
             if yr.get("year") == self.ya - 1:
@@ -1443,10 +1498,16 @@ class TaxInsightEngine:
             "generated_in_month": self.today.strftime("%B %Y"),
             "income_ytd_myr": round(income, 2),
             "prior_full_year_income_myr": prior_income,
+            "year_progress_pct": year_progress_pct,
             "pending_review_count": len(pending),
             "pending_review_blocked_myr": pending_value,
             "top_unclaimed_relief": top_relief["title"] if top_relief else None,
             "top_relief_potential_saving_myr": (top_relief["rm_impact"] if top_relief else None),
+            "top_doc_gap": top_doc_gap["title"] if top_doc_gap else None,
+            "bracket_crossing": bracket_card["title"] if bracket_card else None,
+            "balance_status": balance_status,
+            "balance_amount_myr": balance_amount,
+            "reconciliation_note": reconciliation_note,
             "next_deadline": (next_deadline["title"] if next_deadline else None),
             "next_deadline_date": (
                 next_deadline["deadline_date"].isoformat() if next_deadline else None
@@ -1454,15 +1515,30 @@ class TaxInsightEngine:
             "projected_tax_myr": float((summary.get("projection") or {}).get("projectedTaxPayable") or 0) or None,
         }
 
+        # Every fact the body may reference needs a matching entry here — the
+        # "Why am I seeing this?" panel is this insight's evidence trail, and
+        # a claim in the body with nothing to back it in signals breaks the
+        # auditability contract every other insight in this file upholds.
         signals = [
             {"label": f"YA{self.ya} income recorded", "value": _fmt_rm(income)},
         ]
         if prior_income:
             signals.append({"label": f"YA{self.ya - 1} total income", "value": _fmt_rm(prior_income)})
+        if year_progress_pct:
+            signals.append({"label": "Year progress", "value": f"{year_progress_pct:.0f}% through YA{self.ya}"})
+        if balance_status and balance_amount:
+            label = {"refund_due": "Refund on track", "balance_owed": "Balance owed", "settled": "Net position"}[balance_status]
+            signals.append({"label": label, "value": _fmt_rm(balance_amount)})
+        if bracket_card:
+            signals.append({"label": "Tax bracket", "value": bracket_card["title"]})
+        if reconciliation_note:
+            signals.append({"label": "Income reconciliation", "value": reconciliation_note})
         signals.append({
             "label": "Pending review questions",
             "value": f"{len(pending)}" + (f" — worth ~{_fmt_rm(pending_value)}" if pending_value else ""),
         })
+        if top_doc_gap:
+            signals.append({"label": "Deduction gap", "value": top_doc_gap["title"]})
         if top_relief:
             signals.append({"label": "Unclaimed relief", "value": top_relief["title"]})
         if next_deadline:
@@ -1523,7 +1599,12 @@ class TaxInsightEngine:
             system = (
                 "You write a short tax brief for a Malaysian sole proprietor about one "
                 "specific Year of Assessment (YA). Use ONLY the facts provided — do not "
-                "invent numbers, deadlines, or advice beyond them. If is_current_year is "
+                "invent numbers, deadlines, or advice beyond them. Not every fact will be "
+                "present or worth mentioning — pick the 1-2 most consequential ones and "
+                "lead with them; do not try to list every fact you were given. Some "
+                "amounts are paired with a status label (e.g. balance_status alongside "
+                "balance_amount_myr) — that label states what the amount means; never "
+                "infer meaning from a number's sign yourself. If is_current_year is "
                 "false, frame it as a catch-up on that past year's records, not as "
                 "this-month news. 2-3 sentences, warm but professional, amounts formatted "
                 "like 'RM 1,234'. Lead with the single most useful thing the user should "
@@ -1533,9 +1614,7 @@ class TaxInsightEngine:
                 SystemMessage(content=system),
                 HumanMessage(content="Facts (JSON):\n" + json.dumps(facts, default=str)),
             ])
-            text_out = (resp.content or "").strip() if hasattr(resp, "content") else ""
-            if isinstance(text_out, list):  # some LangChain versions return content parts
-                text_out = " ".join(str(p) for p in text_out).strip()
+            text_out = extract_llm_text(resp)
             if not text_out or len(text_out) < 30:
                 self.logs.append("digest LLM returned empty/too-short text — using template fallback")
                 return None, "rule_template"
@@ -1554,6 +1633,15 @@ class TaxInsightEngine:
             return None, "rule_template"
 
     def _phrase_digest_fallback(self, facts: dict) -> str:
+        """Deterministic template used whenever the LLM path is unavailable
+        (no API key, circuit open, or a bad/short response). Same facts as
+        the LLM prompt, but templates can't compress dynamically the way a
+        model can — so this is a FIXED priority order, capped at
+        DIGEST_FALLBACK_MAX_SENTENCES beyond the income line, rather than one
+        unconditional sentence per present fact. A user with everything
+        happening at once (pending reviews, a doc gap, a bracket crossing, a
+        reconciliation mismatch) would otherwise get every one of them
+        appended, when only the highest-priority few are worth saying here."""
         year_label = f"YA {self.ya}"
         parts = [f"Recorded income for {year_label} is {_fmt_rm(facts['income_ytd_myr'])}."]
         if facts.get("prior_full_year_income_myr"):
@@ -1561,19 +1649,33 @@ class TaxInsightEngine:
                 f"Recorded income for {year_label} is {_fmt_rm(facts['income_ytd_myr'])} "
                 f"(YA{self.ya - 1} full-year total: {_fmt_rm(facts['prior_full_year_income_myr'])})."
             )
+
+        candidates: list[str] = []
+        if facts.get("balance_status") == "refund_due" and facts.get("balance_amount_myr"):
+            candidates.append(f"You're on track for a refund of about {_fmt_rm(facts['balance_amount_myr'])}.")
+        elif facts.get("balance_status") == "balance_owed" and facts.get("balance_amount_myr"):
+            candidates.append(f"You currently owe about {_fmt_rm(facts['balance_amount_myr'])} after CP500 installments.")
+        if facts.get("bracket_crossing"):
+            candidates.append(f"{facts['bracket_crossing']}.")
+        if facts.get("reconciliation_note"):
+            candidates.append(facts["reconciliation_note"])
         if facts.get("pending_review_count"):
-            parts.append(
+            candidates.append(
                 f"{facts['pending_review_count']} review question"
                 f"{'s are' if facts['pending_review_count'] != 1 else ' is'} holding "
                 f"~{_fmt_rm(facts['pending_review_blocked_myr'])} out of your totals."
             )
+        if facts.get("top_doc_gap"):
+            candidates.append(f"{facts['top_doc_gap']}.")
         if facts.get("top_relief_potential_saving_myr"):
-            parts.append(
+            candidates.append(
                 f"Your unclaimed reliefs could save up to "
                 f"{_fmt_rm(facts['top_relief_potential_saving_myr'])} in tax."
             )
         if facts.get("next_deadline"):
-            parts.append(f"Coming up: {facts['next_deadline']}.")
+            candidates.append(f"Coming up: {facts['next_deadline']}.")
+
+        parts.extend(candidates[:DIGEST_FALLBACK_MAX_SENTENCES])
         return " ".join(parts)
 
     # ── Phase 3: persistence (fresh session, advisory-locked, retried) ──────
