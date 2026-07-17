@@ -12,3 +12,7 @@ slowapi
 python-multipart
 easyocr
 langchain-google-genai
+google-genai
+pymongo
+pypdf
+requests

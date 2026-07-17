@@ -148,6 +148,13 @@ function PageHeader({ onLogout }) {
     localStorage.removeItem('userFullName');
     localStorage.removeItem('userEmail');
     localStorage.removeItem('activeEntityId');
+    // CukaiBot.jsx persists one "last active chat session" key per entity
+    // (cukaiActiveSessionId:<entityId>) — there can be several of these (one
+    // per entity the user had open), so they're swept by prefix rather than
+    // removed by a single fixed key like the ones above.
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith('cukaiActiveSessionId:')) localStorage.removeItem(key);
+    }
 
     onLogout();     // Changes isAuthenticated state to false
     navigate('/');  // Sends user back to landing page
