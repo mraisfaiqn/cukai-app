@@ -1,8 +1,14 @@
 import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { getAllEntities, getChatSessions, searchChatSessions, getChatHistory, sendChatMessage, deleteChatSession, updateChatSession, getChatFolders, renameChatFolder, deleteChatFolder } from '../services/api';
+import { getAllEntities, getChatSessions, searchChatSessions, getChatHistory, sendChatMessage, deleteChatSession, updateChatSession, getChatFolders, renameChatFolder, deleteChatFolder, uploadChatAttachment, deleteChatAttachment } from '../services/api';
 import cukaiBot from '../assets/cukaibot-icon.png';
 // import { jsPDF } from 'jspdf';
+
+// Mirrors backend MAX_CHAT_ATTACHMENTS_PER_MESSAGE (main.py) — kept in sync
+// manually since there's no shared-constants layer between the two; only
+// used here to stop offering the file picker once the composer is full,
+// the backend is still the source of truth that actually enforces it.
+const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5;
 
 // ── Icons ────────────────────────────────────────────────────────────────────
 
@@ -573,6 +579,70 @@ function CitationCard({ citation, onPreview }) {
 // manager. citation.sourceUrl is already the relative path main.py's
 // _chunks_to_citations put on the chunk (see pipeline.py's
 // embed_document_for_rag), so no Postgres lookback is needed here at all.
+// A single attached-file chip. Two modes, switched on whether `onRemove` is
+// passed:
+//  - Composer (pending, not yet sent): shows a remove ('x') button, no
+//    click-to-preview yet since the file has no server-side sourceUrl
+//    while still status:'uploading' or freshly uploaded-but-unsent.
+//  - Sent message (inside a UserMessage bubble): clickable to open
+//    DocumentPreviewModal, same as a citation — see onPreview.
+function AttachmentChip({ attachment, onRemove, onPreview }) {
+  const isImage = attachment.fileType === 'image';
+  const isUploading = attachment.status === 'uploading';
+  const isFailed = attachment.status === 'failed';
+
+  const content = (
+    <>
+      <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${isFailed ? 'bg-red-100 text-red-500' : 'bg-primary-tint text-primary'}`}>
+        {isImage ? <ImageIcon className="h-3.5 w-3.5" /> : <FileTextIcon />}
+      </span>
+      <span className="min-w-0 max-w-[140px] truncate text-[11px] font-medium text-headings">
+        {attachment.title || attachment.name}
+      </span>
+      {isUploading && (
+        <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+      )}
+    </>
+  );
+
+  const baseClasses = "flex items-center gap-1.5 rounded-lg border border-border bg-slate-50 py-1 pl-1.5 pr-2 shadow-sm";
+
+  if (onRemove) {
+    return (
+      <div className={baseClasses}>
+        {content}
+        <button
+          type="button"
+          onClick={onRemove}
+          title="Remove attachment"
+          className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-muted hover:bg-slate-200 hover:text-headings transition-colors"
+        >
+          <XIcon className="h-3 w-3" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onPreview}
+      title={`Preview ${attachment.title}`}
+      className={`${baseClasses} hover:bg-slate-100 transition-colors text-left`}
+    >
+      {content}
+    </button>
+  );
+}
+
+const ImageIcon = ({ className = 'h-4 w-4' }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+    <circle cx="8.5" cy="8.5" r="1.5" />
+    <polyline points="21 15 16 10 5 21" />
+  </svg>
+);
+
 function DocumentPreviewModal({ citation, onClose }) {
   const [visible, setVisible] = useState(false);
 
@@ -749,21 +819,31 @@ function AssistantMessage({ message, isActive, onSelectCitations, showFollowups 
   );
 }
 
-function UserMessage({ message, isActive, onSelectCitations }) {
+function UserMessage({ message, isActive, onSelectCitations, onPreviewAttachment }) {
+  const attachments = message.attachments || [];
   return (
-    <div className="flex justify-end">
-      <button
-        type="button"
-        onClick={() => onSelectCitations?.(message)}
-        title="View sources for this question's reply"
-        className={`max-w-[75%] select-text rounded-2xl rounded-tr-sm border px-4 py-3 text-left shadow-sm transition-colors ${
-          isActive
-            ? 'border-primary/40 bg-primary-tint ring-2 ring-primary/50'
-            : 'border-border bg-surface hover:bg-slate-50'
-        }`}
-      >
-        <p className="select-text text-xs leading-relaxed text-headings">{message.text}</p>
-      </button>
+    <div className="flex flex-col items-end gap-1.5">
+      {attachments.length > 0 && (
+        <div className="flex max-w-[75%] flex-wrap justify-end gap-1.5">
+          {attachments.map((a) => (
+            <AttachmentChip key={a.id} attachment={a} onPreview={() => onPreviewAttachment?.(a)} />
+          ))}
+        </div>
+      )}
+      {message.text && (
+        <button
+          type="button"
+          onClick={() => onSelectCitations?.(message)}
+          title="View sources for this question's reply"
+          className={`max-w-[75%] select-text rounded-2xl rounded-tr-sm border px-4 py-3 text-left shadow-sm transition-colors ${
+            isActive
+              ? 'border-primary/40 bg-primary-tint ring-2 ring-primary/50'
+              : 'border-border bg-surface hover:bg-slate-50'
+          }`}
+        >
+          <p className="select-text text-xs leading-relaxed text-headings">{message.text}</p>
+        </button>
+      )}
     </div>
   );
 }
@@ -1645,6 +1725,14 @@ function CukaiBot() {
   // served from this backend's /files/ mount); external LHDN links still
   // open in a new tab via CitationCard's existing window.open path.
   const [previewCitation, setPreviewCitation] = useState(null);
+  // Files attached to the message currently being composed, not yet sent —
+  // each entry starts as {id: <temp>, name, status: 'uploading'} the moment
+  // it's picked, then gets patched in place with the real server id/
+  // title/sourceUrl/fileType once uploadChatAttachment resolves (see
+  // handleFilesPicked), or status:'failed' if the upload errors. Cleared
+  // after a successful send (see handleSend) and on handleNewChat.
+  const [pendingAttachments, setPendingAttachments] = useState([]);
+  const fileInputRef = useRef(null);
   // Backend-issued chat session id — null until the first message is sent
   // (or until an existing session is resolved for this entity), mirroring
   // how a WhatsApp thread gets its ID on its first message.
@@ -1884,20 +1972,30 @@ function CukaiBot() {
 
   async function handleSend(text) {
     const trimmed = (text || inputValue).trim();
-    if (!trimmed) return;
+    // Ready-to-send attachments only — one still mid-upload or that failed
+    // shouldn't be silently dropped from the send, so block sending instead
+    // (the Send button's disabled state below mirrors this same check).
+    const readyAttachments = pendingAttachments.filter((a) => a.status === 'ready');
+    const hasBusyAttachment = pendingAttachments.some((a) => a.status === 'uploading');
+    if (!trimmed && readyAttachments.length === 0) return;
+    if (hasBusyAttachment) return;
 
     const userId = localStorage.getItem('userId');
     if (!userId) return;
 
-    const userMsg = { id: Date.now(), role: 'user', text: trimmed };
+    const userMsg = { id: Date.now(), role: 'user', text: trimmed, attachments: readyAttachments };
     setMessages((prev) => [...prev, userMsg]);
     setInputValue('');
+    setPendingAttachments([]);
     setIsTyping(true);
     setActiveCitations([]);
     setActiveCitationsMessageId(null);
 
     try {
-      const res = await sendChatMessage(trimmed, userId, activeEntity?.id ?? null, sessionId);
+      const res = await sendChatMessage(
+        trimmed, userId, activeEntity?.id ?? null, sessionId,
+        readyAttachments.map((a) => a.id),
+      );
       // First message of a brand-new conversation returns a freshly created
       // session_id — remember it so every subsequent message in this tab
       // continues the same thread instead of spawning a new one each time,
@@ -1909,6 +2007,18 @@ function CukaiBot() {
         const params = new URLSearchParams(window.location.search);
         params.set('session', res.sessionId);
         window.history.replaceState(null, '', `${window.location.pathname}?${params}`);
+      }
+      // Swap the optimistic user bubble for the server-echoed one (see
+      // main.py's post_chat_message) — same client-side id, so this
+      // replaces rather than duplicates it. Only needed when there were
+      // attachments: the server's version carries real /files/ preview
+      // URLs the optimistic bubble couldn't have had yet.
+      if (res.userMessage && readyAttachments.length > 0) {
+        setMessages((prev) => prev.map((m) => (
+          m.id === userMsg.id
+            ? { ...m, id: res.userMessage.id, attachments: res.userMessage.attachments || [] }
+            : m
+        )));
       }
       const botMsg = {
         id: res.message.id,
@@ -1939,6 +2049,61 @@ function CukaiBot() {
     }
   }
 
+  // Fires on <input type="file"> change — uploads every picked file
+  // immediately (see uploadChatAttachment) so the composer shows each as a
+  // chip right away, independent of whether/when the message itself gets
+  // sent. Each file gets its own optimistic 'uploading' placeholder (a
+  // temporary negative id, so it can never collide with a real server id)
+  // that's patched in place on success/failure — a slow upload doesn't
+  // block picking or removing other files.
+  async function handleFilesPicked(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // allow re-picking the same file name later
+    if (!files.length) return;
+
+    const userId = localStorage.getItem('userId');
+    if (!userId) return;
+
+    const room = MAX_CHAT_ATTACHMENTS_PER_MESSAGE - pendingAttachments.length;
+    if (room <= 0) return;
+    const toUpload = files.slice(0, room);
+
+    const placeholders = toUpload.map((file) => ({
+      id: -(Date.now() + Math.random()), // temp negative id, replaced on success
+      name: file.name,
+      status: 'uploading',
+    }));
+    setPendingAttachments((prev) => [...prev, ...placeholders]);
+
+    await Promise.all(toUpload.map(async (file, idx) => {
+      const placeholderId = placeholders[idx].id;
+      try {
+        const uploaded = await uploadChatAttachment(file, userId, sessionId);
+        setPendingAttachments((prev) => prev.map((a) => (
+          a.id === placeholderId ? { ...uploaded, status: 'ready' } : a
+        )));
+      } catch (err) {
+        setPendingAttachments((prev) => prev.map((a) => (
+          a.id === placeholderId ? { ...a, status: 'failed' } : a
+        )));
+      }
+    }));
+  }
+
+  // Removes a pending (not-yet-sent) attachment chip. Best-effort backend
+  // cleanup — if the delete call fails (e.g. it's a stale temp id, or a
+  // network hiccup), the chip still disappears from the composer either
+  // way, since from the user's perspective "removed" just means "not part
+  // of my next message" regardless of whether the orphaned upload gets
+  // cleaned up server-side.
+  async function handleRemovePendingAttachment(attachment) {
+    setPendingAttachments((prev) => prev.filter((a) => a.id !== attachment.id));
+    const userId = localStorage.getItem('userId');
+    if (userId && attachment.id > 0) {
+      try { await deleteChatAttachment(attachment.id, userId); } catch { /* best-effort */ }
+    }
+  }
+
   // Sidebar "New chat" button: unlike the old Clear Chat action, this does NOT delete the
   // current session — it just deselects it, so the conversation the person
   // was just in still shows up in the sidebar to come back to. A fresh
@@ -1954,6 +2119,7 @@ function CukaiBot() {
     setActiveCitations([]);
     setActiveCitationsMessageId(null);
     setInputValue('');
+    setPendingAttachments([]);
     setSessionId(null);
     clearPersistedSessionId(activeEntity?.id ?? null);
     const params = new URLSearchParams(window.location.search);
@@ -1981,6 +2147,7 @@ function CukaiBot() {
       setSessionId(history.sessionId);
       setMessages(history.messages || []);
       setDismissedFollowupIds(new Set());
+      setPendingAttachments([]);
       const lastWithCitations = [...(history.messages || [])].reverse().find((m) => m.citations?.length);
       setActiveCitations(lastWithCitations?.citations || []);
       setActiveCitationsMessageId(lastWithCitations?.id ?? null);
@@ -2302,7 +2469,15 @@ function CukaiBot() {
                   // the question itself to compare against directly.
                   const reply = messages[i + 1];
                   const isActive = !!reply && reply.role === 'assistant' && reply.id === activeCitationsMessageId;
-                  return <UserMessage key={msg.id} message={msg} isActive={isActive} onSelectCitations={handleSelectCitations} />;
+                  return (
+                    <UserMessage
+                      key={msg.id}
+                      message={msg}
+                      isActive={isActive}
+                      onSelectCitations={handleSelectCitations}
+                      onPreviewAttachment={setPreviewCitation}
+                    />
+                  );
                 }
                 return (
                   <AssistantMessage
@@ -2329,6 +2504,17 @@ function CukaiBot() {
 
             {/* Locked Footer Action/Input Tray */}
             <div className="border-t border-border p-4 shrink-0">
+              {pendingAttachments.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {pendingAttachments.map((a) => (
+                    <AttachmentChip
+                      key={a.id}
+                      attachment={a}
+                      onRemove={() => handleRemovePendingAttachment(a)}
+                    />
+                  ))}
+                </div>
+              )}
               <div className="flex items-end gap-2 rounded-xl border border-border bg-slate-50/50 px-3 py-2 transition-all focus-within:border-primary focus-within:ring-4 focus-within:ring-primary/10">
                 <textarea
                   ref={inputRef}
@@ -2341,12 +2527,29 @@ function CukaiBot() {
                   style={{ maxHeight: '96px' }}
                 />
                 <div className="flex shrink-0 items-center gap-1 pb-0.5">
-                  <button type="button" className="rounded-lg p-1.5 text-muted transition-colors hover:bg-slate-200">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={handleFilesPicked}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={pendingAttachments.length >= MAX_CHAT_ATTACHMENTS_PER_MESSAGE}
+                    title={pendingAttachments.length >= MAX_CHAT_ATTACHMENTS_PER_MESSAGE ? `Up to ${MAX_CHAT_ATTACHMENTS_PER_MESSAGE} files per message` : 'Attach a file'}
+                    className="rounded-lg p-1.5 text-muted transition-colors hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
                     <AttachIcon />
                   </button>
                   <button
                     onClick={() => handleSend()}
-                    disabled={!inputValue.trim() || isTyping}
+                    disabled={
+                      (!inputValue.trim() && !pendingAttachments.some((a) => a.status === 'ready')) ||
+                      pendingAttachments.some((a) => a.status === 'uploading') ||
+                      isTyping
+                    }
                     className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-white shadow-sm transition-all hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <SendIcon />

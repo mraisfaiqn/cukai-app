@@ -6,10 +6,12 @@ import logging
 import os
 import re
 import uuid
+import mimetypes
+import hashlib
 import bcrypt
 from contextlib import asynccontextmanager
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -24,7 +26,7 @@ from sqlalchemy import or_, func
 
 from database import init_db, SessionLocal
 import models
-from models import Document, FormBProfile, CapitalAsset, ChatSession, ChatMessage
+from models import Document, FormBProfile, CapitalAsset, ChatSession, ChatMessage, ChatAttachment
 from capital_allowance import compute_capital_allowance_for_year
 from utils import parse_amount, money
 from pipeline import (
@@ -98,6 +100,19 @@ async def lifespan(app: FastAPI):
 STORAGE_DIR = "./stored_documents"
 MAX_BATCH_FILES = 10
 MAX_BATCH_BYTES = 100 * 1024 * 1024  # 100 MB
+
+# -- Chat attachments -----------------------------------------------------------
+# Deliberately no extension allowlist here (unlike pipeline.ALLOWED_EXTENSIONS,
+# which is scoped to what the OCR/classification pipeline can parse) -- chat
+# attachments skip that pipeline entirely and go straight to Gemini as raw
+# inline bytes (see _attachments_to_media_blocks), so any file type the user
+# wants to hand the model is allowed. Gemini itself will simply not "see" a
+# file type it doesn't understand, rather than the upload failing outright.
+MAX_CHAT_ATTACHMENT_MB = 20
+# Inline base64 bytes are appended directly to the Gemini prompt payload (no
+# Files API upload step), so a handful of large files per turn adds up fast --
+# cap the count too, not just per-file size.
+MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5
 
 
 def _requeue_interrupted_documents() -> None:
@@ -737,7 +752,15 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
   with open(safe_file_path, "wb") as buf:
     buf.write(file_content)
 
-  db_doc = Document(file_name=original_name, file_path=safe_file_path, user_id=user_id, entity_id=entity_id)
+  # Hashed once here, from the bytes already in memory — reused by
+  # _check_upload_history()'s Tier 1 exact-match lookup for "did I upload
+  # this before"-style chat questions. See models.Document.file_hash.
+  file_hash = hashlib.sha256(file_content).hexdigest()
+
+  db_doc = Document(
+    file_name=original_name, file_path=safe_file_path, file_hash=file_hash,
+    user_id=user_id, entity_id=entity_id,
+  )
   db.add(db_doc)
   db.commit()
   db.refresh(db_doc)
@@ -911,6 +934,10 @@ def create_manual_document(
   with open(safe_file_path, "w", encoding="utf-8") as buf:
     buf.write(receipt_text)
 
+  # See _save_and_queue's file_hash comment — kept consistent across every
+  # path that creates a Document row, manual entry included.
+  file_hash = hashlib.sha256(receipt_text.encode("utf-8")).hexdigest()
+
   display_name = f"{doc_type.replace(' ', '_')}_{vendor.replace(' ', '_')}_{doc_date}.txt"
 
   extracted_data = {
@@ -941,6 +968,7 @@ def create_manual_document(
     entity_id=entity_id,
     file_name=display_name,
     file_path=safe_file_path,
+    file_hash=file_hash,
     status="completed",
     document_type=doc_type,
     category=category,
@@ -2029,14 +2057,121 @@ CHAT_USER_DOC_TOP_K = 5  # from the user's own uploaded documents
 # weaker matches just to fill the budget.
 CHAT_MAX_TOTAL_CITATIONS = 12
 
+# ── Tier 2 provenance check: field extraction for chat attachments ─────────
+# A small, dedicated Gemini call (same pattern as pipeline.py's
+# classify_and_extract_with_llm and this file's _classify_and_maybe_answer)
+# that pulls out ONLY the four fields needed to compare a chat attachment
+# against a user's already-uploaded Documents by content, not by embedding
+# similarity or byte-for-byte hash. See _check_upload_history()'s docstring
+# for why this exists as its own call rather than folding it into
+# CHAT_SYSTEM_PROMPT's answer-generation JSON contract: extracting comparable
+# fields for a DB lookup and writing a conversational answer are different
+# jobs with different failure modes, and mixing them risks the model
+# skipping/garbling one to satisfy the other.
+_ATTACHMENT_FIELD_EXTRACTION_PROMPT = """Look at the attached file. If it is a receipt, invoice, or similar financial/tax document, extract these fields exactly as they appear on the document:
+- vendor: the vendor/company/payer name
+- doc_no: the invoice/receipt/reference number, if visible
+- date: the document's date, in YYYY-MM-DD format if determinable, else null
+- amount: the total amount as a plain number (no currency symbol, no thousands separator), if visible
+
+If the attached file is not a receipt/invoice/financial document (e.g. it's a photo, a screenshot of a chat, an ID document, or has no vendor/amount at all), return all fields as null.
+
+Return ONLY valid JSON, no markdown fences, no preamble:
+{"vendor": "..." or null, "doc_no": "..." or null, "date": "YYYY-MM-DD" or null, "amount": 0.00 or null}
+"""
+
+
+def _extract_attachment_fields(attachment: "ChatAttachment") -> Optional[dict]:
+  """
+  Tier 2 helper for _check_upload_history(): asks Gemini to read ONE chat
+  attachment and pull out vendor/doc_no/date/amount, the same four fields
+  pipeline.py's classify_and_extract_with_llm already extracts for documents
+  that go through the full OCR/classification pipeline (see that file's
+  CLASSIFY_SYSTEM_PROMPT). Reusing the same field shape means the comparison
+  in _check_upload_history() is apples-to-apples against Document.extracted_data
+  without any translation layer.
+
+  Deliberately separate from _generate_chat_answer_with_retrieval's own
+  Gemini call — this runs BEFORE that call (its output feeds into the
+  CONTEXT block that call receives), and asks a narrower, more literal
+  question ("what does the document say") rather than "answer the user's
+  question", so it stays reliable even when the user's actual question is
+  conversational (e.g. "explain what it is?") and wouldn't otherwise prompt
+  the model to output clean structured fields.
+
+  Returns None on any failure (missing API key, unreadable file, malformed
+  JSON, or every field coming back null) — never raises. A None return means
+  _check_upload_history() falls back to Tier 3 (similarity search) or simply
+  reports no match, rather than blocking the turn on this side-check.
+  """
+  api_key = os.getenv("GEMINI_API_KEY")
+  if not api_key:
+    return None
+
+  try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    llm = ChatGoogleGenerativeAI(
+      model="gemini-3.1-flash-lite",
+      api_key=api_key,
+      temperature=0.0,
+      convert_system_message_to_human=True,
+    )
+    media_blocks = _attachments_to_media_blocks([attachment])
+    if not media_blocks:
+      return None
+
+    messages = [
+      SystemMessage(content=_ATTACHMENT_FIELD_EXTRACTION_PROMPT),
+      HumanMessage(content=[{"type": "text", "text": "Extract the fields from this document."}, *media_blocks]),
+    ]
+    response = llm.invoke(messages)
+    raw = response.content
+    if isinstance(raw, list):
+      raw = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw)
+    raw = str(raw).strip() if raw is not None else ""
+
+    json_match = re.search(r"(\{.*\})", raw, re.DOTALL)
+    if json_match:
+      raw = json_match.group(1)
+    parsed = json.loads(raw)
+
+    vendor = parsed.get("vendor")
+    doc_no = parsed.get("doc_no")
+    doc_date = parsed.get("date")
+    amount = parsed.get("amount")
+    if not any([vendor, doc_no, doc_date, amount is not None]):
+      return None  # nothing usable extracted — not a receipt-like attachment
+    return {"vendor": vendor, "doc_no": doc_no, "date": doc_date, "amount": amount}
+  except Exception as e:
+    logger.warning(f"[Chat] Attachment field extraction failed for attachment {attachment.id}: {e}")
+    return None
+
+
 CHAT_SYSTEM_PROMPT = """You are Cukai Bot, a Malaysian tax advisory assistant for cukai.ai.
 
 Answer ONLY using the CONTEXT provided below plus the conversation history. The
 CONTEXT may include: the user's own account profile (name, TIN, active
 business/entity — treat this as authoritative first-party account data, not an
-uploaded document), their uploaded receipts/documents, and Malaysian tax-law
-reference material. If the context doesn't contain enough information to
-answer confidently, say so plainly rather than guessing.
+uploaded document), an upload-history check for any file attached to THIS
+message (see below), their uploaded receipts/documents, and Malaysian tax-law
+reference material. If the user attached a file to their current message, it
+appears directly in the message (as an image/PDF/etc.) rather than in the
+CONTEXT block — read it directly and factor it into your answer alongside the
+CONTEXT. If the context doesn't contain enough information to answer
+confidently, say so plainly rather than guessing.
+
+If the CONTEXT contains an upload-history finding for an attached file (a
+line starting with "The attached file..." or "No matching or previously-
+uploaded document was found..."), treat that as the authoritative answer to
+any "did I upload this before?" / "is this already in my account?"-style
+question — it comes from a direct database check, not from the document/
+reference search results elsewhere in this CONTEXT. Do NOT answer that kind
+of question using document-search citations instead, and do NOT contradict
+the upload-history finding. A finding phrased as "appears to be the SAME
+document... though it may be a different scan or copy" should be relayed
+with that same caveat, not flattened into a flat "yes".
 
 Rules:
 - Be concise and specific. Reference concrete figures/dates from the context when relevant.
@@ -2160,6 +2295,173 @@ def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -
   return "\n".join(lines) if len(lines) > 1 else None
 
 
+# Tolerance for a Tier 2 "same document, different scan" match. Amounts are
+# compared after rounding to cents; dates must match exactly (a re-scanned
+# receipt doesn't change its own transaction date). No tolerance on
+# vendor/doc_no — those are compared post-normalization (see
+# _normalize_field) rather than fuzzily, since a real doc_no rarely has OCR
+# ambiguity worth guessing around, and guessing risks a false "yes, filed".
+_TIER2_AMOUNT_TOLERANCE = Decimal("0.01")
+
+
+def _normalize_field(value: Optional[str]) -> Optional[str]:
+  """Lowercase + collapse whitespace for a loose-but-safe text comparison
+  between two independently-OCR'd/extracted reads of the same physical
+  document (e.g. 'ABC  Sdn Bhd' vs 'abc sdn bhd'). Returns None unchanged so
+  callers can tell 'no value' apart from 'empty string after normalizing'."""
+  if not value:
+    return None
+  return re.sub(r"\s+", " ", str(value).strip().lower()) or None
+
+
+def _check_upload_history(
+  db: Session, user_id: str, attachments: list["ChatAttachment"],
+) -> Optional[str]:
+  """
+  Best-effort provenance check for "did I upload this before?"-style chat
+  questions, run BEFORE the main answer-generation call so its findings can
+  be folded into that call's CONTEXT — see post_chat_message's wiring.
+
+  This exists because CHAT_SYSTEM_PROMPT's document-search path
+  (needs_document_search) answers off MongoDB $vectorSearch semantic
+  similarity, which is the wrong tool for an identity question: two
+  independent OCR/embedding passes over the same physical receipt can drift
+  far enough apart that they don't score as a top match for each other, and
+  conversely two DIFFERENT invoices from the same vendor template can score
+  as if they were the same. "Did I upload this before" needs an identity
+  check against Postgres, not a similarity check against Mongo.
+
+  Two tiers, in order — stops at the first that finds something, cheapest
+  and most certain first:
+
+    Tier 1 — exact byte match. Hash the attachment's own bytes and look for
+    a Document with the same file_hash for this user. This only catches a
+    LITERAL re-upload of the identical file (same bytes) — a re-scan, a
+    re-export, or a photo of the same paper receipt taken twice will NOT
+    hash the same, even though a person would call it "the same document".
+
+    Tier 2 — field match. Only reached if Tier 1 finds nothing AND there's
+    at least one attachment worth checking. Extracts vendor/doc_no/date/
+    amount from the attachment via _extract_attachment_fields() (a small
+    dedicated Gemini call — see that function's docstring for why it's
+    separate from the main answer call), then looks for a Document whose
+    OWN extracted_data has the same doc_no (or, absent a doc_no on either
+    side, the same vendor + date + amount) for this user. This catches the
+    "re-scanned the same paper receipt" and "re-exported the same invoice
+    PDF" cases Tier 1 misses.
+
+  Deliberately does NOT fall through to a Tier 3 Mongo similarity search —
+  see the module-level design discussion this function's callers link back
+  to: a similarity hit is evidence of "looks like", not "is", and silently
+  presenting it as a "yes, you uploaded this" answer risks a false positive
+  the user has no way to catch. If both tiers come back empty, the returned
+  text says plainly that no matching or similar document was found, and the
+  chat's own document-search retrieval path (if it separately runs this
+  turn) can still surface genuinely similar prior documents as its own,
+  clearly-labeled citations — this function isn't reponsible for that.
+
+  Returns None if there are no attachments to check at all (nothing to add
+  to CONTEXT); otherwise always returns a non-empty string, one line per
+  attachment checked, so the LLM has an explicit, truthful answer to ground
+  "did I upload this before" in rather than staying silent and letting the
+  model infer from Mongo's (differently-scoped) citations instead.
+  """
+  if not attachments:
+    return None
+
+  findings: list[str] = []
+  for a in attachments:
+    # ── Tier 1: exact byte match ────────────────────────────────────────
+    try:
+      with open(a.file_path, "rb") as f:
+        file_hash = hashlib.sha256(f.read()).hexdigest()
+    except OSError as e:
+      logger.warning(f"[Chat] Could not read attachment {a.id} for upload-history check: {e}")
+      continue
+
+    exact = (
+      db.query(Document)
+      .filter(Document.user_id == user_id, Document.file_hash == file_hash)
+      .first()
+    )
+    if exact:
+      findings.append(
+        f"The attached file '{a.file_name}' is an EXACT match (byte-for-byte identical) "
+        f"to a document already on file: '{exact.file_name}' (Document ID {exact.id}, "
+        f"category: {exact.category or 'uncategorised'}, status: {exact.status}, "
+        f"uploaded {exact.created_at:%Y-%m-%d})."
+      )
+      continue
+
+    # ── Tier 2: field match ─────────────────────────────────────────────
+    fields = _extract_attachment_fields(a)
+    if not fields:
+      findings.append(
+        f"The attached file '{a.file_name}' could not be checked against the user's "
+        f"upload history (no comparable vendor/amount/date fields could be read from it, "
+        f"or it doesn't look like a receipt/invoice)."
+      )
+      continue
+
+    norm_vendor = _normalize_field(fields.get("vendor"))
+    norm_doc_no = _normalize_field(fields.get("doc_no"))
+    field_date  = fields.get("date")
+    field_amount = None
+    if fields.get("amount") is not None:
+      try:
+        field_amount = Decimal(str(fields["amount"]))
+      except (InvalidOperation, ValueError, TypeError):
+        field_amount = None
+
+    candidates = (
+      db.query(Document)
+      .filter(Document.user_id == user_id, Document.extracted_data.isnot(None))
+      .all()
+    )
+    match = None
+    for cand in candidates:
+      ed = cand.extracted_data or {}
+      cand_doc_no = _normalize_field(ed.get("doc_no"))
+      cand_vendor = _normalize_field(ed.get("vendor"))
+      cand_date   = ed.get("date")
+      cand_amount = parse_amount(ed.get("amount")) if ed.get("amount") is not None else None
+
+      # Preferred path: both sides have a doc_no — a real invoice/receipt
+      # number is the strongest single identifier, more reliable than
+      # vendor-name spelling matching across two independent extractions.
+      if norm_doc_no and cand_doc_no:
+        if norm_doc_no == cand_doc_no and (not norm_vendor or not cand_vendor or norm_vendor == cand_vendor):
+          match = cand
+          break
+        continue  # both have a doc_no but they differ — not a match, don't fall through to fuzzier fields
+
+      # Fallback path: no doc_no on one or both sides — require vendor AND
+      # date AND amount (within cents) to all agree, so a coincidental match
+      # on just one field (e.g. same vendor, different transaction) doesn't
+      # produce a false "already uploaded".
+      if norm_vendor and cand_vendor and norm_vendor == cand_vendor and field_date and cand_date == field_date:
+        if field_amount is not None and cand_amount is not None:
+          if abs(field_amount - cand_amount) <= _TIER2_AMOUNT_TOLERANCE:
+            match = cand
+            break
+
+    if match:
+      findings.append(
+        f"The attached file '{a.file_name}' appears to be the SAME document (matching "
+        f"vendor/date/amount or invoice number) as one already on file: '{match.file_name}' "
+        f"(Document ID {match.id}, category: {match.category or 'uncategorised'}, "
+        f"status: {match.status}, uploaded {match.created_at:%Y-%m-%d}) — though it may be a "
+        f"different scan or copy of the same physical document, not a byte-identical file."
+      )
+    else:
+      findings.append(
+        f"No matching or previously-uploaded document was found for the attached file "
+        f"'{a.file_name}' in the user's upload history."
+      )
+
+  return "\n".join(findings) if findings else None
+
+
 # Structured output contract for _classify_and_maybe_answer — kept as a plain
 # dict shape (not a Pydantic model) to match this file's existing style for
 # small LLM-classification helpers (see pipeline.py's classify_and_extract_with_llm).
@@ -2203,6 +2505,10 @@ The chatbot has three possible information sources:
 
 A single message can need BOTH document and reference lookups at once (e.g. "is my broadband bill deductible under Section 33?" needs the user's actual bill AND the law on Section 33). Set both flags true in that case — do not force a single choice when both genuinely apply.
 
+If the user has attached a file to this message, it appears below the question as an image/PDF/etc. you can see directly. A question that's fully answerable from the attachment itself (e.g. "what does this say?", "summarize this", "is this a valid invoice?") needs NEITHER document nor reference search — treat it like any other self-contained question. Only set needs_document_search/needs_reference_search true if answering also genuinely requires the user's OTHER stored documents or the tax law corpus, not just the attached file.
+
+If the question is specifically "did I upload this before?" / "is this already in my account?" / "have I filed this?" about an attached file, and the CONTEXT below already contains an upload-history finding for it (a line starting with "The attached file..." or "No matching or previously-uploaded document was found..."), that question needs NEITHER document nor reference search — the CONTEXT already has the direct, authoritative answer. Write it as a direct_answer instead of setting either search flag true; do not trigger a document search just to double-check a finding that's already been looked up.
+
 When uncertain, prefer setting a flag to true rather than false — a citation the user didn't strictly need is a much smaller problem than answering a real tax question with no grounding at all.
 
 IMPORTANT — you do not have document or reference context available in this step:
@@ -2223,9 +2529,37 @@ Return ONLY valid JSON matching this exact shape, no markdown fences, no preambl
 """
 
 
+def _attachments_to_media_blocks(attachments: list["ChatAttachment"]) -> list[dict]:
+  """
+  Read each attachment's bytes off disk and encode them as LangChain
+  "media" content blocks — {"type": "media", "data": <base64>, "mime_type":
+  ...} — appended to the current turn's HumanMessage content list alongside
+  the {"type": "text", ...} block, so Gemini receives the file(s) and the
+  question together in one multimodal message. This is the inline-bytes
+  form (no Google Files API upload step), which is why callers cap both
+  file size (MAX_CHAT_ATTACHMENT_MB) and count (MAX_CHAT_ATTACHMENTS_PER_
+  MESSAGE) — every byte here goes straight into the request payload.
+
+  Skips (with a warning, not an error — one bad attachment shouldn't sink
+  the whole turn) any attachment whose file is missing on disk, which can
+  happen if the on-disk file was deleted out of band.
+  """
+  import base64
+
+  blocks = []
+  for a in attachments:
+    try:
+      with open(a.file_path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("utf-8")
+      blocks.append({"type": "media", "data": encoded, "mime_type": a.mime_type})
+    except OSError as e:
+      logger.warning(f"[Chat] Could not read attachment {a.id} ({a.file_path}) for Gemini: {e}")
+  return blocks
+
+
 def _classify_and_maybe_answer(
   question: str, history: list[dict], person_context: Optional[str] = None,
-  generate_title: bool = False,
+  generate_title: bool = False, attachments: Optional[list["ChatAttachment"]] = None,
 ) -> dict:
   """
   Single Gemini call (fast/cheap gemini-3.1-flash-lite, same as pipeline.py's
@@ -2317,7 +2651,15 @@ def _classify_and_maybe_answer(
         messages.append(HumanMessage(content=turn["content"]))
       else:
         messages.append(AIMessage(content=turn["content"]))
-    messages.append(HumanMessage(content=question))
+    # Attachments ride along only on the CURRENT question, not replayed for
+    # every earlier turn in history — see _attachments_to_media_blocks'
+    # docstring. When present, the message content becomes a list (text
+    # block + one media block per attachment) instead of a plain string.
+    media_blocks = _attachments_to_media_blocks(attachments) if attachments else []
+    if media_blocks:
+      messages.append(HumanMessage(content=[{"type": "text", "text": question}, *media_blocks]))
+    else:
+      messages.append(HumanMessage(content=question))
 
     response = llm.invoke(messages)
     raw = response.content
@@ -2363,6 +2705,7 @@ def _classify_and_maybe_answer(
 
 def _generate_chat_answer_with_retrieval(
   question: str, history: list[dict], context_chunks: list[dict], person_context: Optional[str] = None,
+  attachments: Optional[list["ChatAttachment"]] = None,
 ) -> dict:
   """
   The retrieval-grounded generation path — used only when
@@ -2375,8 +2718,13 @@ def _generate_chat_answer_with_retrieval(
 
   Grounded in retrieved Mongo context (context_chunks) + the user's own
   Postgres profile (person_context, see _person_context_block) + Postgres
-  chat history + the current question. Reuses the same
-  ChatGoogleGenerativeAI pattern as pipeline.py's classify_and_extract_with_llm.
+  chat history + the current question + any file(s) attached to this turn
+  (attachments — see _attachments_to_media_blocks). A question can need
+  BOTH retrieval and an attachment at once (e.g. "does this invoice qualify
+  under Section 33?" needs the attached invoice AND the law), so attachments
+  are passed alongside context_chunks rather than being an alternative to
+  them. Reuses the same ChatGoogleGenerativeAI pattern as pipeline.py's
+  classify_and_extract_with_llm.
 
   Returns {"answer": str, "followups": list[str]} — the model writes both in
   the same JSON response (see CHAT_SYSTEM_PROMPT), so suggesting 3 relevant
@@ -2425,7 +2773,14 @@ def _generate_chat_answer_with_retrieval(
       messages.append(HumanMessage(content=turn["content"]))
     else:
       messages.append(AIMessage(content=turn["content"]))
-  messages.append(HumanMessage(content=question))
+  # Attachments ride along only on the CURRENT question — see
+  # _attachments_to_media_blocks' docstring for why older turns' attachments
+  # are not re-sent as bytes here.
+  media_blocks = _attachments_to_media_blocks(attachments) if attachments else []
+  if media_blocks:
+    messages.append(HumanMessage(content=[{"type": "text", "text": question}, *media_blocks]))
+  else:
+    messages.append(HumanMessage(content=question))
 
   response = llm.invoke(messages)
   raw = response.content
@@ -2960,6 +3315,140 @@ def search_chat_sessions(
   return {"results": results[:limit]}
 
 
+def _attachment_to_dict(a: "ChatAttachment") -> dict:
+  """Shared response shape for a ChatAttachment row — used by the upload
+  endpoint, and by _chunks_to_citations' sibling for messages (see
+  get_chat_history / post_chat_message below). Mirrors the citation shape
+  (title/sourceUrl/fileType) so the frontend can reuse DocumentPreviewModal
+  unchanged for attachments as well as citations."""
+  return {
+    "id": a.id,
+    "title": a.file_name,
+    "sourceUrl": f"/files/{os.path.basename(a.file_path)}",
+    "fileType": _mime_to_frontend_file_type(a.mime_type),
+    "mimeType": a.mime_type,
+    "fileSize": a.file_size,
+  }
+
+
+def _mime_to_frontend_file_type(mime_type: str) -> str:
+  """Collapse an arbitrary MIME type down to the three buckets
+  DocumentPreviewModal already knows how to render ('image' | 'pdf' |
+  'excel'), falling back to 'other' for anything else (audio, video, plain
+  text, Office docs, ...) so the preview modal can show a generic
+  download-to-view state instead of guessing at a renderer."""
+  if mime_type.startswith("image/"):
+    return "image"
+  if mime_type == "application/pdf":
+    return "pdf"
+  if mime_type in (
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/csv",
+  ):
+    return "excel"
+  return "other"
+
+
+@app.post("/api/chat/attachments", status_code=201)
+@limiter.limit("30/minute")
+async def upload_chat_attachment(
+  request: Request,
+  file: UploadFile = File(...),
+  user_id: str = Query(..., description="Owner the attachment is attributed to."),
+  session_id: Optional[str] = Query(default=None, description="Existing session, if one already exists for this conversation."),
+  db: Session = Depends(get_db),
+):
+  """
+  Upload a file to attach to the NEXT chat message (see CukaiBot.jsx —
+  files are uploaded the moment they're picked, before the message is
+  sent, so the UI can show an attached-file chip immediately). Returns an
+  attachment record whose `id` the frontend then includes in the
+  subsequent POST /api/chat call's `attachment_ids` list, which is what
+  actually links it to a ChatMessage (see post_chat_message).
+
+  Unlike /api/documents/upload, this does NOT queue OCR/classification —
+  see ChatAttachment's docstring in models.py for why chat attachments are
+  intentionally kept out of that pipeline entirely. The file is only ever
+  (a) sent to Gemini as raw bytes for the turn it's attached to, and
+  (b) served back for in-chat preview via the /files/ static mount.
+
+  No `entity_id` scoping (unlike documents) — attachments belong to a chat
+  session, and sessions are already entity-scoped at creation.
+  """
+  if session_id:
+    session = db.query(ChatSession).filter(
+      ChatSession.session_id == session_id, ChatSession.user_id == user_id,
+    ).first()
+    if not session:
+      raise HTTPException(status_code=404, detail="Chat session not found.")
+
+  file_content = await file.read()
+  size_mb = len(file_content) / (1024 * 1024)
+  if size_mb > MAX_CHAT_ATTACHMENT_MB:
+    raise HTTPException(
+      status_code=422,
+      detail=f"File size {size_mb:.1f} MB exceeds the {MAX_CHAT_ATTACHMENT_MB} MB limit.",
+    )
+  if not file_content:
+    raise HTTPException(status_code=422, detail="File is empty.")
+
+  mime_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
+
+  safe_filename  = f"{uuid.uuid4().hex}_{os.path.basename(file.filename or 'attachment')}"
+  safe_file_path = os.path.join(STORAGE_DIR, safe_filename)
+  if not os.path.realpath(safe_file_path).startswith(os.path.realpath(STORAGE_DIR)):
+    raise HTTPException(status_code=400, detail="Invalid file name.")
+
+  with open(safe_file_path, "wb") as buf:
+    buf.write(file_content)
+
+  attachment = ChatAttachment(
+    session_id=session_id,
+    message_id=None,  # linked once the message this rides along with is actually saved
+    user_id=user_id,
+    file_name=file.filename or "attachment",
+    file_path=safe_file_path,
+    mime_type=mime_type,
+    file_size=len(file_content),
+  )
+  db.add(attachment)
+  db.commit()
+  db.refresh(attachment)
+
+  return _attachment_to_dict(attachment)
+
+
+@app.delete("/api/chat/attachments/{attachment_id}")
+def delete_chat_attachment(
+  attachment_id: int,
+  user_id: str = Query(...),
+  db: Session = Depends(get_db),
+):
+  """Remove a pending attachment before it's sent — e.g. the user picked
+  the wrong file and clicks the 'x' on the chip. Only allowed while it's
+  still unlinked (message_id is NULL); once a message has been sent with
+  it attached, it's part of that message's permanent history and should
+  be deleted by deleting the message/session instead, not this endpoint."""
+  attachment = db.query(ChatAttachment).filter(
+    ChatAttachment.id == attachment_id, ChatAttachment.user_id == user_id,
+  ).first()
+  if not attachment:
+    raise HTTPException(status_code=404, detail="Attachment not found.")
+  if attachment.message_id is not None:
+    raise HTTPException(status_code=409, detail="Cannot delete an attachment that's already part of a sent message.")
+
+  if attachment.file_path and os.path.isfile(attachment.file_path):
+    try:
+      os.remove(attachment.file_path)
+    except OSError as e:
+      logger.warning(f"[Chat Attachment] Failed to remove file for attachment {attachment_id}: {e}")
+
+  db.delete(attachment)
+  db.commit()
+  return {"deleted": True, "id": attachment_id}
+
+
 @app.get("/api/chat/{session_id}/history")
 def get_chat_history(
   session_id: str,
@@ -2990,6 +3479,7 @@ def get_chat_history(
         "text": m.content,
         "citations": m.citations,
         "followups": m.followups,
+        "attachments": [_attachment_to_dict(a) for a in m.attachments] or None,
       }
       for m in messages
     ],
@@ -3006,22 +3496,38 @@ def post_chat_message(
   header comment above for the full breakdown and Gemini call count).
 
   Request body:
-    { "message": str, "user_id": str, "entity_id": int|null, "session_id": str|null }
+    { "message": str, "user_id": str, "entity_id": int|null, "session_id": str|null,
+      "attachment_ids": [int]|null }
   session_id is optional — a new session is created automatically on first
   message, exactly like starting a new WhatsApp thread.
+  attachment_ids are ChatAttachment ids returned by a prior
+  POST /api/chat/attachments upload (see that endpoint) — the frontend
+  uploads the file(s) first, then sends their ids along with the message
+  that references them. Referenced attachments are linked to this turn's
+  user ChatMessage and their bytes are sent to Gemini alongside the
+  question (see _attachments_to_media_blocks) — max
+  MAX_CHAT_ATTACHMENTS_PER_MESSAGE per call.
 
   Response:
-    { "session_id", "message": {id, role, text, citations} }
+    { "session_id", "message": {id, role, text, citations, attachments} }
   """
   message   = (payload.get("message") or "").strip()
   user_id   = payload.get("user_id")
   entity_id = payload.get("entity_id")
   session_id = payload.get("session_id")
+  attachment_ids = payload.get("attachment_ids") or []
 
-  if not message:
-    raise HTTPException(status_code=422, detail="message is required.")
+  # A message can be attachment-only (e.g. just drop a file with no typed
+  # question) — only require SOME content, not specifically typed text.
+  if not message and not attachment_ids:
+    raise HTTPException(status_code=422, detail="message or attachment_ids is required.")
   if not user_id:
     raise HTTPException(status_code=422, detail="user_id is required.")
+  if len(attachment_ids) > MAX_CHAT_ATTACHMENTS_PER_MESSAGE:
+    raise HTTPException(
+      status_code=422,
+      detail=f"Maximum {MAX_CHAT_ATTACHMENTS_PER_MESSAGE} attachments per message.",
+    )
   _verify_entity_owned(db, user_id, entity_id)
 
   # ── Resolve or create the session ──────────────────────────────────────
@@ -3043,7 +3549,9 @@ def post_chat_message(
       # real AI title for a new session — see the generate_title parameter
       # on _classify_and_maybe_answer below) fails outright and returns
       # session_title=None. Overwritten below once classification succeeds.
-      title=message[:80],
+      # Falls back further to a generic label for an attachment-only first
+      # message (message[:80] would otherwise be an empty string).
+      title=message[:80] or "New conversation",
     )
     db.add(session)
     db.commit()
@@ -3066,6 +3574,31 @@ def post_chat_message(
   db.commit()
   db.refresh(user_msg)
 
+  # ── Step 1b: link any uploaded attachments to this message ───────────────
+  # Attachments were uploaded earlier (POST /api/chat/attachments, before
+  # this call — see that endpoint's docstring) and arrive here only by id.
+  # Ownership + session scoping are re-verified here rather than trusted
+  # from the client: an attachment must belong to this user AND (if it
+  # already had a session_id from being uploaded mid-conversation) match
+  # this session, otherwise it's silently dropped from this turn rather
+  # than erroring the whole message out.
+  attachments: list[ChatAttachment] = []
+  if attachment_ids:
+    candidates = db.query(ChatAttachment).filter(
+      ChatAttachment.id.in_(attachment_ids),
+      ChatAttachment.user_id == user_id,
+      ChatAttachment.message_id.is_(None),
+    ).all()
+    for a in candidates:
+      if a.session_id and a.session_id != session.session_id:
+        logger.warning(f"[Chat] Attachment {a.id} belongs to a different session, skipping.")
+        continue
+      a.session_id = session.session_id
+      a.message_id = user_msg.id
+      attachments.append(a)
+    if attachments:
+      db.commit()
+
   # ── Step 2: fetch the user's own Postgres profile (name, TIN, active
   #    entity, etc.) before classification, since the combined
   #    classify-and-maybe-answer call below needs it immediately if it turns
@@ -3077,6 +3610,34 @@ def post_chat_message(
     person_context = _person_context_block(db, user_id, entity_id)
   except Exception as e:
     logger.warning(f"[Chat] Person profile lookup failed for session {session.session_id}: {e}")
+
+  # ── Step 2b: provenance check for THIS turn's attachment(s), if any ─────
+  #    Only runs when an attachment was actually sent (cheap no-op otherwise
+  #    — no extra Gemini call, no extra Postgres query, for ordinary
+  #    text-only turns). Answers "did I upload this before?" from Postgres
+  #    identity checks (exact hash, then extracted-field match), NOT from
+  #    Mongo semantic similarity — see _check_upload_history()'s docstring
+  #    for why a vector search is the wrong tool for this specific question.
+  #    Folded into person_context (rather than added as a new parameter to
+  #    both _classify_and_maybe_answer and _generate_chat_answer_with_
+  #    retrieval) so both call sites automatically see it without a
+  #    signature change, the same way person_context itself is threaded
+  #    through today.
+  if attachments:
+    try:
+      upload_history_context = _check_upload_history(db, user_id, attachments)
+      if upload_history_context:
+        person_context = (
+          f"{person_context}\n\n{upload_history_context}" if person_context
+          else upload_history_context
+        )
+    except Exception as e:
+      logger.warning(f"[Chat] Upload-history check failed for session {session.session_id}: {e}")
+
+  # An attachment-only message (no typed text) still needs a non-empty
+  # question string to hand the LLM calls below — the attachment itself
+  # (via media_blocks) carries the actual content either way.
+  effective_question = message or "Please review the attached file(s)."
 
   # ── Step 3: classify what this question actually needs, and — in the same
   #    Gemini call — answer directly if it turns out NEITHER retrieval source
@@ -3094,7 +3655,9 @@ def post_chat_message(
   #    folding it in here keeps a new session's total Gemini call count
   #    equal to an existing session's, instead of always paying one extra
   #    dedicated call just for being new.
-  classification = _classify_and_maybe_answer(message, history, person_context, generate_title=is_new_session)
+  classification = _classify_and_maybe_answer(
+    effective_question, history, person_context, generate_title=is_new_session, attachments=attachments,
+  )
   logger.info(
     f"[Chat] Retrieval classification for session {session.session_id}: "
     f"documents={classification['needs_document_search']} "
@@ -3123,7 +3686,7 @@ def post_chat_message(
     #    set of uploaded documents, even when the document was the better answer.
     if needs_retrieval:
       try:
-        query_vector = embed_text(message, task_type="retrieval_query")
+        query_vector = embed_text(effective_question, task_type="retrieval_query")
         context_chunks = mongo.search_user_and_reference_chunks(
           query_embedding=query_vector,
           user_id=user_id,
@@ -3148,7 +3711,9 @@ def post_chat_message(
     #    ride along in this same call's JSON response — see
     #    _generate_chat_answer_with_retrieval's docstring.
     try:
-      result = _generate_chat_answer_with_retrieval(message, history, context_chunks, person_context)
+      result = _generate_chat_answer_with_retrieval(
+        effective_question, history, context_chunks, person_context, attachments=attachments,
+      )
       answer_text = result["answer"]
       followups = result.get("followups") or []
       if not answer_text:
@@ -3162,6 +3727,7 @@ def post_chat_message(
       followups = []
 
   citations = _chunks_to_citations(context_chunks)
+  attachment_dicts = [_attachment_to_dict(a) for a in attachments]
 
   # ── Step 6: save the assistant reply and respond ────────────────────────
   assistant_msg = ChatMessage(
@@ -3179,6 +3745,17 @@ def post_chat_message(
 
   return {
     "sessionId": session.session_id,
+    # The user's own turn, echoed back with server-assigned ids and
+    # preview-ready attachment URLs — the frontend's optimistic bubble (see
+    # CukaiBot.jsx's handleSend) only has the raw File objects it just
+    # uploaded, not a stored /files/ path, so it swaps this in once the
+    # response arrives.
+    "userMessage": {
+      "id": user_msg.id,
+      "role": "user",
+      "text": user_msg.content,
+      "attachments": attachment_dicts or None,
+    },
     "message": {
       "id": assistant_msg.id,
       "role": "assistant",

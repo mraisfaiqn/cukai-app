@@ -349,9 +349,12 @@ export const searchChatSessions = async (query, userId, entityId = null, limit =
 
 /**
  * Fetch the full message history for one chat session, oldest first.
- * Returns { sessionId, entityId, messages: [{id, role, text, citations, followups}] }.
+ * Returns { sessionId, entityId, messages: [{id, role, text, citations, followups, attachments}] }.
  * followups is only ever populated on assistant messages (null on user
  * messages, and on assistant messages saved before this field existed).
+ * attachments is a list of {id, title, sourceUrl, fileType, mimeType, fileSize}
+ * (null when the message has none) — same shape citations use for
+ * DocumentPreviewModal, so attachments preview the same way.
  */
 export const getChatHistory = async (sessionId, userId) => {
   const { data } = await api.get(`/api/chat/${sessionId}/history`, { params: { user_id: userId } });
@@ -363,16 +366,54 @@ export const getChatHistory = async (sessionId, userId) => {
  * Pass `sessionId = null` to start a new session — the response's
  * `sessionId` should then be stored (e.g. in state) and passed on
  * subsequent calls to keep the same thread.
- * Returns { sessionId, message: {id, role, text, citations, followups} }.
+ * Pass `attachmentIds` (from prior uploadChatAttachment calls) to link
+ * already-uploaded files to this message — the backend sends their bytes
+ * to Gemini alongside the message text (see main.py's post_chat_message).
+ * `message` may be an empty string when attachmentIds is non-empty
+ * (attachment-only message).
+ * Returns { sessionId, userMessage: {id, role, text, attachments}, message: {id, role, text, citations, followups} }.
  * followups is an array of up to 3 AI-suggested next questions for THIS
  * reply (may be empty, e.g. on a generation error) — drives the chip tray
  * under the conversation instead of a fixed static prompt list.
  */
-export const sendChatMessage = async (message, userId, entityId = null, sessionId = null) => {
+export const sendChatMessage = async (message, userId, entityId = null, sessionId = null, attachmentIds = []) => {
   const body = { message, user_id: userId };
   if (entityId)  body.entity_id  = entityId;
   if (sessionId) body.session_id = sessionId;
+  if (attachmentIds && attachmentIds.length) body.attachment_ids = attachmentIds;
   const { data } = await api.post('/api/chat', body);
+  return data;
+};
+
+/**
+ * Upload a file to attach to the next chat message. Uploads immediately
+ * (before the message itself is sent), so the composer can show an
+ * attached-file chip right away — pass the returned `id` in `sendChatMessage`'s
+ * `attachmentIds` when the message is actually sent.
+ * `sessionId` is optional (a brand-new conversation has none yet); pass it
+ * when attaching a file to an existing conversation so it's validated
+ * up front rather than only at send time.
+ * Returns { id, title, sourceUrl, fileType, mimeType, fileSize }.
+ */
+export const uploadChatAttachment = async (file, userId, sessionId = null) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const params = { user_id: userId };
+  if (sessionId) params.session_id = sessionId;
+  const { data } = await api.post('/api/chat/attachments', formData, {
+    params,
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data;
+};
+
+/**
+ * Remove a pending (not-yet-sent) attachment — e.g. the user clicks the
+ * 'x' on an attached-file chip before sending. Fails with 409 if the
+ * attachment has already been linked to a sent message.
+ */
+export const deleteChatAttachment = async (attachmentId, userId) => {
+  const { data } = await api.delete(`/api/chat/attachments/${attachmentId}`, { params: { user_id: userId } });
   return data;
 };
 

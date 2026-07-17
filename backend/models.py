@@ -131,6 +131,12 @@ class Document(Base):
 
     file_name          = Column(String(255), nullable=False)
     file_path          = Column(String(512), nullable=False)
+    # SHA-256 of the file's raw bytes at upload time, hex-encoded (64 chars).
+    # Used by main.py's _check_upload_history (Tier 1) to answer "did I
+    # upload this before?" via an exact-content lookup instead of a Mongo
+    # similarity search. Required — every code path that creates a Document
+    # (_save_and_queue, create_manual_document) computes and sets this.
+    file_hash          = Column(String(64),  nullable=False, index=True)
     status             = Column(String(50),  default="pending")
     document_type      = Column(String(100), default="Unclassified")
     category           = Column(String(255), nullable=True)
@@ -154,6 +160,9 @@ class Document(Base):
         ),
         Index("ix_document_user_ya",   "user_id",   "year_of_assessment"),
         Index("ix_document_entity_ya", "entity_id", "year_of_assessment"),
+        # Supports the Tier 1 exact-match lookup in main.py._check_upload_history
+        # (WHERE user_id = ? AND file_hash = ?) without a table scan.
+        Index("ix_document_user_hash", "user_id", "file_hash"),
     )
 
 
@@ -353,12 +362,54 @@ class ChatMessage(Base):
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
-    session = relationship("ChatSession", back_populates="messages")
+    session     = relationship("ChatSession", back_populates="messages")
+    attachments = relationship("ChatAttachment", cascade="all, delete-orphan", order_by="ChatAttachment.created_at")
 
     __table_args__ = (
         CheckConstraint("role IN ('user', 'assistant')", name="ck_chatmessage_role"),
         Index("ix_chatmessage_session_created", "session_id", "created_at"),
     )
+
+
+class ChatAttachment(Base):
+    """
+    A file the user attached to a chat message — sent to Gemini as inline
+    multimodal input (image/PDF/etc. bytes alongside the question) so the
+    model can read it directly, and kept on disk so the chat bubble can
+    offer the same click-to-preview experience as a citation.
+
+    Deliberately NOT part of the Document/document_chunks/RAG pipeline:
+    - No OCR, no LLM classification, no MongoDB embedding, no Q1-Q4
+      category, no Form B aggregation. It exists only to be attached to a
+      single conversational turn.
+    - Gemini only ever sees the raw bytes of an attachment on the turn it
+      was sent on (see main.py's post_chat_message) — older attachments are
+      not re-sent as bytes on every later turn, only their presence is
+      visible in reloaded history via this table, so a long conversation
+      doesn't balloon its per-turn payload with every file ever attached.
+
+    `session_id`/`message_id` are both nullable because the frontend
+    uploads the file the moment it's picked (so the user sees an attached
+    chip immediately) — before the message is sent and before a session
+    may even exist yet for a brand-new conversation. Both are backfilled by
+    post_chat_message once the ChatMessage row is created for that turn.
+    An attachment left with message_id=NULL (uploaded, then the user
+    navigated away without sending) is inert — harmless orphaned storage,
+    not linked into any conversation history.
+    """
+    __tablename__ = "chat_attachments"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(64), ForeignKey("chat_sessions.session_id", ondelete="CASCADE"), nullable=True, index=True)
+    message_id = Column(Integer, ForeignKey("chat_messages.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id    = Column(String(128), nullable=True, index=True)
+
+    file_name  = Column(String(255), nullable=False)   # original filename, shown in the UI
+    file_path  = Column(String(512), nullable=False)    # on-disk path under STORAGE_DIR (see main.py)
+    mime_type  = Column(String(127), nullable=False)    # sent to Gemini verbatim as the media block's mime_type
+    file_size  = Column(Integer, nullable=False)         # bytes — shown in the UI, not currently enforced beyond upload-time validation
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
 
 class ExternalResource(Base):
