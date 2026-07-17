@@ -49,16 +49,42 @@ const Q3_CATEGORIES = [
 const Q4_RELIEF_CATEGORIES = [
   'Q4 — Life Insurance & Takaful Relief',
   'Q4 — EPF Personal Contribution',
-  'Q4 — Medical & Parental Care',
+  'Q4 — Parent Medical Care',
+  'Q4 — Self/Spouse/Child Medical',
   'Q4 — Lifestyle Relief',
   'Q4 — Education Relief',
-  'Q4 — Child Relief',
+  'Q4 — Upskilling / Self-Enhancement Course',
+  'Q4 — Childcare Fees',
+  'Q4 — SSPN Net Deposit',
   'Q4 — Medical Equipment Relief',
   'Q4 — Private Retirement Scheme (PRS)',
   'Q4 — SOCSO Personal Contribution',
   'Q4 — Domestic Tourism Relief',
   'Q4 — EV Charging Equipment',
+  'Q4 — Education & Medical Insurance',
+  'Q4 — Sports & Fitness Relief',
+  'Q4 — Breastfeeding Equipment',
   'Q4 — Zakat',
+];
+// Donations (Part G) — kept SEPARATE from Q4_RELIEF_CATEGORIES (Phase 5, 14
+// Jul 2026 fix): a donation is not a personal relief (status 'relief') at
+// all, it's deducted from aggregate income before chargeable income is
+// derived — folding these into the relief list would have misclassified
+// every reclassify-to-donation action with the wrong status. Split into the
+// 10 real G-line categories since they're subject to different caps: G1/
+// G2a-d share a combined 10%-of-B11 pool; G4/G6 each have their own
+// RM20,000 cap; G3/G5/G7 are uncapped. See pipeline.py / main.py.
+const Q4_DONATION_CATEGORIES = [
+  'Q4 — Donation: Government/Local Authority',
+  'Q4 — Donation: Approved Institution',
+  'Q4 — Donation: Approved Sports Activity',
+  'Q4 — Donation: National Interest Project',
+  'Q4 — Donation: Wakaf/Endowment',
+  'Q4 — Donation: Artefacts to Government',
+  'Q4 — Donation: Library Facilities',
+  'Q4 — Donation: Disabled Facilities',
+  'Q4 — Donation: Medical Equipment',
+  'Q4 — Donation: Paintings to Art Gallery',
 ];
 const Q4_NON_DED_CATEGORIES = [
   'Q4 — Personal Living Expenses',
@@ -82,12 +108,20 @@ const REFERENCE_CATEGORIES = [
 const Q1_INCOME_CATEGORIES = Q1_CATEGORIES.filter(c => !REFERENCE_CATEGORIES.includes(c));
 const Q3_EXPENSE_CATEGORIES = Q3_CATEGORIES.filter(c => !REFERENCE_CATEGORIES.includes(c));
 
+// Part J (127(3)(b) incentive claims) was removed by product decision (14
+// Jul 2026) — out of scope going forward. The two categories that used to
+// live here ("J1 — Secretarial & Tax Filing Fee", "J1 — Franchise Fee
+// (Pre-Commencement)") no longer exist on the backend; a company-secretary/
+// tax-agent invoice now reclassifies to the ordinary
+// "Q3 — Professional & Legal Fees" category instead. See form-b-roadmap.md.
+
 // For the reclassify modal — grouped for the dropdown (friendly labels, no Q-prefix)
 const RECLASSIFY_GROUPS = [
   { label: 'Business Income',                 cats: Q1_INCOME_CATEGORIES },
   { label: 'Personal Income',                 cats: Q2_CATEGORIES },
   { label: 'Business Expense',                cats: Q3_EXPENSE_CATEGORIES },
   { label: 'Personal Relief',                 cats: Q4_RELIEF_CATEGORIES },
+  { label: 'Donations (Part G)',              cats: Q4_DONATION_CATEGORIES },
   { label: 'Personal Expense (Non-deductible)', cats: Q4_NON_DED_CATEGORIES },
   { label: 'Reference & Reconciliation',      cats: REFERENCE_CATEGORIES },
 ];
@@ -134,6 +168,7 @@ const STATUS_META = {
   deductible:     { label: 'Deductible',      color: '#0D9488', bg: '#ECFDF5', dot: '#0D9488' },
   mixed:          { label: 'Needs Review',    color: '#B45309', bg: '#FFFBEB', dot: '#F59E0B' },
   relief:         { label: 'Relief',          color: '#7C3AED', bg: '#F5F3FF', dot: '#7C3AED' },
+  donation:       { label: 'Donation',        color: '#0F6E56', bg: '#E1F5EE', dot: '#0F6E56' },
   non_deductible: { label: 'Personal',        color: '#DC2626', bg: '#FEF2F2', dot: '#DC2626' },
   capital:        { label: 'Capital Asset',   color: '#9A3412', bg: '#FFEDD5', dot: '#F97316' },
   not_applicable: { label: 'Not Applicable',  color: '#64748B', bg: '#F1F5F9', dot: '#94A3B8' },
@@ -342,19 +377,19 @@ function UploadProgressEntry({ entry }) {
       <td className="px-3 py-3" colSpan={3}>
         <div className="flex items-center justify-end gap-2">
           {(phase === 'uploading' || phase === 'processing') && (
-            <span className="inline-flex items-center gap-1 text-[10px]" style={{ color: barColor }}>
+            <span className="inline-flex items-center gap-1 text-[11px]" style={{ color: barColor }}>
               <span className="h-1.5 w-1.5 rounded-full animate-pulse" style={{ background: barColor }} />
               {phaseLabel}
             </span>
           )}
           {phase === 'done' && (
-            <span className="inline-flex items-center gap-1 text-[10px] text-primary font-semibold">
+            <span className="inline-flex items-center gap-1 text-[11px] text-primary font-semibold">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
               Classified
             </span>
           )}
           {phase === 'failed' && (
-            <span className="text-[10px] text-critical font-semibold">Failed — check file</span>
+            <span className="text-[1px] text-critical font-semibold">Failed — check file</span>
           )}
         </div>
       </td>
@@ -615,11 +650,15 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onUnarchive, o
                 Re-classify
               </button>
             )}
-            {doc.status !== 'archived' && !isPipeline && (
+            {/* Archive is unavailable while a document still needs review —
+                use doc.needsReview (the aggregation-gate signal), not the
+                narrower isMixed/taxStatus check, so this always matches the
+                backend's own guard on the archive endpoint exactly. */}
+            {doc.status !== 'archived' && !isPipeline && !doc.needsReview && (
               <button onClick={() => { handleClose(); onArchive(doc.id); }}
                 className="rounded-lg border border-border bg-white px-3 py-2 text-sm font-semibold text-muted hover:border-muted transition-colors duration-150"
                 title="Archive">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>
                 </svg>
               </button>
@@ -629,7 +668,7 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onUnarchive, o
                 className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-sm font-semibold text-muted hover:border-primary hover:text-primary transition-colors duration-150"
                 title="Unarchive — move back to the main document list">
                 <span className="inline-flex items-center gap-1.5">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="14" y1="15" x2="10" y2="15"/><polyline points="9 12 12 9 15 12"/><line x1="12" y1="9" x2="12" y2="16"/>
                   </svg>
                   Unarchive
@@ -639,7 +678,7 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onUnarchive, o
             <button onClick={() => { handleClose(); onDelete(doc.id); }}
               className="rounded-lg border border-border bg-white px-3 py-2 text-sm font-semibold text-critical/60 hover:border-critical hover:text-critical transition-colors duration-150"
               title="Delete">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
               </svg>
             </button>
@@ -716,6 +755,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
     if (Q1_CATEGORIES.includes(cat) || Q2_CATEGORIES.includes(cat)) return 'income';
     if (['Q3 — Capital Assets & Equipment', 'Q3 — Capital Renovation & Fit-Out'].includes(cat)) return 'capital';
     if (cat === 'Q3 — CP500 / Tax Installment') return 'not_applicable';
+    if (Q4_DONATION_CATEGORIES.includes(cat)) return 'donation';
     if (Q4_RELIEF_CATEGORIES.includes(cat)) return 'relief';
     if (Q4_NON_DED_CATEGORIES.includes(cat)) return 'non_deductible';
     if (Q3_CATEGORIES.includes(cat)) return 'deductible'; // incl. apportioned — % handled via deductible_pct
@@ -1325,6 +1365,12 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
   // "Needs review" now uses the same signal as the overview banner — the
   // backend's aggregation gate (surfaced via mapApiDoc's `needsReview`) — so the
   // two counts describe the same thing rather than diverging.
+  //
+  // A document can no longer BE archived while still unresolved (the backend
+  // rejects it — see archive_document's guard), so `d.status !== 'archived'`
+  // here is now just defensive belt-and-braces, not load-bearing: it should
+  // be a no-op in practice, since an archived document should never have
+  // needsReview === true in the first place.
   const mixed = completedDocs.filter(d => d.needsReview && d.status !== 'archived');
 
   // Documents still processing/pending that AREN'T represented by a live upload
@@ -1363,6 +1409,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
     { value: 'Q2',   label: 'Personal Income' },
     { value: 'Q3',   label: 'Business Expense' },
     { value: 'Q4R',  label: 'Personal Relief' },
+    { value: 'Q4D',  label: 'Donations (Part G)' },
     { value: 'Q4P',  label: 'Personal Expense (Non-deductible)' },
     { value: 'REF',  label: 'Reference & Reconciliation' },
   ];
@@ -1384,6 +1431,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
       if (categoryFilter === 'Q2'  && !cat.startsWith('Q2'))  return false;
       if (categoryFilter === 'Q3'  && (!cat.startsWith('Q3') || isReference)) return false;
       if (categoryFilter === 'Q4R' && !(cat.startsWith('Q4') && Q4_RELIEF_CATEGORIES.includes(cat))) return false;
+      if (categoryFilter === 'Q4D' && !(cat.startsWith('Q4') && Q4_DONATION_CATEGORIES.includes(cat))) return false;
       if (categoryFilter === 'Q4P' && !(cat.startsWith('Q4') && Q4_NON_DED_CATEGORIES.includes(cat))) return false;
       if (categoryFilter === 'REF' && !isReference) return false;
     }
@@ -1497,8 +1545,8 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
             </svg>
           </div>
           <p className="text-sm font-medium text-headings">Drop files here or <span className="text-primary">browse</span></p>
-          <p className="mt-0.5 text-[10px] text-muted">PDF, JPG, PNG, XLSX, CSV · Max 20 MB per file · Up to 10 files at once</p>
-          <p className="mt-2 text-[11px] text-[#94A3B8]">
+          <p className="mt-0.5 text-[11px] text-muted">PDF, JPG, PNG, XLSX, CSV · Max 20 MB per file · Up to 10 files at once</p>
+          <p className="mt-2 text-[12px] text-[#94A3B8]">
             No file?{' '}
             <button onClick={e => { e.stopPropagation(); setManualUploadOpen(true); }}
               className="text-primary font-semibold hover:text-primary-hover underline transition-colors">
@@ -1623,24 +1671,26 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
                     </td>
                     <td className="px-3 py-2.5 text-xs text-muted whitespace-nowrap">{doc.dateDisplay}</td>
                     <td className="py-2.5 pr-4">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex items-center justify-end gap-1.5">
                         {/* Retry — only for failed docs */}
                         {doc.status === 'failed' && (
                           <button
                             onClick={e => { e.stopPropagation(); onRetry(doc); }}
-                            className="text-[#CBD5E1] hover:text-[#0369A1] transition-colors"
+                            className="p-1.5 rounded-md text-[#CBD5E1] hover:text-[#0369A1] hover:bg-[#F0F9FF] transition-colors"
                             title="Retry classification">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
                               <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
                             </svg>
                           </button>
                         )}
-                        {/* Archive */}
-                        {doc.status !== 'archived' && (
+                        {/* Archive — hidden while the document still needs
+                            review; matches the detail panel's guard and the
+                            backend's own rejection on the archive endpoint. */}
+                        {doc.status !== 'archived' && !doc.needsReview && (
                           <button onClick={e => { e.stopPropagation(); onArchive(doc.id); }}
-                            className="text-[#CBD5E1] hover:text-muted transition-colors" title="Archive">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            className="p-1.5 rounded-md text-[#CBD5E1] hover:text-muted hover:bg-[#F8FAFC] transition-colors" title="Archive">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>
                             </svg>
                           </button>
@@ -1651,16 +1701,16 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
                             the main list (status: 'completed'). */}
                         {doc.status === 'archived' && (
                           <button onClick={e => { e.stopPropagation(); onUnarchive(doc.id); }}
-                            className="text-[#CBD5E1] hover:text-primary transition-colors" title="Unarchive — move back to the main list">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            className="p-1.5 rounded-md text-[#CBD5E1] hover:text-primary hover:bg-primary-tint/40 transition-colors" title="Unarchive — move back to the main list">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="14" y1="15" x2="10" y2="15"/><polyline points="9 12 12 9 15 12"/><line x1="12" y1="9" x2="12" y2="16"/>
                             </svg>
                           </button>
                         )}
                         {/* Delete */}
                         <button onClick={e => { e.stopPropagation(); onRemove(doc.id); }}
-                          className="text-[#CBD5E1] hover:text-critical transition-colors" title="Delete">
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          className="p-1.5 rounded-md text-[#CBD5E1] hover:text-critical hover:bg-critical-bg/40 transition-colors" title="Delete">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
                           </svg>
                         </button>
