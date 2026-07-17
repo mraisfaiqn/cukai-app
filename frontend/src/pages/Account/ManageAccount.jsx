@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import ManageProfile from './ManageProfile';
-import { getPersonalDetails, updateProfile, getAllEntities, createEntity, updateEntity, deleteEntity, getTaxProfileSummary } from '../../services/api';
+import { getPersonalDetails, updateProfile, getAllEntities, createEntity, updateEntity, deleteEntity, getTaxProfileSummary, getChildren, createChild, updateChild, deleteChild } from '../../services/api';
 import { currentFilingYear } from '../../data/formB';
 
 /**
@@ -25,6 +25,12 @@ function remapEntityFromApi(e) {
     netProfitLoss:    e.netProfitLoss    != null ? String(e.netProfitLoss)    : '',
     totalAssets:      e.totalAssets      != null ? String(e.totalAssets)      : '',
     totalLiabilities: e.totalLiabilities != null ? String(e.totalLiabilities) : '',
+    // Opening carry-forward balances (Phase 3) — seed values for the
+    // multi-year business-loss (B5/M1) and capital-allowance (M2) engine in
+    // carryforward.py; see models.py's Entity docstring.
+    openingUnabsorbedBusinessLossMyr:     e.openingUnabsorbedBusinessLossMyr     != null ? String(e.openingUnabsorbedBusinessLossMyr)     : '',
+    openingUnabsorbedCapitalAllowanceMyr: e.openingUnabsorbedCapitalAllowanceMyr != null ? String(e.openingUnabsorbedCapitalAllowanceMyr) : '',
+    openingBalanceYear:                   e.openingBalanceYear                  != null ? String(e.openingBalanceYear)                    : '',
   };
 }
 
@@ -49,12 +55,16 @@ function remapEntityToApi(e) {
     netProfitLoss:    parseFloat(e.netProfitLoss)    || null,
     totalAssets:      parseFloat(e.totalAssets)      || null,
     totalLiabilities: parseFloat(e.totalLiabilities) || null,
+    openingUnabsorbedBusinessLossMyr:     e.openingUnabsorbedBusinessLossMyr     !== '' ? parseFloat(e.openingUnabsorbedBusinessLossMyr)     ?? null : null,
+    openingUnabsorbedCapitalAllowanceMyr: e.openingUnabsorbedCapitalAllowanceMyr !== '' ? parseFloat(e.openingUnabsorbedCapitalAllowanceMyr) ?? null : null,
+    openingBalanceYear:                   e.openingBalanceYear                  !== '' ? parseInt(e.openingBalanceYear, 10)                  || null : null,
   };
 }
 
 function ManageAccount() {
   const [profileData, setProfileData] = useState(null);
   const [entityData,  setEntityData]  = useState([]);
+  const [childrenData, setChildrenData] = useState([]);
   const [loadError,   setLoadError]   = useState(null);
 
   // Active entity is stored in localStorage so Overview and document pages can scope their data
@@ -62,30 +72,48 @@ function ManageAccount() {
     () => parseInt(localStorage.getItem('activeEntityId') || '0') || null
   );
 
-  // Document-derived tax profile summary for the Generate Forms panel — same
-  // endpoint Overview.jsx uses, scoped to the currently active entity and the
-  // current filing YA. Re-fetches whenever the active entity changes so the
-  // Form B draft updates when the user switches businesses.
+  // Document-derived tax profile summary for the Generate Forms panel. Unlike
+  // Overview.jsx's entity-scoped summary, Form B is a PERSONAL return and must
+  // aggregate every business the person owns — passing entityId=null here
+  // (rather than activeEntityId) gets the all-entities aggregate from the same
+  // backend endpoint. Previously this was scoped to activeEntityId, which
+  // silently excluded every OTHER business a multi-entity user owns from B1
+  // and the rest of Part B — a real correctness bug, not just a display gap.
+  // No longer needs to re-fetch when the active entity changes, since the
+  // aggregate doesn't depend on which entity is "active" in the UI — only on
+  // the year and the logged-in user.
   const [taxSummary, setTaxSummary] = useState(null);
   const [taxSummaryLoading, setTaxSummaryLoading] = useState(true);
 
-  useEffect(() => {
+  // Bug fix (14 Jul 2026): this used to be an inline effect that only ever
+  // ran once on mount — meaning the Generate Forms panel showed STALE data
+  // after any edit that affects the tax computation (adding/removing a
+  // child, saving the personal profile, saving/creating/deleting an
+  // entity), and only refreshed if the user navigated away and back
+  // (remounting the component re-runs the mount effect). Extracted into its
+  // own function so every mutating handler below can call it directly after
+  // a successful save, instead of only ever running once.
+  const refetchTaxSummary = async () => {
     const userId = localStorage.getItem('userId');
-    if (!userId || !activeEntityId) {
+    if (!userId) {
       setTaxSummaryLoading(false);
       return;
     }
-    let cancelled = false;
     setTaxSummaryLoading(true);
-    getTaxProfileSummary(currentFilingYear(), userId, activeEntityId)
-      .then((data) => { if (!cancelled) setTaxSummary(data); })
-      .catch((err) => {
-        console.error('Error fetching tax profile summary:', err);
-        if (!cancelled) setTaxSummary(null);
-      })
-      .finally(() => { if (!cancelled) setTaxSummaryLoading(false); });
-    return () => { cancelled = true; };
-  }, [activeEntityId]);
+    try {
+      const data = await getTaxProfileSummary(currentFilingYear(), userId, null);
+      setTaxSummary(data);
+    } catch (err) {
+      console.error('Error fetching tax profile summary:', err);
+      setTaxSummary(null);
+    } finally {
+      setTaxSummaryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refetchTaxSummary();
+  }, []);
 
   useEffect(() => {
     const load = async () => {
@@ -113,7 +141,11 @@ function ManageAccount() {
             spouseDob:                    data.spouseDob                    || '',
             assessmentType:               data.assessmentType               || 'separate',
             numberOfChildren:             String(data.numberOfChildren      || 0),
-            hasDisabledDependents:        data.hasDisabledDependents        || false,
+            isDisabledSelf:               data.isDisabledSelf               || false,
+            spouseIsDisabled:             data.spouseIsDisabled             || false,
+            alimonyPaidMyr:               data.alimonyPaidMyr               != null ? String(data.alimonyPaidMyr) : '',
+            spouseTotalIncomeMyr:         data.spouseTotalIncomeMyr         != null ? String(data.spouseTotalIncomeMyr) : '',
+            passportNoLhdnm:              data.passportNoLhdnm              || '',
             phone:                        data.phone                        || '',
             email:                        data.email                        || '',
             correspondenceAddress:        data.correspondenceAddress        || '',
@@ -165,6 +197,14 @@ function ManageAccount() {
           console.warn('Could not load entities:', entityErr);
         }
 
+        // Fetch children records (Phase 3 — H16 relief tiering)
+        try {
+          const children = await getChildren(userId);
+          if (children) setChildrenData(children);
+        } catch (childErr) {
+          console.warn('Could not load children records:', childErr);
+        }
+
       } catch (err) {
         console.error('Error loading account data:', err);
         setLoadError('Could not load your profile. Please refresh and try again.');
@@ -196,7 +236,11 @@ function ManageAccount() {
           spouseDob:                    updatedProfile.spouseDob         || null,
           assessmentType:               updatedProfile.assessmentType,
           numberOfChildren:             parseInt(updatedProfile.numberOfChildren || 0),
-          hasDisabledDependents:        updatedProfile.hasDisabledDependents,
+          isDisabledSelf:               updatedProfile.isDisabledSelf,
+          spouseIsDisabled:             updatedProfile.spouseIsDisabled,
+          alimonyPaidMyr:               updatedProfile.alimonyPaidMyr !== '' ? parseFloat(updatedProfile.alimonyPaidMyr) || null : null,
+          spouseTotalIncomeMyr:         updatedProfile.spouseTotalIncomeMyr !== '' ? parseFloat(updatedProfile.spouseTotalIncomeMyr) || null : null,
+          passportNoLhdnm:              updatedProfile.passportNoLhdnm,
           phone:                        updatedProfile.phone,
           correspondenceAddress:        updatedProfile.correspondenceAddress,
           correspondencePostcode:       updatedProfile.correspondencePostcode,
@@ -226,6 +270,11 @@ function ManageAccount() {
         setProfileData(updatedProfile);
         // Keep fullName in localStorage fresh for Permissions "You" row
         localStorage.setItem('userFullName', saved.fullName || updatedProfile.fullName);
+        // Bug fix (14 Jul 2026): profile changes (disability, marital status,
+        // alimony, spouse income, etc.) all affect the tax computation —
+        // refresh so the Generate Forms panel reflects them immediately
+        // instead of only after navigating away and back.
+        refetchTaxSummary();
         return true;
       }
       return false;
@@ -245,6 +294,7 @@ function ManageAccount() {
       if (created) {
         const newEntity = remapEntityFromApi(created);
         setEntityData((prev) => [...prev, newEntity]);
+        refetchTaxSummary(); // new entity's income/opening balances affect the aggregate
         return newEntity;
       }
       return false;
@@ -263,10 +313,13 @@ function ManageAccount() {
   /** PUT edits to an existing entity and update local state on success. */
   const handleSaveEntity = async (updatedEntity) => {
     try {
-      const saved = await updateEntity(updatedEntity.id, remapEntityToApi(updatedEntity));
+      const userId = localStorage.getItem('userId');
+      if (!userId) return false;
+      const saved = await updateEntity(updatedEntity.id, userId, remapEntityToApi(updatedEntity));
       if (saved) {
         const remapped = remapEntityFromApi(saved);
         setEntityData((prev) => prev.map((e) => e.id === remapped.id ? remapped : e));
+        refetchTaxSummary(); // opening balances / financial figures affect the aggregate
         return true;
       }
       return false;
@@ -279,7 +332,9 @@ function ManageAccount() {
   /** DELETE an entity on the backend and remove it from local state on success. */
   const handleDeleteEntity = async (entityId) => {
     try {
-      const res = await deleteEntity(entityId);
+      const userId = localStorage.getItem('userId');
+      if (!userId) return false;
+      const res = await deleteEntity(entityId, userId);
       if (res && res.deleted) {
         const remaining = entityData.filter((e) => e.id !== entityId);
         setEntityData(remaining);
@@ -291,6 +346,7 @@ function ManageAccount() {
           setActiveEntityId(remaining[0].id);
           window.dispatchEvent(new CustomEvent('entitySwitch', { detail: { entityId: remaining[0].id } }));
         }
+        refetchTaxSummary(); // removing an entity's documents/assets affects the aggregate
         return true;
       }
       return false;
@@ -310,12 +366,66 @@ function ManageAccount() {
     window.dispatchEvent(new CustomEvent('entitySwitch', { detail: { entityId } }));
   };
 
+  /** POST a new child record and update local state on success. */
+  const handleCreateChild = async (draft) => {
+    try {
+      const userId = localStorage.getItem('userId');
+      if (!userId) return false;
+      const created = await createChild(userId, draft);
+      if (created) {
+        setChildrenData((prev) => [...prev, created]);
+        refetchTaxSummary(); // H16 relief depends on child records — refresh immediately
+        return created;
+      }
+      return false;
+    } catch (err) {
+      console.error('Error creating child record:', err);
+      return false;
+    }
+  };
+
+  /** PUT edits to an existing child record and update local state on success. */
+  const handleSaveChild = async (childId, draft) => {
+    try {
+      const userId = localStorage.getItem('userId');
+      if (!userId) return false;
+      const saved = await updateChild(childId, userId, draft);
+      if (saved) {
+        setChildrenData((prev) => prev.map((c) => (c.id === saved.id ? saved : c)));
+        refetchTaxSummary(); // H16 tiering (age/study/disability) may have changed
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error('Error saving child record:', err);
+      return false;
+    }
+  };
+
+  /** DELETE a child record on the backend and remove it from local state on success. */
+  const handleDeleteChild = async (childId) => {
+    try {
+      const userId = localStorage.getItem('userId');
+      if (!userId) return false;
+      const res = await deleteChild(childId, userId);
+      if (res && res.deleted) {
+        setChildrenData((prev) => prev.filter((c) => c.id !== childId));
+        refetchTaxSummary(); // removed child's H16 contribution must disappear immediately
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error('Error deleting child record:', err);
+      return false;
+    }
+  };
+
   return (
     <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body flex flex-col">
       <div className="mx-auto w-full max-w-7xl px-6 py-4 flex flex-col flex-1 min-h-0 gap-3">
 
         <div className="shrink-0">
-          <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Account Settings</h1>
+          <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Manage Account</h1>
           <p className="text-xs text-muted mt-1">Manage your personal details and business entities.</p>
         </div>
 
@@ -337,6 +447,10 @@ function ManageAccount() {
             onSwitchEntity={handleSwitchEntity}
             taxSummary={taxSummary}
             taxSummaryLoading={taxSummaryLoading}
+            initialChildren={childrenData}
+            onCreateChild={handleCreateChild}
+            onSaveChild={handleSaveChild}
+            onDeleteChild={handleDeleteChild}
           />
         </div>
       </div>

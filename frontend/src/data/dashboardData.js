@@ -36,9 +36,18 @@ export const stats = [
 ];
 
 // "Unclaimed Savings Opportunities" list
+// Note: a "Double deduction (staff training) — S. 34B ITA" entry was removed
+// from this list. It was factually wrong on two counts: s.34B is actually
+// cash contributions to an approved R&D institute, not staff training; and
+// the claim codes that ARE about employee-training double/further
+// deductions (203, 303, 218, 224 on LHDN's Appendix D) are either
+// Company-only or lapsed years ago — there is currently no active
+// sole-proprietor staff-training double deduction to advertise here. Part J
+// (127(3)(b) incentive claims) — which briefly supported two other claim
+// codes (157, 148) — has since been removed entirely by product decision
+// (14 Jul 2026) and is now out of scope; see form-b-roadmap.md.
 export const opportunities = [
   { id: 'capital-allowance', title: 'Capital allowance (RM45k cutting machine)', provision: 'Sch. 3 ITA', amount: '+RM 8,160' },
-  { id: 'double-deduction', title: 'Double deduction (staff training)', provision: 'S. 34B ITA', amount: '+RM 6,200' },
   { id: 'sme-preferential', title: 'SME preferential rate', provision: 'Sch. 1 ITA', amount: '+RM 5,250' },
 ];
 
