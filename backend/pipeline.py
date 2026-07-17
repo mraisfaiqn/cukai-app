@@ -15,7 +15,7 @@ from typing import Literal
 import pandas as pd
 from sqlalchemy.orm import Session
 from models import Document, FormBProfile, CapitalAsset, BreastfeedingEquipmentClaim, FinancialStatementProfile, Entity, CP500Record, OneTimeReliefClaim
-from utils import parse_amount
+from utils import parse_amount, extract_llm_text
 from category_registry import CATEGORY_REGISTRY, CATEGORY_BUCKET, CATEGORY_TAX_TREATMENT
 # Aliased (not imported under the same names) — pipeline.py's OWN
 # derive_document_role/derive_aggregation_state, defined further down in
