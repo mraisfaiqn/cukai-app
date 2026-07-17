@@ -40,6 +40,46 @@ export const updateProfile = async (personId, payload) => {
   return data;
 };
 
+// ── Children (Form B H16 relief records) ──────────────────────────────────────
+// Phase 3 (14 Jul 2026): per-child records driving real H16a/b/c tiering,
+// replacing the flat numberOfChildren count. See models.py's Child model
+// and child_relief.py for the computation these records feed.
+
+/** Fetch every child record for a person. */
+export const getChildren = async (personId) => {
+  const { data } = await api.get(`/children/${personId}`);
+  return data;
+};
+
+/**
+ * Add a new child record. `payload` should include: name, dateOfBirth
+ * (YYYY-MM-DD, required), and optionally identificationNo, isDisabled,
+ * isFullTimeStudent, isHigherEducation, eligibilityPct (50 or 100).
+ */
+export const createChild = async (personId, payload) => {
+  const { data } = await api.post(`/children/${personId}`, payload);
+  return data;
+};
+
+/**
+ * Update an existing child record. `personId` is required so the backend
+ * can verify this child actually belongs to the caller before editing it —
+ * see main.py's _scoped_child_or_404. Returns the updated Child record.
+ */
+export const updateChild = async (childId, personId, payload) => {
+  const { data } = await api.put(`/children/${childId}`, payload, { params: { person_id: personId } });
+  return data;
+};
+
+/**
+ * Remove a child record. `personId` is required for the same ownership-
+ * scoping reason as updateChild. Returns { deleted: true, id }.
+ */
+export const deleteChild = async (childId, personId) => {
+  const { data } = await api.delete(`/children/${childId}`, { params: { person_id: personId } });
+  return data;
+};
+
 // ── Entities ─────────────────────────────────────────────────────────────────
 
 /**
@@ -62,11 +102,13 @@ export const createEntity = async (personId, payload) => {
 };
 
 /**
- * Persist edits to an existing entity.
+ * Persist edits to an existing entity. `personId` is required so the
+ * backend can verify this entity actually belongs to the caller before
+ * editing it — see main.py's _scoped_entity_or_404.
  * Returns the updated Entity record.
  */
-export const updateEntity = async (entityId, payload) => {
-  const { data } = await api.put(`/entities/${entityId}`, payload);
+export const updateEntity = async (entityId, personId, payload) => {
+  const { data } = await api.put(`/entities/${entityId}`, payload, { params: { person_id: personId } });
   return data;
 };
 
@@ -81,11 +123,27 @@ export const getEntityById = async (entityId, userId = null) => {
 };
 
 /**
- * Permanently delete an entity.
+ * Fetch a SUGGESTED opening carry-forward balance for an entity, derived
+ * from a prior filed Form B (year targetYear - 1) the user has already
+ * uploaded and had extracted — if one exists. Never writes anything; the
+ * caller must still go through the normal updateEntity() save flow to
+ * apply it, same "Suggested Match, not auto-applied" pattern as the
+ * invoice-matching UI. Returns { available: false } when no prior filing
+ * exists (or it has no carry-forward figures) for that year.
+ */
+export const getOpeningBalanceSuggestion = async (entityId, targetYear, userId = null) => {
+  const params = { target_year: targetYear, ...(userId ? { user_id: userId } : {}) };
+  const { data } = await api.get(`/entities/${entityId}/opening-balance-suggestion`, { params });
+  return data;
+};
+
+/**
+ * Permanently delete an entity. `personId` is required for the same
+ * ownership-scoping reason as updateEntity.
  * Returns { deleted: true, id }.
  */
-export const deleteEntity = async (entityId) => {
-  const { data } = await api.delete(`/entities/${entityId}`);
+export const deleteEntity = async (entityId, personId) => {
+  const { data } = await api.delete(`/entities/${entityId}`, { params: { person_id: personId } });
   return data;
 };
 
@@ -190,6 +248,15 @@ export const archiveDocument = async (docId, userId = null, entityId = null) => 
   if (userId)   params.user_id   = userId;
   if (entityId) params.entity_id = entityId;
   const { data } = await api.patch(`/api/documents/${docId}/archive`, {}, { params });
+  return data;
+};
+
+/** Restore an archived document back to the main list (status: 'completed'). */
+export const unarchiveDocument = async (docId, userId = null, entityId = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.patch(`/api/documents/${docId}/unarchive`, {}, { params });
   return data;
 };
 

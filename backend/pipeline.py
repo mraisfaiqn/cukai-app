@@ -13,7 +13,7 @@ from typing import Literal
 
 import pandas as pd
 from sqlalchemy.orm import Session
-from models import Document, FormBProfile, CapitalAsset, Entity
+from models import Document, FormBProfile, CapitalAsset, BreastfeedingEquipmentClaim, FinancialStatementProfile, Entity, CP500Record, OneTimeReliefClaim
 from utils import parse_amount
 from capital_allowance import resolve_capital_allowance_rates
 
@@ -81,6 +81,12 @@ Q1_REFERENCE_CATEGORIES = [
   "Q1 — Financial Statements (P&L)",       # profit & loss / income statement
   "Q1 — Financial Statements (BS)",        # balance sheet / statement of financial position
   "Q1 — Filed Form B (Prior Year)",        # previously submitted Form B — YA baseline & carry-forward
+  # Part K: non-employment income of a PRECEDING YA, voluntarily disclosed
+  # now — belongs here, not in business-income, for the same reason a
+  # prior Form B does: it's disclosure/reconciliation content about a
+  # DIFFERENT year, not this year's own income to sum into B1/aggregate
+  # income. Previously unmodeled entirely (16 Jul 2026 fix).
+  "Q1 — Voluntary Disclosure (Prior Year Income)",
 ]
 
 # ── Q2: Personal Income ───────────────────────────────────────────────────────
@@ -119,7 +125,13 @@ Q3_BUSINESS_EXPENSE_CATEGORIES = [
   "Q3 — Business Loan Interest",           # interest/profit portion of business loans only
   "Q3 — Revenue Repairs & Maintenance",    # restores asset to original condition; fully deductible
   "Q3 — CP58 Agent Commission",            # commissions >RM5,000 to agents/dealers (s.83A)
-  "Q3 — CP500 / Tax Installment",          # bimonthly advance tax (s.107B); not a deduction — tracks tax paid
+  # Was a single "Q3 — CP500 / Tax Installment" category (split 15 Jul 2026):
+  # conflating LHDN's instalment NOTICE (a schedule of what's due) with a
+  # PAYMENT RECEIPT (proof an instalment was actually paid) meant both were
+  # summed together into B33 — silently counting scheduled-but-unpaid
+  # amounts as if paid. See cp500.py and SCHEDULE_SOURCE_CATEGORIES below.
+  "Q3 — CP500 Instalment Notice",          # LHDN's schedule of what's due — NEVER counts as paid
+  "Q3 — CP500 Payment Receipt",            # proof an instalment was actually paid — feeds B33
 
   # ── Partially deductible / subject to caps (s.39(1)) ──
   "Q3 — Client Entertainment (50% cap)",   # client meals, events; 50% rule under s.39(1)(l)
@@ -139,16 +151,128 @@ Q3_BUSINESS_EXPENSE_CATEGORIES = [
 Q4_PERSONAL_RELIEF_CATEGORIES = [
   "Q4 — Life Insurance & Takaful Relief",  # life insurance / takaful keluarga premiums (up to RM3k)
   "Q4 — EPF Personal Contribution",        # employee-share EPF (up to RM4k relief)
-  "Q4 — Medical & Parental Care",          # parental medical, full-body check-up, special needs
-  "Q4 — Lifestyle Relief",                 # books, internet, gym, personal device (up to RM2.5k)
-  "Q4 — Education Relief",                 # proprietor's own further education fees (up to RM7k)
-  "Q4 — Child Relief",                     # school fees for children, SSPN, child care (various caps)
-  "Q4 — Medical Equipment Relief",         # disabled aids, medical devices for self/dependant
-  "Q4 — Private Retirement Scheme (PRS)",  # PRS contributions (up to RM3k)
-  "Q4 — SOCSO Personal Contribution",      # employee-share SOCSO (up to RM250)
-  "Q4 — Domestic Tourism Relief",          # qualifying hotel stays & tourism packages (up to RM1k)
-  "Q4 — EV Charging Equipment",            # EV charger purchase & installation (up to RM2.5k)
+
+  # ── Medical & parental care split (Phase 2) ──
+  # Previously a single "Medical & Parental Care" category conflated two
+  # different H-codes with two different caps (H2 parent-only, RM8k; H6/H7/H8
+  # self/spouse/child, RM10k combined). Splitting so each can be capped
+  # correctly instead of guessing which sub-cap applies.
+  "Q4 — Parent Medical Care",              # parent medical/dental/special needs/carer (H2(i), up to RM8k combined with H2(ii))
+  "Q4 — Parent Medical Care (Complete Examination)", # H2(ii) — own RM1k sub-cap within the RM8k H2 pool
+
+  # ── H6/H7/H8 granularity split (this pass, 14 Jul 2026) ──
+  # Previously ONE combined "Q4 — Self/Spouse/Child Medical" category, which
+  # correctly enforced the outer RM10,000 pool but couldn't show — or
+  # individually cap — any of the sub-lines within it. Split into the 9
+  # categories LHDN's own form actually has, matching its real nested-cap
+  # structure (see RELIEF_CAP_GROUPS in main.py):
+  #   H6(i)/(ii) share the RM10k pool with no individual sub-cap of their own
+  #   H6(iii) vaccination and H6(iv) dental EACH have their own RM1,000 cap
+  #   H7(i)+(ii)+(iii) TOGETHER share one RM1,000 sub-pool
+  #   H8(i)+(ii) TOGETHER share one RM4,000 sub-pool
+  #   ...and the combined total of all nine is still capped at RM10,000.
+  "Q4 — Serious Disease Treatment",        # H6(i) — self/spouse/child, part of RM10k pool, no own sub-cap
+  "Q4 — Fertility Treatment",              # H6(ii) — self/spouse only, part of RM10k pool, no own sub-cap
+  "Q4 — Vaccination",                      # H6(iii) — self/spouse/child, own RM1k sub-cap
+  "Q4 — Dental Examination & Treatment",   # H6(iv) — self/spouse/child, own RM1k sub-cap
+  "Q4 — Complete Medical Examination",     # H7(i) — shares ONE RM1k pool with H7(ii)/H7(iii)
+  "Q4 — COVID-19 Detection Test",          # H7(ii) — shares ONE RM1k pool with H7(i)/H7(iii)
+  "Q4 — Mental Health Examination",        # H7(iii) — shares ONE RM1k pool with H7(i)/H7(ii)
+  "Q4 — Learning Disability Diagnosis",    # H8(i) — child ≤18, shares ONE RM4k pool with H8(ii)
+  "Q4 — Learning Disability Early Intervention", # H8(ii) — child ≤18, shares ONE RM4k pool with H8(i)
+
+  "Q4 — Books & Publications",             # H9(i), up to RM2.5k combined with H9(ii)/(iii)/(iv)
+  "Q4 — Personal Computer & Devices",       # H9(ii), same RM2.5k combined pool
+  "Q4 — Internet Subscription",             # H9(iii), same RM2.5k combined pool
+  "Q4 — Personal Enrichment Course",        # H9(iv), same RM2.5k combined pool
+
+  # ── Education relief split (Phase 2) ──
+  # H5's RM7,000 cap has an inner RM2,000 sub-cap specifically on H5(iii)
+  # upskilling/self-enhancement courses — these need to be distinguishable
+  # from ordinary further-education fees to enforce that sub-cap correctly.
+  "Q4 — Education Relief (Non-Postgraduate)", # H5(i), up to RM7k combined with H5(ii)/(iii)
+  "Q4 — Education Relief (Postgraduate)",     # H5(ii), same RM7k combined pool
+  "Q4 — Upskilling / Self-Enhancement Course", # H5(iii) — non-accredited skills/hobby/language course (sub-capped at RM2k within the RM7k H5 pool)
+
+  # ── Child relief split (Phase 2) ──
+  # The old "Child Relief" category conflated three genuinely different
+  # things: SSPN deposits (H13), registered childcare/kindergarten fees for a
+  # child aged 6 and under (H12), and the fixed per-child H16 relief (which is
+  # NOT receipt-driven at all — it depends on each child's age/study/
+  # disability status, tracked on the profile, not on documents). Only H12
+  # and H13 are genuinely document-derived; H16 is intentionally absent here.
+  "Q4 — Childcare Fees",                   # registered childcare centre / kindergarten fee, child ≤6 (H12, up to RM3k)
+  "Q4 — SSPN Net Deposit",                 # SSPN deposits net of withdrawals in the basis year (H13, up to RM8k)
+
+  "Q4 — Medical Equipment Relief",         # disabled aids, medical devices for self/dependant (H3, up to RM6k)
+  "Q4 — Private Retirement Scheme (PRS)",  # PRS contributions (up to RM3k, H18)
+  "Q4 — SOCSO Personal Contribution",      # employee-share SOCSO (up to RM350, H20)
+  "Q4 — Domestic Tourism Relief",          # qualifying hotel stays & tourism packages (up to RM1k) — lapsed on current form, kept for older YAs
+  "Q4 — Tourist Attraction & Cultural Programme",  # Finance Act 2025 s.6(a)(v): entrance fees to tourist attractions / cultural & arts programmes (up to RM1k) — YA2026 ONLY, a genuinely new and different relief from Domestic Tourism Relief above, not a revival of it
+  "Q4 — EV Charging Equipment",            # EV charger purchase & installation (up to RM2.5k, H21) — shared pool YA2026-27, see below
+  "Q4 — Food Waste Compost Machine",       # Finance Act 2025: claim once across YA2025-2027, shares RM2.5k pool with EV charging etc. from YA2026
+  "Q4 — Food Waste Grinder Machine",       # Finance Act 2025: claim once across YA2026-2027, same shared pool
+  "Q4 — Home CCTV",                        # Finance Act 2025: claim once across YA2026-2027, same shared pool
+  "Q4 — Education & Medical Insurance",    # education/medical insurance premiums for self/spouse/child (H19, up to RM3k)
+  "Q4 — Sports Equipment",                 # H10(i), up to RM1k combined with H10(ii)/(iii)/(iv)
+  "Q4 — Sports Facility Fee",              # H10(ii), same RM1k combined pool
+  "Q4 — Sports Competition Fee",            # H10(iii), same RM1k combined pool
+  "Q4 — Gym & Sports Training",             # H10(iv), same RM1k combined pool
+
+  # ── Donations / Gifts / Contributions — Part G (Phase 5, 14 Jul 2026) ──
+  # Split from a single "Q4 — Approved Donations" bucket into the real G1–G8
+  # sub-lines, since they're subject to DIFFERENT caps under different ITA
+  # 1967 subsections, not one flat 10%-of-B11 pool:
+  #   Pool A — combined, capped at 10% of B11 (s.44(6)/(11B)/(11C)/(11D)):
+  #     G1 (govt/state/local authority), G2a (approved institution),
+  #     G2b (approved sports activity), G2c (national-interest project),
+  #     G2d (wakaf/endowment)
+  #   Individually capped at RM20,000 each (not part of Pool A):
+  #     G4 (library facilities, s.44(8)), G6 (medical equipment, s.44(10))
+  #   Uncapped (full value, but needs an official valuation to be genuinely
+  #   verifiable from a receipt alone):
+  #     G3 (artefacts/manuscripts/paintings to govt, s.44(6A)),
+  #     G5 (disabled-persons public facilities, s.44(9)),
+  #     G7 (paintings to National/state Art Gallery, s.44(11))
+  # All ten still route to tax_status "donation" (NOT a personal Q4 relief —
+  # deducted from aggregate income before chargeable income is derived) —
+  # see main.py for the tiered-cap computation across all ten categories.
+  "Q4 — Donation: Government/Local Authority",   # G1
+  "Q4 — Donation: Approved Institution",         # G2a
+  "Q4 — Donation: Approved Sports Activity",     # G2b
+  "Q4 — Donation: National Interest Project",    # G2c
+  "Q4 — Donation: Wakaf/Endowment",              # G2d
+  "Q4 — Donation: Artefacts to Government",      # G3
+  "Q4 — Donation: Library Facilities",           # G4
+  "Q4 — Donation: Disabled Facilities",          # G5
+  "Q4 — Donation: Medical Equipment",            # G6
+  "Q4 — Donation: Paintings to Art Gallery",     # G7
+
+  # ── H11 breastfeeding equipment (added 14 Jul 2026) ──
+  # RM1,000 cap, but allowed only ONCE EVERY TWO YEARS OF ASSESSMENT — a
+  # genuinely multi-year rule a plain per-document/per-year cap can't
+  # express. Handled via its own claim registry (BreastfeedingEquipmentClaim
+  # / breastfeeding_relief.py), same pattern as capital allowance — see
+  # SCHEDULE_SOURCE_CATEGORIES above and sync_breastfeeding_claim_registry
+  # below. Per-document status is still "relief" (it does reduce chargeable
+  # income like any other Q4 item); it's the AGGREGATION across years that
+  # needs the registry, not the per-document classification.
+  "Q4 — Breastfeeding Equipment",          # breast pump/storage/cooler equipment for own use, child ≤2 (H11, up to RM1k, once/2 YAs)
+
   "Q4 — Zakat",                            # zakat payment; rebate against tax PAYABLE (not income deduction)
+
+  # Bug fix (16 Jul 2026): B29 and B33ii were previously unmodeled entirely.
+  # Both are credits against tax (not income deductions), same footing as
+  # Zakat above — but at DIFFERENT points in the computation: B29 reduces
+  # tax CHARGED to get tax PAYABLE (same step B30 would occupy, if it
+  # weren't out of scope); B33ii is a PAYMENT already made, reducing the
+  # final BALANCE payable alongside MTD/CP500, not tax payable itself.
+  "Q4 — Section 110 Withholding (Others)", # domestic withholding on interest/royalties/s.4A/trust income → B29
+  "Q4 — Section 107D Withholding",         # 2% withheld by a payer on cash payments to agents/dealers/distributors → B33ii
+  # B27iii (16 Jul 2026 fix): rebate capped at 2 TRIPS IN A LIFETIME, not
+  # a ringgit cap or a windowed count — needs the full claim history across
+  # every year ever filed, same reasoning as SCHEDULE_SOURCE_CATEGORIES.
+  "Q4 — Departure Levy (Umrah/Religious Travel)",
 
   # Non-deductible personal spending (no tax relief but financially relevant)
   "Q4 — Personal Living Expenses",         # groceries, personal household spend; not deductible
@@ -156,10 +280,37 @@ Q4_PERSONAL_RELIEF_CATEGORIES = [
   "Q4 — Personal Dining & Entertainment",  # personal restaurant meals; not deductible
   "Q4 — Personal Shopping",               # clothing, home furniture, electronics (personal use)
   "Q4 — Personal Medical Expenses",        # own medical bills beyond relief caps; not deductible
-  "Q4 — Family & Childcare Expenses",      # baby products, school fees beyond relief caps
+  "Q4 — Family & Childcare Expenses",      # school fees for a child over 6 (no H-code covers this),
+                                            # baby products, other family spend beyond relief caps
 ]
 
-# ── Special categories ────────────────────────────────────────────────────────
+# Historical note: H7 (complete medical exam/COVID test/mental health) and
+# H8 (child learning-disability assessment/intervention) were ORIGINALLY
+# folded into "Q4 — Self/Spouse/Child Medical" (Phase 2) — narrower/rarer
+# document types than H6, deferred as not required to fix the more urgent
+# RM10k outer-cap bug at the time. Actually split into their own categories
+# in this pass (14 Jul 2026) — see the H6/H7/H8 granularity split above.
+#   H11 (breastfeeding equipment) — WAS deferred here pending a 2-year claim
+#     registry; that registry now exists (see "Q4 — Breastfeeding Equipment"
+#     above, breastfeeding_relief.py, and BreastfeedingEquipmentClaim in
+#     models.py), so this is no longer a deferred item.
+
+
+# ── J1: Part J incentive claims (paragraph 127(3)(b)) — OUT OF SCOPE ────────
+# Previously supported claim codes 157 (secretarial & tax filing fee) and 148
+# (franchise fee, pre-commencement) as their own tracked J1 categories with
+# Balance B/F -> Claimed -> Absorbed -> Balance C/F bookkeeping (see
+# incentive_claims.py, now removed). Descoped by product decision (14 Jul
+# 2026): Part J is out of scope going forward, same footing as B12/B16/B19/J2.
+# Documents that used to be classified here (company-secretary/tax-agent
+# invoices, franchise-fee invoices) now fall through to their ordinary Q3
+# expense category instead (e.g. "Q3 — Professional & Legal Fees" for
+# secretarial/tax-agent fees) — they're still real deductible business
+# expenses, they just no longer get the special/further-deduction treatment
+# or the itemised Part J disclosure. Do not re-add J1 categories without a
+# fresh product decision; see form-b-roadmap.md.
+
+
 REVIEW_CATEGORY  = "Mixed / Pending Review"   # genuinely straddles two quadrants; needs user input
 NON_TAX_CATEGORY = "Non-Tax Document"         # no monetary transactions whatsoever
 # A bank statement gets its own dedicated category rather than folding into
@@ -192,7 +343,7 @@ ALL_CATEGORIES = (
 #                bucket so the frontend never lumps it in with genuinely non-applicable documents
 # not_applicable — non-financial / non-deductible supporting document with no standalone
 #                  deductibility (e.g. CP500 installment notice, generic non-tax document)
-VALID_STATUSES = {"income", "deductible", "mixed", "relief", "non_deductible", "not_applicable", "capital"}
+VALID_STATUSES = {"income", "deductible", "mixed", "relief", "non_deductible", "not_applicable", "capital", "donation"}
 
 # Default status per category
 CATEGORY_STATUS_MAP: dict[str, str] = {}
@@ -209,21 +360,51 @@ CATEGORY_STATUS_MAP["Q3 — Mixed-Use Vehicle Expenses"]      = "mixed"
 CATEGORY_STATUS_MAP["Q3 — Capital Assets & Equipment"]      = "capital"         # via Schedule 3 IA+AA
 CATEGORY_STATUS_MAP["Q3 — Capital Renovation & Fit-Out"]    = "capital"         # via Schedule 3 / IBA
 CATEGORY_STATUS_MAP["Q3 — Hire Purchase & Leased Assets"]   = "mixed"           # interest deductible; principal not
-CATEGORY_STATUS_MAP["Q3 — CP500 / Tax Installment"]         = "not_applicable"  # advance tax payment; not a deductible expense
+CATEGORY_STATUS_MAP["Q3 — CP500 Instalment Notice"]         = "not_applicable"  # schedule of what's due; not a deductible expense
+CATEGORY_STATUS_MAP["Q3 — CP500 Payment Receipt"]           = "not_applicable"  # advance tax payment; not a deductible expense
 # Q4 relief items
 _Q4_RELIEF_CATS = {
   "Q4 — Life Insurance & Takaful Relief",
   "Q4 — EPF Personal Contribution",
-  "Q4 — Medical & Parental Care",
-  "Q4 — Lifestyle Relief",
-  "Q4 — Education Relief",
-  "Q4 — Child Relief",
+  "Q4 — Parent Medical Care",
+  "Q4 — Parent Medical Care (Complete Examination)",
+  "Q4 — Serious Disease Treatment",
+  "Q4 — Fertility Treatment",
+  "Q4 — Vaccination",
+  "Q4 — Dental Examination & Treatment",
+  "Q4 — Complete Medical Examination",
+  "Q4 — COVID-19 Detection Test",
+  "Q4 — Mental Health Examination",
+  "Q4 — Learning Disability Diagnosis",
+  "Q4 — Learning Disability Early Intervention",
+  "Q4 — Books & Publications",
+  "Q4 — Personal Computer & Devices",
+  "Q4 — Internet Subscription",
+  "Q4 — Personal Enrichment Course",
+  "Q4 — Education Relief (Non-Postgraduate)",
+  "Q4 — Education Relief (Postgraduate)",
+  "Q4 — Upskilling / Self-Enhancement Course",
+  "Q4 — Childcare Fees",
+  "Q4 — SSPN Net Deposit",
   "Q4 — Medical Equipment Relief",
   "Q4 — Private Retirement Scheme (PRS)",
   "Q4 — SOCSO Personal Contribution",
   "Q4 — Domestic Tourism Relief",
+  "Q4 — Tourist Attraction & Cultural Programme",
   "Q4 — EV Charging Equipment",
+  "Q4 — Food Waste Compost Machine",
+  "Q4 — Food Waste Grinder Machine",
+  "Q4 — Home CCTV",
+  "Q4 — Education & Medical Insurance",
+  "Q4 — Sports Equipment",
+  "Q4 — Sports Facility Fee",
+  "Q4 — Sports Competition Fee",
+  "Q4 — Gym & Sports Training",
+  "Q4 — Breastfeeding Equipment",
   "Q4 — Zakat",
+  "Q4 — Section 110 Withholding (Others)",
+  "Q4 — Section 107D Withholding",
+  "Q4 — Departure Levy (Umrah/Religious Travel)",
 }
 _Q4_NON_DED_CATS = {
   "Q4 — Personal Living Expenses",
@@ -233,6 +414,28 @@ _Q4_NON_DED_CATS = {
   "Q4 — Personal Medical Expenses",
   "Q4 — Family & Childcare Expenses",
 }
+# Approved donations are not a capped personal relief — they're deducted from
+# aggregate income before chargeable income is derived (Part G / B17). Split
+# into 10 G-line categories (Phase 5, 14 Jul 2026) since they're subject to
+# DIFFERENT caps (10%-of-B11 pool for some, individual RM20,000 caps for
+# others, uncapped for others) — see the category list's comment above and
+# main.py's tiered-cap computation. Kept off both sets above and given their
+# own status so main.py routes them to the donation pools instead of the
+# H-code relief cap logic.
+_DONATION_CATS = {
+  "Q4 — Donation: Government/Local Authority",
+  "Q4 — Donation: Approved Institution",
+  "Q4 — Donation: Approved Sports Activity",
+  "Q4 — Donation: National Interest Project",
+  "Q4 — Donation: Wakaf/Endowment",
+  "Q4 — Donation: Artefacts to Government",
+  "Q4 — Donation: Library Facilities",
+  "Q4 — Donation: Disabled Facilities",
+  "Q4 — Donation: Medical Equipment",
+  "Q4 — Donation: Paintings to Art Gallery",
+}
+for cat in _DONATION_CATS:
+  CATEGORY_STATUS_MAP[cat] = "donation"
 for cat in _Q4_RELIEF_CATS:
   CATEGORY_STATUS_MAP[cat] = "relief"
 for cat in _Q4_NON_DED_CATS:
@@ -254,7 +457,8 @@ CATEGORY_STATUS_MAP[BANK_STATEMENT_CATEGORY] = "mixed"  # individual lines match
 #     transaction          — atomic evidence of a single dated amount (invoice, receipt)
 #     summary_statement     — a derived aggregate (P&L, balance sheet, prior Form B);
 #                             used for reconciliation / carry-forward only, NEVER summed
-#     schedule_source       — feeds a multi-year computation (capital asset, hire purchase)
+#     schedule_source       — feeds a multi-year computation (capital asset, hire purchase,
+#                             breastfeeding-equipment 2-year gate)
 #                             rather than a single one-off deduction
 #     ledger_source         — a bank statement: many transactions, matched line-by-line
 #                             against existing documents; the statement never adds a lump sum
@@ -278,16 +482,59 @@ REFERENCE_ONLY_CATEGORIES = {
   "Q1 — Financial Statements (P&L)",
   "Q1 — Financial Statements (BS)",
   "Q1 — Filed Form B (Prior Year)",
+  # Part K: discloses income belonging to a PRECEDING year, not this one —
+  # must never be summed into THIS year's B1/aggregate income, same
+  # reasoning as Filed Form B above. Previously unmodeled (16 Jul 2026 fix).
+  "Q1 — Voluntary Disclosure (Prior Year Income)",
+  # Bug fix (14 Jul 2026): "Q1 — Capital Gains (s.4aa)" was NOT in this set
+  # before, meaning it had document_role="transaction" and (assuming a
+  # normal status) aggregation_state="resolved" — it was being silently
+  # SUMMED into B1 as ordinary business income. That's factually wrong: a
+  # disposal gain on unlisted shares/foreign capital assets under s.4(aa)
+  # is a genuinely separate class of income with its own gain/loss
+  # computation (disposal proceeds minus acquisition cost) and its own
+  # filing treatment — not part of this business's ordinary P&L, the same
+  # way a real-property disposal triggers RPGT reporting instead of being
+  # folded into income (see D12a/D12b, already handled as its own separate
+  # flag, never merged into a Part N/B income line). Unlike the other three
+  # entries in this set, a capital gains document isn't a DERIVED AGGREGATE
+  # of other documents — it's reusing the same "reference_only, never
+  # summed, still shown for reconciliation" mechanism because it's the
+  # closest existing fit, not because it's semantically a summary statement.
+  "Q1 — Capital Gains (s.4aa)",
 }
 
 SCHEDULE_SOURCE_CATEGORIES = {
   "Q3 — Capital Assets & Equipment",
   "Q3 — Capital Renovation & Fit-Out",
   "Q3 — Hire Purchase & Leased Assets",
+  # H11 needs claim history across YEARS (the "once every 2 years" gate),
+  # not just a same-year cap — see breastfeeding_relief.py and
+  # sync_breastfeeding_claim_registry below, same pattern as capital assets.
+  "Q4 — Breastfeeding Equipment",
+  # CP500 needs claim history across years for a different but related
+  # reason (15 Jul 2026): B33 for year Y must count ONLY payments, never
+  # notices, and must attribute each payment to the YA its instalment
+  # scheme was actually FOR — not just the calendar date it was uploaded
+  # or paid. See cp500.py and sync_cp500_registry below, same "recompute
+  # fresh from full history" pattern as capital assets / H11.
+  "Q3 — CP500 Instalment Notice",
+  "Q3 — CP500 Payment Receipt",
+  # Finance Act 2025 (Act 874) s.6(a)(vi): each of these may be claimed only
+  # ONCE across its own multi-year window — a genuine claim-history problem
+  # needing the OneTimeReliefClaim registry + one_time_relief.py, same
+  # reasoning as H11/CP500 above, just a different eligibility shape (once
+  # ever in a window, not recurring).
+  "Q4 — Food Waste Compost Machine",
+  "Q4 — Food Waste Grinder Machine",
+  "Q4 — Home CCTV",
+  # B27iii (16 Jul 2026): 2-trips-IN-A-LIFETIME cap, needs the full claim
+  # history across every year ever filed — not a windowed or per-year cap.
+  "Q4 — Departure Levy (Umrah/Religious Travel)",
 }
 
+
 SUPPORTING_EVIDENCE_CATEGORIES = {
-  "Q3 — CP500 / Tax Installment",
   NON_TAX_CATEGORY,
 }
 
@@ -448,7 +695,12 @@ def match_bank_statement_lines(db: Session, document, line_items: list[dict]) ->
     .filter(
       Document.user_id == document.user_id,
       Document.id != document.id,
-      Document.status == "completed",
+      # "archived" included alongside "completed" — same reasoning as
+      # main.py's _docs_for_year: archiving only declutters the list, the
+      # receipt is still a valid, documented transaction. Excluding it here
+      # would make an already-documented (but archived) purchase show up as
+      # an "unmatched" bank line, wrongly implying missing paperwork.
+      Document.status.in_(["completed", "archived"]),
     )
     .all()
   )
@@ -565,14 +817,17 @@ NON-TAX examples (zero financial content):
   • Blank or corrupted files
 
 These are NEVER Non-Tax Documents — they carry financial amounts:
-  • Tuition / school fee receipts           → Q4 — Child Relief or Q4 — Family & Childcare Expenses
+  • Tuition / school fee receipts (child >6, no childcare/SSPN match) → Q4 — Family & Childcare Expenses
+  • Childcare centre / kindergarten fee receipts (child ≤6) → Q4 — Childcare Fees
+  • Breast pump / breast milk storage / cooler bag receipts → Q4 — Breastfeeding Equipment
   • Baby & infant product receipts          → Q4 — Family & Childcare Expenses
-  • Medical clinic / pharmacy receipts      → Q4 — Personal Medical Expenses or Q4 — Medical & Parental Care
+  • Medical clinic / pharmacy receipts      → Q4 — Personal Medical Expenses, Q4 — Parent Medical Care, or the specific H6/H7/H8 sub-category that matches (Serious Disease Treatment / Fertility Treatment / Vaccination / Dental Examination & Treatment / Complete Medical Examination / COVID-19 Detection Test / Mental Health Examination / Learning Disability Diagnosis / Learning Disability Early Intervention)
   • Grocery / supermarket receipts          → Q4 — Personal Living Expenses
   • Personal shopping receipts              → Q4 — Personal Shopping
   • Personal travel / hotel / flight invoices → Q4 — Personal Travel & Leisure
   • Restaurant receipts (personal use)      → Q4 — Personal Dining & Entertainment
-  • Gym, streaming, lifestyle subscriptions → Q4 — Lifestyle Relief (if within cap) else Q4 — Personal Living Expenses
+  • Gym, sports club subscriptions          → Q4 — Gym & Sports Training (if within cap) else Q4 — Personal Living Expenses
+  • Streaming, other lifestyle subscriptions → Q4 — Personal Living Expenses (not a relief category — Q4 relief only covers the specific items named under H9/H10 above, not general subscriptions)
   • Gift recipient lists / hamper packing lists alongside a hamper invoice → Q3 — Client & Corporate Gifts
   • Any receipt or invoice showing a monetary amount IS financially relevant, even if non-deductible.
 
@@ -621,6 +876,21 @@ Identify the document type precisely from content headers, vendor names, and fil
         eis_employee         : employee-share EIS deducted (string amount or null)
         benefits_in_kind     : total BIK value if stated (string amount or null)
         ya_year              : Year of Assessment this Form EA covers (integer)
+        employment_start_date_this_ya : if the form states or implies employment
+          STARTED during this YA (hire date, or an explicit "period of
+          employment" start date after 1 Jan), extract that date as
+          YYYY-MM-DD. If employment was ALREADY ongoing from before the YA
+          began (the normal case for most employees), leave this null.
+        employment_end_date_this_ya : if the form states or implies employment
+          ENDED during this YA (resignation/termination date, or an explicit
+          "period of employment" end date before 31 Dec), extract that date
+          as YYYY-MM-DD. If employment was ONGOING through 31 Dec of the YA
+          (the normal case — most Form EAs don't state an end date because
+          the person is still employed), leave this null. Do NOT guess a
+          start or end date from the form's issue date — Form EA is
+          typically issued in Jan/Feb of the FOLLOWING year regardless of
+          whether employment continued, so the issue date is neither the
+          start nor the end date of the employment period itself.
       Populate the form_ea field in the JSON output with all extracted fields above.
     → Q2 — Employment Income (s.4b)
 
@@ -709,11 +979,70 @@ Identify the document type precisely from content headers, vendor names, and fil
   Profit & Loss Statement / Income Statement
     → keywords: penyata untung rugi, P&L, profit and loss, income statement,
       trading account, revenue statement, statement of comprehensive income
+    NOTE (Phase 6, 14 Jul 2026): EXTRACT ALL of the following into the
+      financial_statement field in the JSON output (null any figure not
+      shown on this document — do NOT guess or derive a missing figure from
+      others on the page):
+        sales_or_turnover        : gross sales/turnover (string amount or null)
+        opening_inventory        : opening stock of finished goods (string amount or null)
+        closing_inventory        : closing stock of finished goods (string amount or null)
+        other_business_income    : income from a business OTHER than this one, if
+                                    the statement covers more than one (string or null)
+        dividends                : dividend income shown on this P&L (string or null)
+        rents_royalties_premiums : rental/royalty/premium income shown here,
+                                    business-side only (string or null)
+        contract_subcontracts    : subcontractor cost as its own expense line,
+                                    if shown separately from COGS (string or null)
+        bad_debts                : bad debts written off (string or null)
+        stated_revenue           : same as sales_or_turnover — kept separately so a
+                                    reconciliation check never depends on how the
+                                    "turnover" line was worded on this specific
+                                    statement (string or null)
+        stated_net_profit        : the statement's own bottom-line net profit/loss,
+                                    signed (e.g. "-12,000.00" for a loss) (string or null)
+      This is a DERIVED AGGREGATE, not a transaction — it is still treated as
+      reference-only and its top-level "amount" must stay null (see the Q1
+      rules below) — the financial_statement fields above are ADDITIONAL
+      structured data, not a replacement for that rule.
     → Q1 — Financial Statements (P&L)
 
   Balance Sheet / Statement of Financial Position
     → keywords: lembaran imbangan, balance sheet, statement of financial position,
       aset, liabiliti, ekuiti, assets, liabilities, equity
+    NOTE (Phase 6, 14 Jul 2026): EXTRACT ALL of the following into the SAME
+      financial_statement field in the JSON output (null any figure not
+      shown — this is Form B's Part N Statement of Financial Position,
+      N28-N50, and it's the single hardest-to-reconstruct section since it
+      genuinely cannot be inferred from ordinary income/expense receipts):
+        land_buildings            : N28 (string amount or null)
+        plant_machinery           : N29 (string amount or null)
+        motor_vehicles            : N30 (string amount or null)
+        other_non_current_assets  : N31 (string amount or null)
+        investments               : N33 (string amount or null)
+        inventory                 : N34, closing stock as shown on the BS itself
+                                     (string amount or null; may differ from the
+                                     P&L's own closing_inventory line above if
+                                     the two documents disagree — do not
+                                     reconcile them yourself, extract each as-is)
+        trade_debtors             : N35 (string amount or null)
+        sundry_debtors            : N36 (string amount or null)
+        cash_in_hand              : N37 (string amount or null)
+        cash_at_bank              : N38 (string amount or null)
+        other_current_assets      : N39 (string amount or null)
+        loans_overdrafts          : N42 (string amount or null)
+        trade_creditors           : N43 (string amount or null)
+        sundry_creditors          : N44 (string amount or null)
+        capital_account           : N46 (string amount or null)
+        current_account_bf        : N47, brought forward from the PRIOR year
+                                     (string amount or null)
+        drawings_advance_net      : N49, net drawings/cash advance for personal
+                                     use this year (string amount or null)
+      A combined "Financial Statements" package that includes both a P&L
+      and a Balance Sheet section on different pages of the SAME document
+      should still be classified by whichever statement is on the FIRST/
+      primary page, but populate financial_statement fields from BOTH
+      halves regardless of category — the sync logic keys off which fields
+      are actually present, not solely off the category label.
     → Q1 — Financial Statements (BS)
 
   ── BUSINESS EXPENSE DOCUMENTS ──
@@ -902,11 +1231,36 @@ Identify the document type precisely from content headers, vendor names, and fil
     → keywords: CP204, CP500, CP58, Form B, Borang B, Form P, Borang BE, e-Filing,
       PCB, MTD, CP204A, CP107D, e-CP204, CP204B, CP39, CP39A
     NOTE:
-      CP500 installment notice (s.107B) → Q3 — CP500 / Tax Installment; status: not_applicable.
-        CP500 is an advance payment of estimated tax — it is NOT a deductible business expense.
-        It reduces the final tax payable at filing time. Extract installment_amount and
-        installment_month. A CP502 must be filed before 30 June if estimated income drops.
-      CP204 (company installment) → same treatment as CP500; Q3 — CP500 / Tax Installment.
+      CP500 is an advance payment of estimated tax under s.107B — it is NOT a deductible
+        business expense, but it DOES reduce the final tax payable at filing time (B33iii).
+        Two genuinely different documents share the CP500 name — distinguish them carefully,
+        since conflating them silently overstates B33 (a notice is NOT proof of payment):
+
+        (a) CP500 Instalment Notice — LHDN's SCHEDULE of what's due across the year, not a
+            receipt. Look for: a table of SEVERAL future-dated amounts, no payment
+            confirmation, no bank/transaction reference, keywords "Notis Ansuran Cukai
+            Pendapatan", "notis ansuran", "jadual bayaran ansuran". Extract:
+              ya_year                : year of assessment this schedule is FOR (integer)
+              total_scheduled_amount : the year's total scheduled instalments (string amount)
+            → Q3 — CP500 Instalment Notice; status: not_applicable.
+
+        (b) CP500 Payment Receipt — proof an instalment was ACTUALLY PAID. Look for: a
+            specific payment DATE that has already occurred, a bank/transaction reference or
+            LHDNM bill number, exactly ONE amount tied to ONE payment event (not a schedule),
+            keywords "ByrHASiL", "bill number", "no. bil", "resit bayaran", "e-TT", "Virtual
+            Account", "LHDNM e-Billing". Extract:
+              ya_year        : the YA this payment is FOR — this may NOT be the same as the
+                               calendar year the payment date falls in (e.g. a late instalment
+                               for YA2024 paid in January 2025 is still FOR YA2024). If the
+                               document doesn't make the target YA clear, leave this null
+                               rather than guessing from the payment date.
+              amount         : the amount actually paid (string)
+              reference_no   : bank/transaction reference or LHDN bill number
+            → Q3 — CP500 Payment Receipt; status: not_applicable.
+
+        If a document shows a multi-row future-dated schedule with no payment confirmation,
+        it is (a) even if the letterhead looks similar to a receipt.
+      CP204 (company installment) → same distinction as CP500, same two categories.
       CP39 (monthly PCB remittance) → Q3 — Payroll & Statutory Contributions; deductible.
       CP58 → Q3 — CP58 Agent Commission; see above.
 
@@ -944,6 +1298,24 @@ Identify the document type precisely from content headers, vendor names, and fil
       Populate the form_b field in the JSON output with all extracted fields above.
     → Q1 — Filed Form B (Prior Year)
 
+  Voluntary Disclosure of Prior-Year Income (Part K)
+    → keywords: undeclared income, prior year income, voluntary disclosure, amended declaration,
+      income not previously declared, tambahan pendapatan tahun terdahulu
+    NOTE — CRITICAL: this covers non-employment income (e.g. rent, interest) from a PRECEDING
+      year of assessment that the taxpayer is only now voluntarily declaring — it is NOT part
+      of the CURRENT year's income and must never be summed into this year's B1/aggregate
+      income. It's a disclosure table (Part K), not a computation input. Extract:
+        income_type   : what kind of income this is (e.g. "rental income", "interest") (string)
+        disclosed_ya   : the YEAR OF ASSESSMENT this income actually belongs to — this will
+                         almost always be an EARLIER year than the document's own date, since
+                         the whole point is declaring something from the past (integer or null
+                         if genuinely unclear)
+        amount         : the amount being disclosed (string)
+      Classify as: Q1 — Voluntary Disclosure (Prior Year Income); status: income (kept out of
+      this year's totals entirely by its document_role, not by status — see
+      REFERENCE_ONLY_CATEGORIES).
+    → Q1 — Voluntary Disclosure (Prior Year Income)
+
   Transport & Vehicle Documents
     → keywords: petrol receipt, parking receipt, toll receipt, Touch 'n Go, mileage log,
       car service invoice, tyre receipt, road tax, vehicle insurance, grab receipt (business)
@@ -956,9 +1328,21 @@ Identify the document type precisely from content headers, vendor names, and fil
   Life Insurance / Takaful Premium Statement
     → keywords: premium insurans hayat, life insurance premium, takaful keluarga, takaful hayat,
       policy anniversary, premium notice, medical card premium, hospitalisation insurance (personal)
+    NOTE — CRITICAL: extract policy_life_insured ("self" | "spouse" | "child" | "unclear") — whose
+      life the policy is actually contracted on, not who is paying the premium. This matters
+      because the rule is year-dependent:
+        Before YA2026: a policy on a CHILD's life does NOT qualify — ITA 1967 explicitly
+          excludes this (premiums on the proprietor's or spouse's own life still qualify as
+          normal). Route a clearly child-life policy to Q4 — Personal Living Expenses instead
+          for pre-2026 filings.
+        YA2026 onward (Finance Act 2025, Act 874, s.7): a policy on a child's life NOW
+          qualifies too, under the same pool as self/spouse.
+      Most statements won't make "whose life" fully explicit — don't assume "self" just
+      because the account holder/payer is the proprietor; a payer can insure a child. Use
+      "unclear" rather than guessing when the statement doesn't say.
     NOTE: Proprietor's own life insurance / medical card is a Q4 personal relief (up to RM3,000/year
       combined life insurance + EPF; medical insurance separately up to RM3,000).
-    → Q4 — Life Insurance & Takaful Relief  [status: relief]
+    → Q4 — Life Insurance & Takaful Relief  [status: relief]  or  Q4 — Personal Living Expenses
 
   Personal EPF Statement (proprietor's own EPF account)
     → keywords: penyata KWSP peribadi, i-Akaun penyata, EPF annual statement, KWSP
@@ -975,39 +1359,424 @@ Identify the document type precisely from content headers, vendor names, and fil
 
   Personal SOCSO Statement
     → keywords: SOCSO personal, PERKESO caruman peribadi, EIS personal
-    NOTE: Employee-share SOCSO/EIS qualifies for personal relief up to RM250/year.
+    NOTE: Employee-share SOCSO/EIS qualifies for personal relief up to RM350/year.
     → Q4 — SOCSO Personal Contribution  [status: relief]
 
-  Medical Receipt (parental / own qualifying medical)
+  Medical/Dental/Carer Receipt — PARENT (H2(i))
     → keywords: hospital bill (parent), medical receipt (parent), parental medical care,
-      penjagaan perubatan ibu bapa, full body check-up, medical check-up, specialist bill,
-      vaccination receipt, dental receipt, optical receipt (up to RM1,000 within lifestyle)
-    NOTE: Medical expenses for PARENTS qualify for relief up to RM8,000/year.
-      Own full-body medical check-up qualifies up to RM1,000/year (within Q4 Medical & Parental Care).
-      Personal medical expenses beyond these caps → Q4 — Personal Medical Expenses; non_deductible.
-    → Q4 — Medical & Parental Care  [status: relief]  or  Q4 — Personal Medical Expenses
+      penjagaan perubatan ibu bapa, dental treatment (parent), receipt made out to /
+      treating a mother/father/parent-in-law, carer / caregiver receipt for a parent
+    NOTE: Medical treatment, dental treatment, special needs, or carer expenses for the
+      taxpayer's own PARENTS (natural or foster) — RM8,000/year combined with H2(ii)
+      below. This is entirely separate from, and must never be merged with, medical
+      expenses for the taxpayer's own self/spouse/child (see the H6/H7/H8 categories
+      elsewhere). Only classify here when the patient named on the receipt is clearly a
+      parent, not the taxpayer/spouse/child. Does NOT include a complete/full medical
+      examination — that's H2(ii) below, which has its own inner RM1,000 sub-cap.
+    → Q4 — Parent Medical Care  [status: relief]
 
-  Lifestyle Relief Purchases (personal)
-    → keywords: gym membership, fitness centre, personal internet bill (home broadband),
-      personal phone bill, e-book, physical book, newspaper subscription,
-      sports equipment, personal computer (for personal use), smartphone (personal)
-    NOTE: Lifestyle relief cap is RM2,500/year. Items must be for personal (not business) use.
-      Business-use equivalents go to Q3 instead.
-    → Q4 — Lifestyle Relief  [status: relief]
+  Complete Medical Examination Receipt — PARENT (H2(ii))
+    → keywords: complete medical examination (parent), full medical checkup (parent),
+      pemeriksaan perubatan lengkap ibu bapa, health screening (parent)
+    NOTE: A COMPLETE/FULL medical examination specifically (not routine treatment) for
+      the taxpayer's own parent — RM1,000/year sub-cap, within the SAME RM8,000 combined
+      pool as H2(i) above. Only classify here when the receipt is clearly for a full/
+      complete checkup rather than treatment for a specific ailment — an ordinary
+      consultation or treatment receipt belongs in H2(i) instead.
+    → Q4 — Parent Medical Care (Complete Examination)  [status: relief]
 
-  Education Fee Receipt (proprietor's own further education)
-    → keywords: university fee, college fee, professional qualification, ACCA, CPA, CIMA,
-      HRDF training (own), skills course, short course fee, professional development fee
-    NOTE: Proprietor's own education relief up to RM7,000/year for approved courses.
-      Children's school / tuition fees go to Q4 — Child Relief instead.
-    → Q4 — Education Relief  [status: relief]
+  Medical Receipt — SERIOUS DISEASE TREATMENT, self/spouse/child (H6i)
+    → keywords: hospital bill (self/spouse/child), specialist bill, cancer treatment,
+      dialysis / renal failure, leukemia treatment, AIDS treatment, Parkinson's treatment,
+      heart attack treatment, organ transplant, major burns treatment, major amputation
+    NOTE: Part of the combined H6+H7+H8 pool capped at RM10,000/year — this specific
+      sub-line has NO cap of its own beyond that shared pool. For the taxpayer's OWN
+      self, spouse, or child only. Do not use for a parent (→ Parent Medical Care) or
+      for anyone else / amounts beyond the pool (→ Personal Medical Expenses).
+    → Q4 — Serious Disease Treatment  [status: relief]  or  Q4 — Personal Medical Expenses
 
-  SSPN / Child Relief Documents
-    → keywords: SSPN, Skim Simpanan Pendidikan Nasional, SSPN deposit, child education savings,
-      tuition fee receipt, school fee receipt, yuran tuisyen, yuran sekolah, nursery fee,
-      kindergarten fee, tadika, tabika, child care fee, childcare centre
-    NOTE: SSPN deposits + children's education fees qualify for relief up to RM8,000/year combined.
-    → Q4 — Child Relief  [status: relief]
+  Medical Receipt — FERTILITY TREATMENT, self or spouse (H6ii)
+    → keywords: fertility treatment, IUI, IVF, in vitro fertilization, intrauterine
+      insemination, fertility clinic, fertility consultation and medicines
+    NOTE: Part of the combined H6+H7+H8 pool capped at RM10,000/year — this specific
+      sub-line has NO cap of its own beyond that shared pool. Self or spouse ONLY (not
+      children). Requires the taxpayer to be married.
+    → Q4 — Fertility Treatment  [status: relief]  or  Q4 — Personal Medical Expenses
+
+  Medical Receipt — VACCINATION, self/spouse/child (H6iii)
+    → keywords: vaccination receipt, vaccine, immunisation, jab, suntikan vaksin
+    NOTE — CRITICAL, year-dependent scope (Finance Act 2025 / Act 874, s.6(a)(i)–(ii),
+      effective YA2026 onward per s.3(1)):
+        YA2026 onward: ANY vaccine registered with the National Pharmaceutical Regulatory
+          Agency (NPRA) qualifies — no longer limited to a fixed list.
+        Before YA2026: only the historical fixed list qualifies — pneumococcal, HPV,
+          influenza/flu, rotavirus, varicella/chickenpox, meningococcal, Tdap, COVID-19.
+      Since eligibility depends on which YA this receipt is FOR (not just today's rules),
+      extract BOTH of the following so the backend can apply the right-year test:
+        vaccine_name     : the specific vaccine/immunisation named on the receipt
+        npra_registered  : "yes" | "no" | "unclear" — whether the receipt or product
+                           states NPRA registration. Ordinary vaccine receipts will
+                           usually be "unclear" — don't infer "yes" just because it's a
+                           common, obviously-legitimate vaccine.
+      Still classify here regardless of npra_registered's value or which YA this turns
+      out to be for — the backend decides eligibility per year, not this step.
+    NOTE: Own RM1,000/year sub-cap, in addition to sitting inside the combined
+      H6+H7+H8 RM10,000 pool. For the taxpayer's own self, spouse, or child.
+    → Q4 — Vaccination  [status: relief]  or  Q4 — Personal Medical Expenses
+
+  Medical Receipt — DENTAL EXAMINATION & TREATMENT, self/spouse/child (H6iv)
+    → keywords: dental receipt, dentist, dental clinic, dental examination, teeth
+      cleaning/scaling, filling, root canal, dental treatment
+    NOTE: Own RM1,000/year sub-cap, in addition to sitting inside the combined
+      H6+H7+H8 RM10,000 pool. For the taxpayer's own self, spouse, or child.
+    → Q4 — Dental Examination & Treatment  [status: relief]  or  Q4 — Personal Medical Expenses
+
+  Basic Supporting Equipment Receipt — disabled self/spouse/child/parent (H3)
+    → keywords: wheelchair, wheel chair, hemodialysis machine, dialysis machine, artificial
+      leg, prosthetic limb, hearing aid, alat bantuan pendengaran, kerusi roda, mesin
+      dialisis, kaki palsu, basic supporting equipment, alat sokongan asas
+    EXCLUDED — do NOT classify here even if sold by the same disability-equipment
+      supplier: spectacles, optical lenses, reading/prescription glasses (LHDN's own
+      notes explicitly exclude these from H3, unlike the other items above).
+    NOTE — CRITICAL: this relief is allowed up to RM6,000/year ONLY if the disabled
+      person the equipment is FOR (self, spouse, child, or parent) is registered with
+      the Department of Social Welfare (Jabatan Kebajikan Masyarakat / JKM) as a
+      disabled person — an invoice for a wheelchair or hearing aid, on its own, proves
+      the PURCHASE but never proves DSW registration, which is a separate legal fact
+      no receipt can establish. Extract dsw_registered:
+        "yes"     — the document itself explicitly states or references DSW/JKM
+                    registration (e.g. an OKU card number, a JKM referral letter
+                    attached to the same document, explicit wording on the receipt)
+        "no"      — the document explicitly indicates the person is NOT registered
+        "unclear" — the document is a plain equipment purchase receipt with no
+                    registration information at all (this will be the ORDINARY case —
+                    do not infer "yes" just because the item is a wheelchair or
+                    hearing aid; the item type alone says nothing about registration)
+      Do not let dsw_registered affect the category or status below — always classify
+      qualifying equipment here regardless of the answer; the backend handles review.
+    → Q4 — Medical Equipment Relief  [status: relief]  or  Q4 — Personal Medical Expenses
+
+  Medical Receipt — COMPLETE MEDICAL EXAMINATION, self/spouse/child (H7i)
+    → keywords: full body check-up, complete medical examination, comprehensive health
+      screening, medical check-up package
+    NOTE: Shares ONE combined RM1,000/year sub-pool with H7(ii) COVID-19 testing and
+      H7(iii) mental health consultation — NOT its own separate RM1,000, the three
+      together share one. That RM1,000 pool then sits inside the combined H6+H7+H8
+      RM10,000 pool.
+    → Q4 — Complete Medical Examination  [status: relief]  or  Q4 — Personal Medical Expenses
+
+  Medical Receipt — COVID-19 DETECTION TEST, self/spouse/child (H7ii)
+    → keywords: COVID-19 test, PCR test, RTK / rapid test kit, self-detection test kit,
+      antigen test kit
+    NOTE: Shares ONE combined RM1,000/year sub-pool with H7(i) complete medical exam and
+      H7(iii) mental health consultation — see H7(i)'s note above.
+    → Q4 — COVID-19 Detection Test  [status: relief]  or  Q4 — Personal Medical Expenses
+
+  Medical Receipt — MENTAL HEALTH EXAMINATION, self/spouse/child (H7iii)
+    → keywords: psychiatrist, clinical psychologist, counsellor / counselor consultation,
+      mental health examination, therapy session receipt
+    NOTE: Shares ONE combined RM1,000/year sub-pool with H7(i) complete medical exam and
+      H7(ii) COVID-19 testing — see H7(i)'s note above. Practitioner must be a registered
+      psychiatrist, Allied-Health-Council-registered clinical psychologist, or a
+      Board-of-Counsellors-registered counsellor.
+    → Q4 — Mental Health Examination  [status: relief]  or  Q4 — Personal Medical Expenses
+
+  Medical Receipt — LEARNING DISABILITY DIAGNOSIS, child ≤18 (H8i)
+    → keywords: learning disability assessment, autism spectrum disorder assessment,
+      ADHD assessment, Attention Deficit Hyperactivity Disorder, Global Developmental
+      Delay / GDD assessment, intellectual disability assessment, Down Syndrome
+      assessment, specific learning disability diagnosis
+    NOTE: Shares ONE combined RM4,000/year sub-pool with H8(ii) early intervention/
+      rehabilitation — NOT its own separate RM4,000. Child must be 18 or below. That
+      RM4,000 pool then sits inside the combined H6+H7+H8 RM10,000 pool.
+    → Q4 — Learning Disability Diagnosis  [status: relief]  or  Q4 — Personal Medical Expenses
+
+  Medical Receipt — LEARNING DISABILITY EARLY INTERVENTION/REHABILITATION, child ≤18 (H8ii)
+    → keywords: early intervention programme, rehabilitation treatment, speech therapy,
+      occupational therapy, behavioural therapy (for a diagnosed learning disability)
+    NOTE: Shares ONE combined RM4,000/year sub-pool with H8(i) diagnosis — see H8(i)'s
+      note above. Child must be 18 or below.
+    → Q4 — Learning Disability Early Intervention  [status: relief]  or  Q4 — Personal Medical Expenses
+
+  Books, Journals & Publications Receipt (H9(i))
+    → keywords: e-book, physical book, newspaper subscription, magazine subscription,
+      journal subscription, buku, majalah, akhbar
+    NOTE: Purchase or subscription of books/journals/magazines/newspapers/similar
+      publications (hardcopy or electronic, excluding banned reading materials) for
+      the taxpayer, spouse, or child. RM2,500/year combined with H9(ii)/(iii)/(iv)
+      below. Personal (not business) use only.
+    → Q4 — Books & Publications  [status: relief]
+
+  Personal Computer / Smartphone / Tablet Receipt (H9(ii))
+    → keywords: personal computer (for personal use), laptop (personal), smartphone
+      (personal), tablet (personal) — NOT including any additional warranty charge
+    NOTE: Purchase of a personal computer, smartphone, or tablet for the taxpayer,
+      spouse, or child — NOT for the taxpayer's own business use (that goes to Q3
+      instead). Same RM2,500/year combined pool as H9(i)/(iii)/(iv).
+    → Q4 — Personal Computer & Devices  [status: relief]
+
+  Internet Subscription Bill (H9(iii))
+    → keywords: personal internet bill (home broadband), unifi bill, personal phone bill
+      data plan, wifi subscription (residential)
+    NOTE: Monthly internet subscription bill registered under the taxpayer's own name,
+      for the taxpayer, spouse, or child. Same RM2,500/year combined pool as
+      H9(i)/(ii)/(iv). A personal MOBILE PHONE data/call plan bill also qualifies here.
+    → Q4 — Internet Subscription  [status: relief]
+
+  Personal Enrichment / Hobby Course Receipt (H9(iv))
+    → keywords: hobby class, language class, personal enrichment course, cooking class,
+      photography class, art class, music class (NOT conducted by a body recognised
+      under the National Skills Development Act — see Q4 — Upskilling / Self-Enhancement
+      Course below for that case)
+    NOTE: Payment for a course aimed at upskilling or self-enhancement, OTHER than the
+      National-Skills-Development-Act-recognised courses that belong to H5(iii) (Q4 —
+      Upskilling / Self-Enhancement Course) — this is a DIFFERENT LHDN line (H9(iv), not
+      H5(iii)) with a different cap, despite the similar-sounding description. The course
+      does NOT need to be registered or recognised by any government body — it covers
+      hobby/language/personal-enrichment courses. Same RM2,500/year combined pool as
+      H9(i)/(ii)/(iii). If a course fee IS from a National-Skills-Development-Act-
+      recognised body, classify as Q4 — Upskilling / Self-Enhancement Course (H5(iii))
+      instead, not here.
+    → Q4 — Personal Enrichment Course  [status: relief]
+
+  Education Fee Receipt — Non-Postgraduate (proprietor's own further education, H5(i))
+    → keywords: university fee, college fee, degree fee (bachelor's/undergraduate),
+      diploma fee, professional qualification, ACCA, CPA, CIMA, law/accounting/
+      Islamic-finance/technical/vocational/industrial/scientific/technological course
+      fee at a recognised institution
+    NOTE: Any course of study up to tertiary level OTHER than a Master's or Doctorate
+      — RM7,000/year combined with H5(ii) below AND the upskilling category (see the
+      RM2,000 inner sub-cap on that one). Children's school / tuition fees go to
+      Q4 — Family & Childcare Expenses instead — there is no Form B relief for a
+      school-age child's general tuition fees beyond the childcare/SSPN categories
+      below. If the fee receipt doesn't specify a level, DEFAULT here rather than to
+      H5(ii) — Master's/Doctorate fees are usually explicitly labelled as such.
+    → Q4 — Education Relief (Non-Postgraduate)  [status: relief]
+
+  Education Fee Receipt — Postgraduate (proprietor's own further education, H5(ii))
+    → keywords: master's fee, masters fee, MBA fee, doctorate fee, PhD fee,
+      postgraduate fee, doctoral programme fee
+    NOTE: Any course of study specifically at Master's or Doctorate level — SAME
+      RM7,000/year combined pool as H5(i) above (no separate cap of its own), but
+      tracked as its own category since it's a distinct line on the printed form
+      (H5(ii), not H5(i)). Only classify here when the receipt explicitly indicates
+      a Master's/Doctorate programme — otherwise use H5(i) above.
+    → Q4 — Education Relief (Postgraduate)  [status: relief]
+
+  Upskilling / Self-Enhancement Course Receipt (H5(iii))
+    → keywords: upskilling course, self-enhancement course, hobby class, language class,
+      short course NOT tied to a formal degree/professional qualification, skill area
+      recognised by the Director General of Skills Development, HRDF-adjacent short course
+      for personal (not job-related) enhancement
+    NOTE: A narrower sub-case of H5 — course fees for upskilling or self-enhancement that do
+      NOT need to be government-recognised or tied to a formal qualification (e.g. a hobby,
+      religion, or language course). This is sub-capped at RM2,000/year WITHIN the same
+      RM7,000 combined H5 pool as ordinary Education Relief above — kept as its own category
+      so that sub-cap can be enforced instead of silently letting it consume the full RM7,000.
+      If a receipt is ambiguous between a formal qualification and a self-enhancement course,
+      prefer Q4 — Education Relief (Non-Postgraduate) unless the course is clearly
+      informal/hobby-oriented, or Q4 — Education Relief (Postgraduate) if it's
+      explicitly a Master's/Doctorate programme.
+    → Q4 — Upskilling / Self-Enhancement Course  [status: relief]
+
+  Childcare Fee Receipt — child aged 6 and below, OR 7 to 12 from YA2026 (H12)
+    → keywords: nursery fee, kindergarten fee, tadika, tabika, child care fee, childcare
+      centre receipt, after-school care, care centre, registered with Department of Social
+      Welfare (DSW), registered with Ministry of Education, Care Centres Act 1993
+    NOTE: Fees paid to a DSW-registered child care centre or MOE-registered kindergarten,
+      for a child aged 6 or below, qualify for relief up to RM3,000/year (regardless of how
+      many children qualify).
+      Finance Act 2025 (Act 874) s.6(a)(iv), effective YA2026 onward (s.3(1)): a SECOND,
+      NEW track now shares the SAME RM3,000 pool — fees paid to a care centre registered
+      under the Care Centres Act 1993, for a child aged 7 to 12. This is a genuinely
+      different registration regime from the ≤6 band above (Care Centres Act 1993, not
+      DSW/Child Care Centre Act 1984 or MOE/Education Act 1996), and only applies for
+      YA2026 onward — a 7-to-12 child's fees do NOT qualify before YA2026 even if the
+      centre happens to be Care-Centres-Act-registered.
+      Fees for a child OVER 12, or an unregistered provider at any age, do not qualify
+      here regardless of year — route those to Q4 — Family & Childcare Expenses
+      (non_deductible) instead.
+      Extract child_age_band so the backend can apply the correct year-gated test:
+        "6 or under"  — qualifies in any year
+        "7 to 12"     — only qualifies from YA2026 onward, and only if the provider is a
+                        registered CARE CENTRE (not just any nursery/kindergarten)
+        "over 12"     — never qualifies
+        "unclear"     — receipt doesn't state or imply the child's age at all
+      Also extract provider_registration_status:
+        "registered"   — the receipt/letterhead explicitly states DSW, MOE, or Care
+                         Centres Act registration (a registration number, "berdaftar
+                         dengan JKM/KPM", or similar)
+        "unregistered" — the document explicitly indicates it is NOT a registered provider
+        "unclear"      — an ordinary fee receipt with no registration information either
+                         way (this will be the ORDINARY case for most receipts — do not
+                         infer "registered" just because it's a nursery, kindergarten, or
+                         care centre; plenty of unregistered private providers use those
+                         same words)
+      Still classify here whenever the receipt is plausibly for a qualifying-age child —
+      the backend applies the year/age gate, not this step.
+    → Q4 — Childcare Fees  [status: relief]  or  Q4 — Family & Childcare Expenses
+
+  SSPN Deposit / Statement (H13)
+    → keywords: SSPN, Skim Simpanan Pendidikan Nasional, SSPN deposit, SSPN penyata,
+      child education savings account statement
+    NOTE: Only the NET amount deposited in the basis year (total deposits minus total
+      withdrawals in that year) is deductible, up to RM8,000/year — a prior year's brought-
+      forward balance is never part of this figure. If the statement shows deposit and
+      withdrawal lines separately, extract both sspn_deposit_myr and sspn_withdrawal_myr so
+      the backend can compute the net; if only a single net "total deposit this year" figure
+      is shown, put that in sspn_deposit_myr and leave sspn_withdrawal_myr null.
+    → Q4 — SSPN Net Deposit  [status: relief]
+
+  Education / Medical Insurance Premium Statement (H19)
+    → keywords: education insurance premium, education policy premium, medical insurance
+      premium (family/individual policy, NOT the proprietor's business insurance), takaful
+      pendidikan, takaful perubatan, rider premium (payor benefit / dreadful disease / medical)
+    NOTE: Premiums for an education or medical insurance policy covering the taxpayer,
+      spouse, or child qualify for relief up to RM3,000/year. This is distinct from
+      Q4 — Life Insurance & Takaful Relief (life insurance / EPF pool) and from
+      Q3 — Business Insurance (the proprietor's business cover, a business deduction, not a
+      personal relief).
+    → Q4 — Education & Medical Insurance  [status: relief]
+
+  Sports Equipment Purchase Receipt (H10(i))
+    → keywords: sports equipment purchase, sports gear, racket, ball, sports shoes
+      (EXCLUDING motorised two-wheel bicycles)
+    NOTE: Purchase of sports equipment for any activity listed under the Sports
+      Development Act 1997, for the taxpayer, spouse, or child. RM1,000/year combined
+      with H10(ii)/(iii)/(iv) below.
+    → Q4 — Sports Equipment  [status: relief]
+
+  Sports Facility Rental / Entrance Fee Receipt (H10(ii))
+    → keywords: sports facility rental, court rental, field rental, entrance fee (sports
+      facility), swimming pool entrance fee
+    NOTE: Rental or entrance fee to any sports facility, for the taxpayer, spouse, or
+      child. Same RM1,000/year combined pool as H10(i)/(iii)/(iv).
+    → Q4 — Sports Facility Fee  [status: relief]
+
+  Sports Competition Registration Fee Receipt (H10(iii))
+    → keywords: sports competition registration, race entry fee, tournament registration
+      fee
+    NOTE: Registration fee for a sports competition where the organiser is approved and
+      licensed by the Commissioner of Sports under the Sports Development Act 1997, for
+      the taxpayer, spouse, or child. Same RM1,000/year combined pool as
+      H10(i)/(ii)/(iv).
+    → Q4 — Sports Competition Fee  [status: relief]
+
+  Gym Membership / Sports Training Fee Receipt (H10(iv))
+    → keywords: gym membership, fitness centre membership, sports training fee, personal
+      trainer fee, yoga studio membership, sports club membership
+    NOTE: Gym membership or sports training fees provided by a sports association/club
+      registered with the Commissioner of Sports, or a company incorporated under the
+      Companies Act 2016, for carrying out an activity listed under the Sports
+      Development Act 1997. Same RM1,000/year combined pool as H10(i)/(ii)/(iii). This
+      is separate from, and in addition to, H9's group (Books & Publications /
+      Personal Computer & Devices / Internet Subscription / Personal Enrichment Course).
+    → Q4 — Gym & Sports Training  [status: relief]
+
+  ── DONATIONS / GIFTS / CONTRIBUTIONS (Part G / B17) ──
+  CRITICAL DISTINCTION shared by all ten categories below: an approved
+  donation is NOT a personal relief capped by a fixed ringgit amount like the
+  Q4 relief categories above. It is deducted from aggregate income BEFORE
+  chargeable income is derived (Part G, transferred to B17) — the actual cap
+  applied (10% of B11 combined for some, an individual RM20,000 for others,
+  or no cap at all) can only be computed once total income for the year is
+  known, not per-document; that's handled in main.py, not here. Only
+  classify into ANY of these ten when the receipt is clearly from a
+  Government body, local authority, or an institution/fund/sports body/
+  project/facility explicitly APPROVED by the Director General of Inland
+  Revenue, Minister of Finance, or the relevant valuing authority named
+  below — a receipt from an unapproved charity does not qualify for ANY of
+  these and should NOT be classified here (treat as
+  Q4 — Personal Living Expenses; non_deductible, and note the approval
+  uncertainty). When approval can't be confirmed from the receipt alone,
+  still classify into the closest-matching category below but flag
+  needsReview — do not silently default to non-deductible on ambiguous cases
+  the way you would for the earlier Q4 relief categories, since donations
+  receipts rarely state their own approval status explicitly.
+
+  Government / Local Authority Donation (G1)
+    → keywords: donation to Government, gift to State Government, local authority receipt,
+      resit derma kerajaan, sumbangan kepada kerajaan negeri
+    NOTE: Gift of money to the Government, a State Government, or a local authority.
+      Subsection 44(6). Part of the combined 10%-of-B11 pool with G2a–G2d.
+    → Q4 — Donation: Government/Local Authority  [status: donation]
+
+  Approved Institution / Organisation / Fund Donation (G2a)
+    → keywords: approved institution receipt, donation to registered NGO, resit derma badan
+      kebajikan diluluskan, LHDN-approved organisation, tax-exempt donation receipt
+    NOTE: Gift of money to institutions/organisations/funds approved by the Director General
+      of Inland Revenue — this is the most common donation category for a typical filer (e.g.
+      a receipt from a registered charity/NGO that states LHDN approval or a tax-exemption
+      reference number). Subsection 44(6) and proviso. Part of the combined 10%-of-B11 pool.
+    → Q4 — Donation: Approved Institution  [status: donation]
+
+  Approved Sports Activity Donation (G2b)
+    → keywords: donation for sports activity, sumbangan sukan, gift to sports body approved
+      by Minister of Finance
+    NOTE: Gift of money for a sports activity approved by the Minister of Finance.
+      Subsection 44(11B) and proviso. Part of the combined 10%-of-B11 pool.
+    → Q4 — Donation: Approved Sports Activity  [status: donation]
+
+  National Interest Project Donation (G2c)
+    → keywords: donation for national interest project, contribution in kind for approved
+      project, sumbangan projek kepentingan negara
+    NOTE: Gift of money OR cost of contribution in kind for a project of national interest
+      approved by the Minister of Finance. Subsection 44(11C) and proviso. Part of the
+      combined 10%-of-B11 pool.
+    → Q4 — Donation: National Interest Project  [status: donation]
+
+  Wakaf / Endowment Donation (G2d)
+    → keywords: wakaf receipt, endowment to public university, gift to religious authority,
+      derma wakaf, sumbangan endowmen universiti awam
+    NOTE: Gift of money in the form of wakaf to a religious authority/body/public university
+      allowed to receive wakaf, OR endowment to a public university. Subsection 44(11D). Part
+      of the combined 10%-of-B11 pool (explicitly stated in LHDN's own notes for this one).
+    → Q4 — Donation: Wakaf/Endowment  [status: donation]
+
+  Artefacts / Manuscripts / Paintings to Government (G3)
+    → keywords: gift of artefacts to Government, donation of manuscripts, painting donated
+      to State Government, value determined by Department of Museums Malaysia or National
+      Archives
+    NOTE: Gift of artefacts, manuscripts, or paintings to the Government or a State
+      Government, valued by the Department of Museums Malaysia or the National Archives.
+      Subsection 44(6A). NOT part of the 10%-of-B11 pool, and no separate ringgit cap — but
+      the VALUE must come from one of those two named valuing authorities, not the donor's
+      own estimate; flag needsReview if the receipt doesn't show an official valuation.
+    → Q4 — Donation: Artefacts to Government  [status: donation]
+
+  Library Facilities Donation (G4)
+    → keywords: donation for library facilities, gift of money to library, sumbangan
+      kemudahan perpustakaan, school library donation receipt
+    NOTE: Gift of money (not exceeding RM20,000) for the provision of library facilities to
+      public libraries and libraries of schools/institutions of higher education. Subsection
+      44(8). Capped INDIVIDUALLY at RM20,000 — NOT part of the 10%-of-B11 pool.
+    → Q4 — Donation: Library Facilities  [status: donation]
+
+  Disabled-Persons Facilities Donation (G5)
+    → keywords: donation for disabled facilities, contribution in kind for OKU facilities,
+      sumbangan kemudahan orang kurang upaya, value determined by local authority
+    NOTE: Gift of money OR contribution in kind for the provision of public facilities for
+      the benefit of disabled persons, valued by the relevant local authority. Subsection
+      44(9). NOT part of the 10%-of-B11 pool, no separate ringgit cap — flag needsReview if a
+      contribution-in-kind receipt doesn't show a local-authority valuation.
+    → Q4 — Donation: Disabled Facilities  [status: donation]
+
+  Medical Equipment Donation to Healthcare Facility (G6)
+    → keywords: gift of medical equipment, donation to hospital approved by Ministry of
+      Health, sumbangan peralatan perubatan, MOH-approved healthcare facility
+    NOTE: Gift of money, or the cost/value (certified by the Ministry of Health) of medical
+      equipment, to a healthcare facility approved by the Ministry of Health — not exceeding
+      RM20,000. Subsection 44(10). Capped INDIVIDUALLY at RM20,000 — NOT part of the
+      10%-of-B11 pool.
+    → Q4 — Donation: Medical Equipment  [status: donation]
+
+  Paintings to National/State Art Gallery (G7)
+    → keywords: painting donated to National Art Gallery, gift to state art gallery, value
+      determined by National Art Gallery
+    NOTE: Gift of paintings to the National Art Gallery or any state art gallery, valued by
+      that gallery. Subsection 44(11). NOT part of the 10%-of-B11 pool, no separate ringgit
+      cap — flag needsReview if the receipt doesn't show an official gallery valuation.
+    → Q4 — Donation: Paintings to Art Gallery  [status: donation]
 
   Domestic Tourism / Hotel Receipt (personal stay)
     → keywords: hotel receipt (personal stay), accommodation receipt, resort booking,
@@ -1016,11 +1785,56 @@ Identify the document type precisely from content headers, vendor names, and fil
       Contrast with personal non-qualifying trips → Q4 — Personal Travel & Leisure; non_deductible.
     → Q4 — Domestic Tourism Relief  [status: relief]  or  Q4 — Personal Travel & Leisure
 
+  Tourist Attraction / Cultural & Arts Programme Entrance Fee Receipt
+    → keywords: entrance fee, admission ticket, tourist attraction, cultural programme,
+      arts programme, heritage site, theme park admission, museum entrance, cultural festival
+    NOTE — CRITICAL, YA2026 ONLY: Finance Act 2025 (Act 874) s.6(a)(v) introduces this as a
+      genuinely NEW relief (RM1,000/year) for entrance fees to tourist attractions or
+      cultural/arts programmes — it is NOT a revival of the older, separate "Domestic
+      Tourism Relief" above (which covers hotel stays/tour packages and remains lapsed).
+      Per s.3(2), this relief applies to YA2026 ONLY — not before, and not automatically
+      after, regardless of when this document happens to be uploaded or dated. The backend
+      enforces the exact-year gate; still classify entrance-fee receipts here whenever they
+      plausibly qualify by description, whatever year they're dated.
+    → Q4 — Tourist Attraction & Cultural Programme  [status: relief]  or  Q4 — Personal Travel & Leisure
+
   EV Charger Purchase / Installation Receipt
     → keywords: EV charger, electric vehicle charger, EV charging equipment, pengecas EV,
       EV charging installation, home EV charger
-    NOTE: Purchase and installation of EV charging equipment qualifies for relief up to RM2,500/year.
+    NOTE: Purchase and installation of EV charging equipment for the taxpayer's own vehicle
+      (not for business use). Stated eligible years: 2023-2027 (Finance Act 2025, Act 874,
+      s.6(a)(vi)). From YA2026-2027, this shares ONE RM2,500 pool with three new items below
+      (food waste compost/grinder machines, home CCTV) rather than having its own standalone
+      cap — the backend applies the correct pool depending on the filing year.
     → Q4 — EV Charging Equipment  [status: relief]
+
+  Food Waste Compost Machine Purchase Receipt
+    → keywords: food waste compost machine, food waste composter, kitchen compost machine,
+      mesin kompos sisa makanan
+    NOTE — Finance Act 2025 (Act 874) s.6(a)(vi): household food waste compost machine,
+      claimable ONCE across YA2025, 2026, or 2027 (not once per year — once across the
+      whole window), sharing the RM2,500 pool with EV charging/grinder/CCTV from YA2026
+      onward. Still classify here regardless of which year within the window this is —
+      the backend's registry decides whether this specific year is the eligible claim.
+    → Q4 — Food Waste Compost Machine  [status: relief]
+
+  Food Waste Grinder Machine Purchase / Installation Receipt
+    → keywords: food waste grinder, food waste disposal unit, kitchen waste grinder,
+      mesin pengisar sisa makanan
+    NOTE — Finance Act 2025 (Act 874) s.6(a)(vi): household food waste grinder machine
+      (purchase or installation), claimable ONCE across YA2026 or 2027, sharing the
+      RM2,500 pool with EV charging/compost machine/CCTV.
+    → Q4 — Food Waste Grinder Machine  [status: relief]
+
+  Home CCTV Purchase / Installation Receipt
+    → keywords: CCTV, closed-circuit television, home security camera system, CCTV
+      installation, kamera litar tertutup
+    NOTE — Finance Act 2025 (Act 874) s.6(a)(vi): household CCTV (purchase or
+      installation), claimable ONCE across YA2026 or 2027, sharing the RM2,500 pool with
+      EV charging/compost machine/grinder machine. A CCTV system installed for BUSINESS
+      premises security belongs in Q3 business expenses instead — only a household/
+      residential system belongs here.
+    → Q4 — Home CCTV  [status: relief]  or  Q3 — Business Utilities (if clearly for business premises)
 
   Zakat Payment Receipt / Zakat Confirmation
     → keywords: zakat, bayaran zakat, resit zakat, zakat pendapatan, zakat harta, zakat perniagaan,
@@ -1034,6 +1848,74 @@ Identify the document type precisely from content headers, vendor names, and fil
       Extract the total zakat amount paid and the issuing zakat authority.
       Set status: relief; set relief_cap_myr: null (no statutory cap — full amount offsets tax payable).
     → Q4 — Zakat  [status: relief]
+
+  Section 110 Withholding Tax Certificate / Statement (Others) — B29
+    → keywords: seksyen 110, section 110 withholding, tax withheld at source, withholding tax
+      certificate, potongan cukai, interest withholding, royalty withholding, trust income
+      withholding, s.4A income withholding
+    NOTE — CRITICAL DISTINCTION: like Zakat, this is a REBATE against tax PAYABLE, not an
+      income-reducing relief — but unlike Zakat, it's a CREDIT for tax LHDN considers you to
+      have already effectively paid via withholding (domestic withholding on interest,
+      royalties, s.4A income, or trust income — NOT the section 107A withholding on
+      non-resident contractor payments, and NOT section 107D below, which is its own
+      separate B-line). Extract the withheld amount and what kind of income it relates to.
+      Set status: relief; set relief_cap_myr: null (no statutory cap).
+    → Q4 — Section 110 Withholding (Others)  [status: relief]
+
+  Section 107D Withholding Tax Statement (agent/dealer/distributor payments) — B33ii
+    → keywords: seksyen 107D, section 107D, 2% withholding, agent commission withholding,
+      dealer withholding, distributor withholding, potongan cukai 2%, CP107D
+    NOTE — CRITICAL DISTINCTION: this is a PAYMENT already made on the proprietor's behalf
+      (the 2% a payer company withholds when paying its agents/dealers/distributors in cash),
+      economically the same role as MTD or a CP500 instalment — it reduces the final BALANCE
+      of tax payable (B33/B34), not tax payable itself (unlike B29/Zakat above, which reduce
+      tax payable directly). Mainly relevant to direct-sales/MLM-style businesses receiving
+      commission income. Extract the withheld amount and the paying company's name.
+      Set status: relief; set relief_cap_myr: null (no statutory cap).
+    → Q4 — Section 107D Withholding  [status: relief]
+
+  Departure Levy Receipt / Boarding Pass + Visa (Umrah or Other Religious Pilgrimage) — B27iii
+    → keywords: departure levy, levi berlepas, boarding pass, umrah visa, resit levi berlepas,
+      religious pilgrimage verification, RM8/RM20/RM50/RM150 departure levy rate
+    NOTE — CRITICAL: this is a REBATE (offsets tax payable directly), for air travel
+      specifically for UMRAH or another religious pilgrimage — explicitly NOT hajj (hajj has
+      no departure-levy rebate under this line). Evidenced by a boarding pass plus (for umrah)
+      a Saudi embassy visa copy, or (for other pilgrimages) written verification from a
+      recognised religious body. CRITICAL CAP: limited to 2 TRIPS IN A LIFETIME — not 2 per
+      year, not 2 within some window, but 2 EVER across every year this taxpayer has ever
+      filed. This app cannot know about trips claimed before it started tracking documents,
+      so this will always need a review flag rather than being silently trusted past the
+      cap. Extract:
+        amount     : the departure levy amount actually paid (string) — NOT the cost of the
+                    trip itself, only the levy (RM8/RM50 ASEAN economy/other-class, RM20/RM150
+                    non-ASEAN economy/other-class, per current rates)
+        trip_type  : "umrah" | "other_religious" | "unclear"
+      Set status: relief; set relief_cap_myr: null (capped by trip COUNT, not a ringgit
+      amount — the backend enforces the lifetime count from the full claim history).
+    → Q4 — Departure Levy (Umrah/Religious Travel)  [status: relief]  or  Q4 — Personal Travel & Leisure
+
+  ── PART J INCENTIVE CLAIMS — OUT OF SCOPE ──
+  Part J (paragraph 127(3)(b) special/further/double deductions) is out of
+  scope for this feature (product decision, 14 Jul 2026). Do NOT classify any
+  document as a J1/claim-code category — it no longer exists. A company
+  secretary / tax agent fee invoice belongs in the ordinary
+  "Q3 — Professional & Legal Fees" category instead (still a real deductible
+  business expense, just without the special-deduction treatment); a
+  franchise fee invoice belongs in an ordinary Q3 expense category too.
+
+  Breastfeeding Equipment Purchase Receipt (H11)
+    → keywords: breast pump, breast pump kit, ice pack for breast milk, breast milk storage
+      bag, breast milk collection equipment, cooler bag, cooler set, pam susu, beg simpanan
+      susu ibu
+    NOTE: Deduction up to RM1,000, for a breastfeeding mother's OWN purchase of qualifying
+      equipment (breast pump kit and ice pack; breast milk collection/storage equipment;
+      cooler set or cooler bag) for her own use to breastfeed her own child aged 2 years or
+      below. Allowed only ONCE EVERY TWO YEARS OF ASSESSMENT — this multi-year eligibility
+      check is done in main.py from a persisted claim registry, not per-document, so just
+      extract the amount and date here; do not attempt to determine eligibility yourself.
+      Set relief_cap_myr: null (the RM1,000 cap and the 2-year gate are both enforced at the
+      registry level, not per-document).
+    → Q4 — Breastfeeding Equipment  [status: relief]
 
   ── SPREADSHEET TYPES ──
 
@@ -1127,15 +2009,15 @@ Q1 BUSINESS INCOME RULES
   • e-Invoice (s.82C): if the document is an LHDN MyInvois / Peppol-validated e-invoice,
     note this in the note field. If gross business revenue appears to exceed RM1,000,000,
     flag in the note that e-invoice compliance may be mandatory.
-  • P&L / Balance Sheet: financial summaries — extract revenue, gross profit, net profit,
-    total assets, total liabilities, equity into line_items. No standalone deductibility.
-    These are DERIVED AGGREGATES, not a transaction — the system treats them as
-    reference-only regardless of what is extracted, and will NEVER sum this document's
-    amount into the user's income or deduction totals. Set the top-level "amount" field
-    to null for these documents; put every figure (revenue, net profit, total assets,
-    etc.) into line_items instead, each with a clear "desc" so it's obvious which figure
-    is which. The same applies to a Filed Form B (Prior Year) document — it is a
-    carry-forward reference, not current-year income; leave "amount" null there too.
+  • P&L / Balance Sheet (Phase 6, 14 Jul 2026): financial summaries — extract every
+    figure into the financial_statement field (see its schema below), NOT into
+    line_items. These are DERIVED AGGREGATES, not a transaction — the system
+    treats them as reference-only regardless of what is extracted, and will
+    NEVER sum this document's amount into the user's income or deduction
+    totals. Set the top-level "amount" field to null for these documents.
+    The same applies to a Filed Form B (Prior Year) document — it is a
+    carry-forward reference, not current-year income; leave "amount" null there
+    too (its own structured fields go in form_b, not financial_statement).
 
 ──────────────────────────────────────────────────
 Q2 PERSONAL INCOME RULES
@@ -1342,21 +2224,35 @@ Q4 PERSONAL RELIEF RULES
 
   Relief caps (YA 2025 — verify against current gazette at filing):
     Life insurance + EPF (combined)                  : up to RM7,000 (RM3k insurance + RM4k EPF)
-    Medical insurance / takaful (separate sub-limit) : up to RM3,000
     EPF personal contribution (alone)                : up to RM4,000
     PRS contribution                                 : up to RM3,000
-    SOCSO / EIS personal contribution                : up to RM250
-    Medical & parental care                          : up to RM8,000 (parents); RM1,000 own check-up
+    SOCSO / EIS personal contribution                : up to RM350
+    Parent medical care (H2)                         : up to RM8,000
+    Self/spouse/child medical (H6+H7+H8 combined)    : up to RM10,000
     Medical equipment (disabled)                     : up to RM6,000
-    Lifestyle (books, gym, internet, devices)        : up to RM2,500
-    Education (own, approved course)                 : up to RM7,000
-    Child relief (each child <18)                    : RM2,000/child
-    Child education (18+, tertiary)                  : RM8,000/child
-    SSPN net deposits                                : up to RM8,000
-    Childcare / kindergarten fees                    : up to RM3,000
+    Lifestyle (books, internet, devices)             : up to RM2,500
+    Education, own (H5(i)/(ii)+(iii) combined)       : up to RM7,000 — of which upskilling/
+                                                        self-enhancement (H5(iii)) alone is
+                                                        further sub-capped at RM2,000
+    Childcare / kindergarten fees, child ≤6 (H12)    : up to RM3,000
+    SSPN net deposits (H13)                          : up to RM8,000 (net of withdrawals — see
+                                                        the SSPN Deposit / Statement entry above)
+    Education & medical insurance (H19)              : up to RM3,000
+    Sports & fitness (H10)                           : up to RM1,000
+    Breastfeeding equipment (H11)                     : up to RM1,000, once every 2 YAs (see
+                                                        the Breastfeeding Equipment entry above)
     Domestic tourism                                 : up to RM1,000
     EV charging equipment                            : up to RM2,500
     Zakat                                            : full amount paid (no cap; offsets tax PAYABLE not income)
+    Approved donations                               : capped at 10% of B11 (aggregate income) —
+                                                        NOT a fixed ringgit amount, so set
+                                                        relief_cap_myr: null here; the backend
+                                                        computes the 10% cap once B11 is known.
+
+  Note: the fixed per-child relief (H16 — RM2,000/RM8,000/RM6,000–14,000 depending on age,
+  study status, and disability) is intentionally NOT in this list. It is never derived from a
+  receipt — it depends on each child's recorded age/study/disability status — so no document
+  should ever be classified in a way that claims to represent it directly.
 
   Expenses that EXCEED relief caps are non_deductible personal spending — reclassify the
   excess portion as Q4 — Personal Living Expenses or the relevant Q4 non-deductible category.
@@ -1392,7 +2288,9 @@ CROSS-CUTTING COMPLIANCE CHECKS
     or QR code linked to the LHDN portal.
 
   s.107B — CP500 Tax Installments:
-    If the document is a CP500 notice, extract installment_amount and installment_month.
+    Distinguish an instalment NOTICE (extract ya_year, total_scheduled_amount) from a
+    PAYMENT RECEIPT (extract ya_year, amount, reference_no) — see the CP500 section above
+    for the full distinguishing criteria. Never extract a notice's schedule into `amount`.
     Note: CP502 must be filed before 30 June if estimated income drops by >30%.
 
   s.83A — CP58 Obligation:
@@ -1471,10 +2369,22 @@ OUTPUT FORMAT — return ONLY valid JSON, no markdown fences, no preamble
   "cgt_disposal_consideration": "<ONLY for s.4(aa) CGT documents: disposal/sale price as string e.g. RM 50,000.00, else null>",
   "cgt_acquisition_cost": "<ONLY for s.4(aa) CGT documents: original acquisition cost as string, else null>",
   "cgt_gain_loss": "<ONLY for s.4(aa) CGT documents: computed gain or loss as string e.g. Gain RM 12,000.00, else null>",
-  "installment_amount": <ONLY for CP500/CP204: installment amount as float, else null>,
-  "installment_month": "<ONLY for CP500/CP204: e.g. Mar 2025, else null>",
-  "relief_cap_myr": <ONLY for Q4 relief items: applicable annual cap as integer e.g. 3000, or null if no cap (Zakat)>,
+  "ya_year": "<ONLY for CP500/CP204 notice or receipt: the year of assessment the instalment scheme is FOR — may differ from tax_year/date if this is a late payment for a prior YA, as integer e.g. 2024, else null>",
+  "total_scheduled_amount": "<ONLY for a CP500/CP204 INSTALMENT NOTICE (schedule of what's due, not a receipt): the year's total scheduled amount as string, else null>",
+  "reference_no": "<ONLY for a CP500/CP204 PAYMENT RECEIPT: bank/transaction reference or LHDN bill number, else null>",
+  "relief_cap_myr": <ONLY for Q4 relief items: applicable annual cap as integer e.g. 3000, or null if no cap (Zakat, Approved Donations — see the Q4 rules above for why)>,
   "zakat_amount": "<ONLY for Q4 — Zakat documents: total zakat paid as string e.g. RM 1,200.00, else null>",
+  "sspn_deposit_myr": "<ONLY for Q4 — SSPN Net Deposit documents: total deposited in the basis year as string, else null>",
+  "sspn_withdrawal_myr": "<ONLY for Q4 — SSPN Net Deposit documents: total withdrawn in the basis year as string, or null if the statement shows no withdrawals>",
+  "dsw_registered": "<ONLY for Q4 — Medical Equipment Relief: 'yes' | 'no' | 'unclear', else null>",
+  "provider_registration_status": "<ONLY for Q4 — Childcare Fees: 'registered' | 'unregistered' | 'unclear', else null>",
+  "child_age_band": "<ONLY for Q4 — Childcare Fees: '6 or under' | '7 to 12' | 'over 12' | 'unclear', else null>",
+  "vaccine_name": "<ONLY for Q4 — Vaccination: the specific vaccine/immunisation named, else null>",
+  "npra_registered": "<ONLY for Q4 — Vaccination: 'yes' | 'no' | 'unclear', else null>",
+  "policy_life_insured": "<ONLY for Q4 — Life Insurance & Takaful Relief: 'self' | 'spouse' | 'child' | 'unclear', else null>",
+  "income_type": "<ONLY for Q1 — Voluntary Disclosure (Prior Year Income): what kind of income, else null>",
+  "disclosed_ya": "<ONLY for Q1 — Voluntary Disclosure (Prior Year Income): the YA this income belongs to, as integer, else null>",
+  "trip_type": "<ONLY for Q4 — Departure Levy (Umrah/Religious Travel): 'umrah' | 'other_religious' | 'unclear', else null>",
   "fsi_source_country": "<ONLY for Q2 — Foreign-Source Income: country of origin e.g. Singapore, else null>",
   "reason": "<ONLY if mixed: the specific ITA 1967 rule causing ambiguity>",
   "question": "<ONLY if mixed: single most important clarifying question for the user>",
@@ -1511,7 +2421,39 @@ OUTPUT FORMAT — return ONLY valid JSON, no markdown fences, no preamble
     "socso_employee": "<string amount or null>",
     "eis_employee": "<string amount or null>",
     "benefits_in_kind": "<string amount or null>",
-    "ya_year": <integer or null>
+    "ya_year": <integer or null>,
+    "employment_start_date_this_ya": "<YYYY-MM-DD or null — null means employment was already ongoing from before the YA began>",
+    "employment_end_date_this_ya": "<YYYY-MM-DD or null — null means employment was ongoing through 31 Dec of the YA>"
+  }},
+  "financial_statement": {{
+    "ONLY for Q1 — Financial Statements (P&L) or Q1 — Financial Statements (BS). Null any field not shown on this document — do not derive a missing figure from others.",
+    "sales_or_turnover": "<string amount or null>",
+    "opening_inventory": "<string amount or null>",
+    "closing_inventory": "<string amount or null>",
+    "other_business_income": "<string amount or null>",
+    "dividends": "<string amount or null>",
+    "rents_royalties_premiums": "<string amount or null>",
+    "contract_subcontracts": "<string amount or null>",
+    "bad_debts": "<string amount or null>",
+    "stated_revenue": "<string amount or null>",
+    "stated_net_profit": "<string amount or null, signed e.g. -12,000.00 for a loss>",
+    "land_buildings": "<string amount or null>",
+    "plant_machinery": "<string amount or null>",
+    "motor_vehicles": "<string amount or null>",
+    "other_non_current_assets": "<string amount or null>",
+    "investments": "<string amount or null>",
+    "inventory": "<string amount or null>",
+    "trade_debtors": "<string amount or null>",
+    "sundry_debtors": "<string amount or null>",
+    "cash_in_hand": "<string amount or null>",
+    "cash_at_bank": "<string amount or null>",
+    "other_current_assets": "<string amount or null>",
+    "loans_overdrafts": "<string amount or null>",
+    "trade_creditors": "<string amount or null>",
+    "sundry_creditors": "<string amount or null>",
+    "capital_account": "<string amount or null>",
+    "current_account_bf": "<string amount or null>",
+    "drawings_advance_net": "<string amount or null>"
   }}
 }}"""
 
@@ -1965,13 +2907,25 @@ def build_extracted_data(
     "cgt_acquisition_cost":       llm_result.get("cgt_acquisition_cost"),
     "cgt_gain_loss":              llm_result.get("cgt_gain_loss"),
 
-    # CP500 / CP204 installment tracking
-    "installment_amount":        llm_result.get("installment_amount"),
-    "installment_month":         llm_result.get("installment_month"),
+    # CP500 / CP204 instalment notice vs. payment receipt (15 Jul 2026 split)
+    "ya_year":                   llm_result.get("ya_year"),
+    "total_scheduled_amount":    llm_result.get("total_scheduled_amount"),
+    "reference_no":              llm_result.get("reference_no"),
 
     # Q4 relief
     "relief_cap_myr":            llm_result.get("relief_cap_myr"),
     "zakat_amount":              llm_result.get("zakat_amount"),
+    "sspn_deposit_myr":          llm_result.get("sspn_deposit_myr"),
+    "sspn_withdrawal_myr":       llm_result.get("sspn_withdrawal_myr"),
+    "dsw_registered":            llm_result.get("dsw_registered"),
+    "provider_registration_status": llm_result.get("provider_registration_status"),
+    "child_age_band":              llm_result.get("child_age_band"),
+    "vaccine_name":               llm_result.get("vaccine_name"),
+    "npra_registered":            llm_result.get("npra_registered"),
+    "policy_life_insured":        llm_result.get("policy_life_insured"),
+    "income_type":                llm_result.get("income_type"),
+    "disclosed_ya":               llm_result.get("disclosed_ya"),
+    "trip_type":                  llm_result.get("trip_type"),
 
     # Q2 foreign-source income
     "fsi_source_country":        llm_result.get("fsi_source_country"),
@@ -1988,6 +2942,8 @@ def build_extracted_data(
       "eis_employee":     form_ea_raw.get("eis_employee"),
       "benefits_in_kind": form_ea_raw.get("benefits_in_kind"),
       "ya_year":          form_ea_raw.get("ya_year"),
+      "employment_start_date_this_ya": form_ea_raw.get("employment_start_date_this_ya"),
+      "employment_end_date_this_ya": form_ea_raw.get("employment_end_date_this_ya"),
     } if form_ea_raw else None,
 
     # ── Filed Form B (Q1 — Prior Year) explicit field mapping ─────────────────
@@ -2126,6 +3082,443 @@ def embed_document_for_rag(document: "Document") -> None:
 
 
 # ─── Main pipeline ─────────────────────────────────────────────────────────────
+def sync_capital_asset_registry(db, document, category: str, status: str, ya_int, extracted_data: dict, description, doc_id) -> None:
+  """
+  Create/update/remove the CapitalAsset registry row for `document` so it
+  always matches its CURRENT category/status — called from the initial
+  classification pipeline below AND from main.py's manual reclassify/reset
+  endpoints, so a document's capital-allowance schedule never silently
+  drifts out of sync with whatever category is most recently assigned to it.
+
+  Without the removal branch, reclassifying a document AWAY from a capital
+  category would leave a stale CapitalAsset row behind, silently generating
+  Annual Allowance forever even after a human said "this isn't a capital
+  asset" — a real correctness bug, not just a missing feature.
+  """
+  existing_asset = db.query(CapitalAsset).filter(
+    CapitalAsset.source_document_id == document.id,
+  ).first()
+
+  if status != "capital" or not ya_int:
+    if existing_asset:
+      db.delete(existing_asset)
+      db.commit()
+      logger.info(f"[Pipeline] Removed CapitalAsset for Document ID {doc_id} (no longer classified as capital)")
+    return
+
+  try:
+    cost = parse_amount(extracted_data.get("amount"))
+    if cost <= 0:
+      logger.warning(
+        f"[Pipeline] Document ID {doc_id} classified as capital but no positive "
+        "amount was extracted — skipping CapitalAsset registry entry. This "
+        "document will need manual review to enter the asset register."
+      )
+      return
+
+    acquisition_date = None
+    if extracted_data.get("date"):
+      try:
+        from datetime import date as _date
+        acquisition_date = _date.fromisoformat(extracted_data["date"])
+      except (ValueError, TypeError):
+        acquisition_date = None
+
+    # Validate the LLM's IA/AA rates against the statutory Schedule 3 table
+    # rather than trusting them — a hallucinated rate would otherwise flow
+    # straight into the user's allowance figures.
+    asset_class_raw = extracted_data.get("asset_class") or "Unclassified Asset"
+    ia_pct, aa_pct, rate_needs_review, rate_note = resolve_capital_allowance_rates(
+      asset_class_raw,
+      extracted_data.get("ia_rate_pct"),
+      extracted_data.get("aa_rate_pct"),
+    )
+    if rate_note:
+      logger.info(f"[Pipeline] Document ID {doc_id} CA rate adjustment: {rate_note}")
+      extracted_data["ca_rate_note"] = rate_note
+      extracted_data["ca_rate_needs_review"] = rate_needs_review
+      document.extracted_data = extracted_data
+
+    asset_kwargs = dict(
+      user_id            = document.user_id,
+      entity_id          = document.entity_id,
+      source_document_id = document.id,
+      asset_class         = asset_class_raw,
+      description         = description,
+      cost                = cost,
+      acquisition_date    = acquisition_date,
+      acquisition_year    = ya_int,
+      ia_rate_pct         = ia_pct,
+      aa_rate_pct         = aa_pct,
+    )
+
+    if existing_asset:
+      for k, v in asset_kwargs.items():
+        setattr(existing_asset, k, v)
+      logger.info(f"[Pipeline] Updated CapitalAsset for Document ID {doc_id}")
+    else:
+      db.add(CapitalAsset(**asset_kwargs))
+      logger.info(f"[Pipeline] Created CapitalAsset for Document ID {doc_id}")
+
+    db.commit()
+  except Exception as ca_e:
+    logger.error(f"[Pipeline] CapitalAsset upsert failed for Document ID {doc_id}: {ca_e}")
+    db.rollback()  # don't fail the main document record over a registry upsert error
+
+
+def sync_breastfeeding_claim_registry(db, document, category: str, ya_int, extracted_data: dict, description, doc_id) -> None:
+  """
+  Create/update/remove the BreastfeedingEquipmentClaim registry row for
+  `document` so it always matches its CURRENT category — mirrors
+  sync_capital_asset_registry above for exactly the same reason (manual
+  reclassify/reset must not leave a stale H11 claim silently affecting a
+  future year's 2-year eligibility check, or fail to create one when a
+  document is reclassified INTO this category).
+
+  Only the raw purchase amount/year is persisted here — eligibility (the
+  "once every 2 years of assessment" gate) and the RM1,000 cap are both
+  computed fresh for a target year from the FULL claim history in
+  breastfeeding_relief.py, not decided at write time.
+  """
+  existing_claim = db.query(BreastfeedingEquipmentClaim).filter(
+    BreastfeedingEquipmentClaim.source_document_id == document.id,
+  ).first()
+
+  if category != "Q4 — Breastfeeding Equipment" or not ya_int:
+    if existing_claim:
+      db.delete(existing_claim)
+      db.commit()
+      logger.info(f"[Pipeline] Removed BreastfeedingEquipmentClaim for Document ID {doc_id} (no longer classified as H11)")
+    return
+
+  try:
+    claim_amount = parse_amount(extracted_data.get("amount"))
+    if claim_amount <= 0:
+      logger.warning(
+        f"[Pipeline] Document ID {doc_id} classified as H11 breastfeeding equipment but no "
+        "positive amount was extracted — skipping BreastfeedingEquipmentClaim registry entry. "
+        "This document will need manual review to enter the claim."
+      )
+      return
+
+    claim_kwargs = dict(
+      user_id            = document.user_id,
+      entity_id          = document.entity_id,
+      source_document_id = document.id,
+      description         = description,
+      amount              = claim_amount,
+      year_of_assessment  = ya_int,
+    )
+
+    if existing_claim:
+      for k, v in claim_kwargs.items():
+        setattr(existing_claim, k, v)
+      logger.info(f"[Pipeline] Updated BreastfeedingEquipmentClaim for Document ID {doc_id}")
+    else:
+      db.add(BreastfeedingEquipmentClaim(**claim_kwargs))
+      logger.info(f"[Pipeline] Created BreastfeedingEquipmentClaim for Document ID {doc_id}")
+
+    db.commit()
+  except Exception as bc_e:
+    logger.error(f"[Pipeline] BreastfeedingEquipmentClaim upsert failed for Document ID {doc_id}: {bc_e}")
+    db.rollback()  # don't fail the main document record over a registry upsert error
+
+
+def sync_cp500_registry(db, document, category: str, ya_int, extracted_data: dict, doc_id) -> None:
+  """
+  Create/update/remove the CP500Record registry row for `document` —
+  mirrors sync_capital_asset_registry's upsert-by-source-document pattern.
+  Handles BOTH CP500 categories (notice and receipt) since they share the
+  same table, distinguished only by `record_type`.
+
+  `ya_int` here is the document's fully-resolved year of assessment (see
+  the ya_raw chain above, which already prefers CP500's own extracted
+  ya_year over the document's date) — NOT necessarily the calendar year
+  the document was uploaded or dated, which matters for a late instalment
+  paid in a different calendar year than the YA it's for.
+  """
+  existing = db.query(CP500Record).filter(CP500Record.source_document_id == document.id).first()
+
+  is_notice  = category == "Q3 — CP500 Instalment Notice"
+  is_receipt = category == "Q3 — CP500 Payment Receipt"
+
+  if not (is_notice or is_receipt) or not ya_int:
+    if existing:
+      db.delete(existing)
+      db.commit()
+      logger.info(f"[Pipeline] Removed CP500Record for Document ID {doc_id} (no longer classified as CP500)")
+    return
+
+  try:
+    if is_notice:
+      amount       = parse_amount(extracted_data.get("total_scheduled_amount"))
+      record_type  = "notice"
+      reference_no = None
+    else:
+      amount       = parse_amount(extracted_data.get("amount"))
+      record_type  = "payment"
+      reference_no = extracted_data.get("reference_no")
+
+    if amount <= 0:
+      logger.warning(
+        f"[Pipeline] Document ID {doc_id} classified as {category} but no positive amount "
+        "was extracted — skipping CP500Record registry entry. This document will need "
+        "manual review to enter the instalment figure."
+      )
+      return
+
+    record_kwargs = dict(
+      user_id            = document.user_id,
+      source_document_id = document.id,
+      record_type        = record_type,
+      year_of_assessment = ya_int,
+      amount             = amount,
+      reference_no       = reference_no,
+    )
+
+    if existing:
+      for k, v in record_kwargs.items():
+        setattr(existing, k, v)
+      logger.info(f"[Pipeline] Updated CP500Record for Document ID {doc_id}")
+    else:
+      db.add(CP500Record(**record_kwargs))
+      logger.info(f"[Pipeline] Created CP500Record for Document ID {doc_id}")
+
+    db.commit()
+  except Exception as cp_e:
+    logger.error(f"[Pipeline] CP500Record upsert failed for Document ID {doc_id}: {cp_e}")
+    db.rollback()  # don't fail the main document record over a registry upsert error
+
+
+# Categories handled by sync_one_time_relief_registry — kept as one constant
+# so a future addition only needs one line here plus the registry
+# constants/window in main.py, rather than touching this function's body.
+ONE_TIME_RELIEF_CATEGORIES = {
+  "Q4 — Food Waste Compost Machine",
+  "Q4 — Food Waste Grinder Machine",
+  "Q4 — Home CCTV",
+  # B27iii (16 Jul 2026): reuses the SAME OneTimeReliefClaim storage table
+  # (upsert-by-source-document is identical) — only the ELIGIBILITY logic
+  # differs (lifetime trip count, not a windowed claim-once test), which is
+  # why this has its OWN compute function (compute_departure_levy_rebate_
+  # for_year in one_time_relief.py) even though it shares this table.
+  "Q4 — Departure Levy (Umrah/Religious Travel)",
+}
+
+
+def sync_one_time_relief_registry(db, document, category: str, ya_int, extracted_data: dict, doc_id) -> None:
+  """
+  Create/update/remove the OneTimeReliefClaim registry row for `document`.
+  Mirrors sync_cp500_registry's upsert-by-source-document pattern, just
+  across three categories sharing one table (distinguished by `category`
+  itself, rather than a record_type column, since these three don't share
+  CP500's notice/receipt distinction — every document here IS a claim).
+  """
+  existing = db.query(OneTimeReliefClaim).filter(OneTimeReliefClaim.source_document_id == document.id).first()
+
+  if category not in ONE_TIME_RELIEF_CATEGORIES or not ya_int:
+    if existing:
+      db.delete(existing)
+      db.commit()
+      logger.info(f"[Pipeline] Removed OneTimeReliefClaim for Document ID {doc_id} (no longer classified as a one-time relief)")
+    return
+
+  try:
+    amount = parse_amount(extracted_data.get("amount"))
+    if amount <= 0:
+      logger.warning(
+        f"[Pipeline] Document ID {doc_id} classified as {category} but no positive amount "
+        "was extracted — skipping OneTimeReliefClaim registry entry."
+      )
+      return
+
+    record_kwargs = dict(
+      user_id            = document.user_id,
+      source_document_id = document.id,
+      category           = category,
+      year_of_assessment = ya_int,
+      amount             = amount,
+    )
+
+    if existing:
+      for k, v in record_kwargs.items():
+        setattr(existing, k, v)
+      logger.info(f"[Pipeline] Updated OneTimeReliefClaim for Document ID {doc_id}")
+    else:
+      db.add(OneTimeReliefClaim(**record_kwargs))
+      logger.info(f"[Pipeline] Created OneTimeReliefClaim for Document ID {doc_id}")
+
+    db.commit()
+  except Exception as otr_e:
+    logger.error(f"[Pipeline] OneTimeReliefClaim upsert failed for Document ID {doc_id}: {otr_e}")
+    db.rollback()  # don't fail the main document record over a registry upsert error
+
+
+# P&L-side and BS-side field maps: extracted_data key → FinancialStatementProfile
+# column. Kept as module-level dicts so both halves of
+# sync_financial_statement_profile (and any future cleanup code) walk the
+# same list rather than two independently-maintained field-by-field blocks.
+_FSP_PL_FIELD_MAP = {
+  "opening_inventory":        "pl_opening_inventory",
+  "closing_inventory":        "pl_closing_inventory",
+  "other_business_income":    "pl_other_business_income",
+  "dividends":                "pl_dividends",
+  "rents_royalties_premiums": "pl_rents_royalties_premiums",
+  "contract_subcontracts":    "pl_contract_subcontracts",
+  "bad_debts":                "pl_bad_debts",
+  "stated_revenue":           "pl_stated_revenue",
+  "stated_net_profit":        "pl_stated_net_profit",
+}
+_FSP_BS_FIELD_MAP = {
+  "land_buildings":           "bs_land_buildings",
+  "plant_machinery":          "bs_plant_machinery",
+  "motor_vehicles":           "bs_motor_vehicles",
+  "other_non_current_assets": "bs_other_non_current_assets",
+  "investments":               "bs_investments",
+  "inventory":                 "bs_inventory",
+  "trade_debtors":             "bs_trade_debtors",
+  "sundry_debtors":            "bs_sundry_debtors",
+  "cash_in_hand":              "bs_cash_in_hand",
+  "cash_at_bank":              "bs_cash_at_bank",
+  "other_current_assets":      "bs_other_current_assets",
+  "loans_overdrafts":          "bs_loans_overdrafts",
+  "trade_creditors":           "bs_trade_creditors",
+  "sundry_creditors":          "bs_sundry_creditors",
+  "capital_account":           "bs_capital_account",
+  "current_account_bf":        "bs_current_account_bf",
+  "drawings_advance_net":      "bs_drawings_advance_net",
+}
+
+
+def sync_financial_statement_profile(db, document, category: str, ya_int, extracted_data: dict, description, doc_id) -> None:
+  """
+  Create/update/clear the FinancialStatementProfile HALF this document
+  contributes (Phase 6, 14 Jul 2026) so Part N's Statement of Financial
+  Position (N28-N50) never silently drifts out of sync with whichever
+  category a P&L/BS document currently holds — same reasoning and calling
+  convention as sync_capital_asset_registry / sync_breastfeeding_claim_registry
+  above (called from the main pipeline below AND from main.py's manual
+  reclassify/reset endpoints).
+
+  Structurally different from those two: this record is keyed by
+  (user_id, entity_id, year_of_assessment) like FormBProfile, but unlike
+  FormBProfile it can be filled by TWO different document categories, each
+  owning one HALF of the same row (pl_* fields vs bs_* fields). Reclassifying
+  a document away from its half must clear ONLY that half — not delete the
+  whole row, since the OTHER half may belong to a completely different
+  document. The row itself is only deleted once BOTH halves are empty.
+  """
+  # Bug fix (14 Jul 2026, post-Phase-6 self-review): this used to bail out
+  # entirely with `if not ya_int: return` BEFORE even looking up a stale
+  # half to clear — inconsistent with sync_capital_asset_registry /
+  # sync_breastfeeding_claim_registry, which both look up the existing
+  # row FIRST (keyed only by source_document_id, no year needed) and clean
+  # it up as part of the same "not applicable any more" branch. As written,
+  # a document that lost its year (e.g. reclassified to something whose
+  # date couldn't be parsed) would keep a stale P&L/BS half alive forever,
+  # silently continuing to feed outdated Part N figures. Fixed: cleanup
+  # below no longer depends on ya_int at all; only the CREATE/UPDATE path
+  # (which genuinely needs a year to key the row) is gated on it.
+  is_pl = category == "Q1 — Financial Statements (P&L)"
+  is_bs = category == "Q1 — Financial Statements (BS)"
+
+  def _num(v):
+    if v is None or v == "":
+      return None
+    try:
+      return float(str(v).replace("RM", "").replace(",", "").strip())
+    except (ValueError, TypeError):
+      return None
+
+  try:
+    # ── Clear this document's own half wherever it's stale ──────────────
+    # A document can only ever own ONE half at a time (its category is
+    # singular), so if it's no longer P&L, clear any pl_* half it used to
+    # own; if no longer BS, clear any bs_* half. Also clear regardless of
+    # category if ya_int is now missing — a half can't be safely kept
+    # without a year to key it. Search by source_document_id directly
+    # (not scoped to ya_int) since the row that needs clearing may live
+    # under an OLD year if the document's year_of_assessment itself changed
+    # on reclassification.
+    stale_pl = db.query(FinancialStatementProfile).filter(
+      FinancialStatementProfile.pl_source_document_id == document.id
+    ).first()
+    if stale_pl and (not is_pl or not ya_int or stale_pl.year_of_assessment != ya_int):
+      for col in _FSP_PL_FIELD_MAP.values():
+        setattr(stale_pl, col, None)
+      stale_pl.pl_source_document_id = None
+      stale_pl.pl_confidence = None
+      logger.info(f"[Pipeline] Cleared stale P&L half of FinancialStatementProfile for Document ID {doc_id}")
+
+    stale_bs = db.query(FinancialStatementProfile).filter(
+      FinancialStatementProfile.bs_source_document_id == document.id
+    ).first()
+    if stale_bs and (not is_bs or not ya_int or stale_bs.year_of_assessment != ya_int):
+      for col in _FSP_BS_FIELD_MAP.values():
+        setattr(stale_bs, col, None)
+      stale_bs.bs_source_document_id = None
+      stale_bs.bs_confidence = None
+      logger.info(f"[Pipeline] Cleared stale BS half of FinancialStatementProfile for Document ID {doc_id}")
+
+    # Delete either row if it's now completely empty on both halves (only
+    # meaningful if stale_pl/stale_bs turned out to be the SAME row as each
+    # other, or as `existing` — re-fetch to check post-clear state).
+    for row in {id(r): r for r in (stale_pl, stale_bs) if r is not None}.values():
+      db.flush()
+      if row.pl_source_document_id is None and row.bs_source_document_id is None:
+        db.delete(row)
+        logger.info(f"[Pipeline] Removed empty FinancialStatementProfile row (id={row.id}) — both halves cleared")
+
+    if not (is_pl or is_bs) or not ya_int:
+      # No usable year means we can't safely create/update a keyed row even
+      # if the category itself is P&L/BS — cleanup above already ran, so
+      # this is a safe no-op rather than guessing which year to write into.
+      db.commit()
+      return
+
+    fs = extracted_data.get("financial_statement") or {}
+    if not fs:
+      logger.warning(
+        f"[Pipeline] Document ID {doc_id} classified as {category} but no "
+        "financial_statement fields were extracted — no profile saved."
+      )
+      db.commit()
+      return
+
+    # Re-fetch `existing` in case it was one of the rows just cleared/deleted
+    # above, or needs creating fresh.
+    existing = db.query(FinancialStatementProfile).filter(
+      FinancialStatementProfile.user_id == document.user_id,
+      FinancialStatementProfile.entity_id == document.entity_id,
+      FinancialStatementProfile.year_of_assessment == ya_int,
+    ).first()
+
+    field_map = _FSP_PL_FIELD_MAP if is_pl else _FSP_BS_FIELD_MAP
+    half_kwargs = {col: _num(fs.get(src_key)) for src_key, col in field_map.items()}
+    if is_pl:
+      half_kwargs["pl_source_document_id"] = document.id
+      half_kwargs["pl_confidence"] = int(_num(extracted_data.get("confidence")) or 0)
+    else:
+      half_kwargs["bs_source_document_id"] = document.id
+      half_kwargs["bs_confidence"] = int(_num(extracted_data.get("confidence")) or 0)
+
+    if existing:
+      for k, v in half_kwargs.items():
+        setattr(existing, k, v)
+      logger.info(f"[Pipeline] Updated FinancialStatementProfile ({'P&L' if is_pl else 'BS'} half) for Document ID {doc_id}")
+    else:
+      db.add(FinancialStatementProfile(
+        user_id=document.user_id, entity_id=document.entity_id,
+        year_of_assessment=ya_int, **half_kwargs,
+      ))
+      logger.info(f"[Pipeline] Created FinancialStatementProfile ({'P&L' if is_pl else 'BS'} half) for Document ID {doc_id}")
+
+    db.commit()
+  except Exception as fsp_e:
+    logger.error(f"[Pipeline] FinancialStatementProfile sync failed for Document ID {doc_id}: {fsp_e}")
+    db.rollback()  # don't fail the main document record over a registry upsert error
+
+
 def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
   db: Session = db_session_factory()
   document = None
@@ -2276,6 +3669,15 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
     ).get("ya_year") or (
       extracted_data.get("form_ea") or {}
     ).get("ya_year") or (
+      # CP500 notices/receipts extract a top-level ya_year (the YA the
+      # instalment scheme is FOR), which may differ from the document's own
+      # date — e.g. a late instalment for YA2024 paid in January 2025 is
+      # still FOR YA2024. Must be checked before the date[:4] fallback below,
+      # or a late payment would be silently misattributed to the wrong year.
+      extracted_data.get("ya_year") if category in (
+        "Q3 — CP500 Instalment Notice", "Q3 — CP500 Payment Receipt",
+      ) else None
+    ) or (
       extracted_data.get("date")[:4] if extracted_data.get("date") else None
     )
     try:
@@ -2369,73 +3771,17 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
           logger.error(f"[Pipeline] FormBProfile upsert failed for Document ID {doc_id}: {fb_e}")
           db.rollback()  # don't fail the main document record over a profile upsert error
 
-    # ── If this is a capital asset, upsert a CapitalAsset registry record ──
-    # This is what lets Annual Allowance keep being claimed in every year
-    # after acquisition without the user re-uploading the invoice — see
-    # capital_allowance.py for how the year-by-year schedule is derived.
-    if status == "capital" and ya_int:
-      try:
-        cost = parse_amount(extracted_data.get("amount"))
-        if cost > 0:
-          acquisition_date = None
-          if extracted_data.get("date"):
-            try:
-              from datetime import date as _date
-              acquisition_date = _date.fromisoformat(extracted_data["date"])
-            except (ValueError, TypeError):
-              acquisition_date = None
-
-          existing_asset = db.query(CapitalAsset).filter(
-            CapitalAsset.source_document_id == document.id,
-          ).first()
-
-          # Validate the LLM's IA/AA rates against the statutory Schedule 3
-          # table rather than trusting them — a hallucinated rate would
-          # otherwise flow straight into the user's allowance figures.
-          asset_class_raw = extracted_data.get("asset_class") or "Unclassified Asset"
-          ia_pct, aa_pct, rate_needs_review, rate_note = resolve_capital_allowance_rates(
-            asset_class_raw,
-            extracted_data.get("ia_rate_pct"),
-            extracted_data.get("aa_rate_pct"),
-          )
-          if rate_note:
-            logger.info(f"[Pipeline] Document ID {doc_id} CA rate adjustment: {rate_note}")
-            # Surface the adjustment on the document so the UI can show it.
-            extracted_data["ca_rate_note"] = rate_note
-            extracted_data["ca_rate_needs_review"] = rate_needs_review
-            document.extracted_data = extracted_data
-
-          asset_kwargs = dict(
-            user_id            = document.user_id,
-            entity_id          = document.entity_id,
-            source_document_id = document.id,
-            asset_class         = asset_class_raw,
-            description         = llm_result.get("document_type"),
-            cost                = cost,
-            acquisition_date    = acquisition_date,
-            acquisition_year    = ya_int,
-            ia_rate_pct         = ia_pct,
-            aa_rate_pct         = aa_pct,
-          )
-
-          if existing_asset:
-            for k, v in asset_kwargs.items():
-              setattr(existing_asset, k, v)
-            logger.info(f"[Pipeline] Updated CapitalAsset for Document ID {doc_id}")
-          else:
-            db.add(CapitalAsset(**asset_kwargs))
-            logger.info(f"[Pipeline] Created CapitalAsset for Document ID {doc_id}")
-
-          db.commit()
-        else:
-          logger.warning(
-            f"[Pipeline] Document ID {doc_id} classified as capital but no positive "
-            "amount was extracted — skipping CapitalAsset registry entry. This "
-            "document will need manual review to enter the asset register."
-          )
-      except Exception as ca_e:
-        logger.error(f"[Pipeline] CapitalAsset upsert failed for Document ID {doc_id}: {ca_e}")
-        db.rollback()  # don't fail the main document record over a registry upsert error
+    # ── Keep the CapitalAsset, BreastfeedingEquipmentClaim, and (Phase 6)
+    # FinancialStatementProfile registries in sync with this document's
+    # final category/status. All three are no-ops (beyond a possible
+    # stale-row cleanup) unless the category actually calls for them — see
+    # each function above for why they're shared with main.py's manual
+    # reclassify/reset endpoints.
+    sync_capital_asset_registry(db, document, category, status, ya_int, extracted_data, llm_result.get("document_type"), doc_id)
+    sync_breastfeeding_claim_registry(db, document, category, ya_int, extracted_data, llm_result.get("document_type"), doc_id)
+    sync_cp500_registry(db, document, category, ya_int, extracted_data, doc_id)
+    sync_one_time_relief_registry(db, document, category, ya_int, extracted_data, doc_id)
+    sync_financial_statement_profile(db, document, category, ya_int, extracted_data, llm_result.get("document_type"), doc_id)
 
     # ── Bank statement line matching ────────────────────────────────────
     # Match each extracted line against the user's existing transaction
