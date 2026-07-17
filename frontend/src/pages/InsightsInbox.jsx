@@ -384,7 +384,6 @@ function InsightCard({ insight, expanded, onToggle, onAction, onDismiss, onMarkD
                   </button>
                 </span>
               )}
-              <span className="ml-auto font-mono text-[10px] text-muted/60">{insight.dedupeKey}</span>
             </div>
           </div>
         )}
