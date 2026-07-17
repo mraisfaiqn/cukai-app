@@ -377,3 +377,166 @@ export const updateInsightState = async (insightId, state, reason = null, userId
   const { data } = await api.patch(`/api/insights/${insightId}/state`, body, { params });
   return data;
 };
+
+// ── CukaiBot chat ────────────────────────────────────────────────────────────
+// Backs the retrieval-chat loop: PostgreSQL session history + MongoDB vector
+// search + Gemini generation. session_id is optional on the first message —
+// the backend creates one automatically and returns it, the same way a new
+// WhatsApp thread gets an ID on its first message.
+
+/**
+ * List a page of a user's chat sessions, optionally scoped to one entity,
+ * most recently updated first. Defaults to the 20 most recent — pass a
+ * larger `offset` to fetch older pages (e.g. when the sidebar list is
+ * scrolled to the bottom) rather than ever pulling a user's entire chat
+ * history in one request.
+ * Returns { sessions: [{ sessionId, entityId, title, pinned, pinnedAt, folder, createdAt, updatedAt }], hasMore }.
+ */
+export const getChatSessions = async (userId, entityId = null, limit = 20, offset = 0) => {
+  const params = { user_id: userId, limit, offset };
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.get('/api/chat/sessions', { params });
+  return data;
+};
+
+/**
+ * Search a user's chat sessions by both title and message content (unlike
+ * getChatSessions, this isn't paginated with offset/scroll — it's a single
+ * ranked results list, most-recently-updated first). Pass an empty/whitespace
+ * query and the caller should skip calling this entirely rather than hitting
+ * the backend with it.
+ * Returns { results: [{ sessionId, entityId, title, updatedAt, matchedIn: 'title'|'message', snippet }] }.
+ */
+export const searchChatSessions = async (query, userId, entityId = null, limit = 20) => {
+  const params = { q: query, user_id: userId, limit };
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.get('/api/chat/search', { params });
+  return data;
+};
+
+/**
+ * Fetch the full message history for one chat session, oldest first.
+ * Returns { sessionId, entityId, messages: [{id, role, text, citations, followups, attachments}] }.
+ * followups is only ever populated on assistant messages (null on user
+ * messages, and on assistant messages saved before this field existed).
+ * attachments is a list of {id, title, sourceUrl, fileType, mimeType, fileSize}
+ * (null when the message has none) — same shape citations use for
+ * DocumentPreviewModal, so attachments preview the same way.
+ */
+export const getChatHistory = async (sessionId, userId) => {
+  const { data } = await api.get(`/api/chat/${sessionId}/history`, { params: { user_id: userId } });
+  return data;
+};
+
+/**
+ * Send a chat message and get back the assistant's reply.
+ * Pass `sessionId = null` to start a new session — the response's
+ * `sessionId` should then be stored (e.g. in state) and passed on
+ * subsequent calls to keep the same thread.
+ * Pass `attachmentIds` (from prior uploadChatAttachment calls) to link
+ * already-uploaded files to this message — the backend sends their bytes
+ * to Gemini alongside the message text (see main.py's post_chat_message).
+ * `message` may be an empty string when attachmentIds is non-empty
+ * (attachment-only message).
+ * Returns { sessionId, userMessage: {id, role, text, attachments}, message: {id, role, text, citations, followups} }.
+ * followups is an array of up to 3 AI-suggested next questions for THIS
+ * reply (may be empty, e.g. on a generation error) — drives the chip tray
+ * under the conversation instead of a fixed static prompt list.
+ */
+export const sendChatMessage = async (message, userId, entityId = null, sessionId = null, attachmentIds = []) => {
+  const body = { message, user_id: userId };
+  if (entityId)  body.entity_id  = entityId;
+  if (sessionId) body.session_id = sessionId;
+  if (attachmentIds && attachmentIds.length) body.attachment_ids = attachmentIds;
+  const { data } = await api.post('/api/chat', body);
+  return data;
+};
+
+/**
+ * Upload a file to attach to the next chat message. Uploads immediately
+ * (before the message itself is sent), so the composer can show an
+ * attached-file chip right away — pass the returned `id` in `sendChatMessage`'s
+ * `attachmentIds` when the message is actually sent.
+ * `sessionId` is optional (a brand-new conversation has none yet); pass it
+ * when attaching a file to an existing conversation so it's validated
+ * up front rather than only at send time.
+ * Returns { id, title, sourceUrl, fileType, mimeType, fileSize }.
+ */
+export const uploadChatAttachment = async (file, userId, sessionId = null) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const params = { user_id: userId };
+  if (sessionId) params.session_id = sessionId;
+  const { data } = await api.post('/api/chat/attachments', formData, {
+    params,
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data;
+};
+
+/**
+ * Remove a pending (not-yet-sent) attachment — e.g. the user clicks the
+ * 'x' on an attached-file chip before sending. Fails with 409 if the
+ * attachment has already been linked to a sent message.
+ */
+export const deleteChatAttachment = async (attachmentId, userId) => {
+  const { data } = await api.delete(`/api/chat/attachments/${attachmentId}`, { params: { user_id: userId } });
+  return data;
+};
+
+/** Permanently delete a chat session and all its messages. */
+export const deleteChatSession = async (sessionId, userId) => {
+  const { data } = await api.delete(`/api/chat/${sessionId}`, { params: { user_id: userId } });
+  return data;
+};
+
+/**
+ * Partial-update a session's sidebar-facing fields — backs the sidebar's
+ * 3-dot menu (Pin/Unpin, Rename, Add to folder/Remove from folder). Pass
+ * only the fields being changed; e.g. `{ pinned: true }` to pin without
+ * touching the title or folder. Pass `folder: null` to remove a session
+ * from its folder.
+ * Returns the updated session: { sessionId, entityId, title, pinned, pinnedAt, folder, createdAt, updatedAt }.
+ */
+export const updateChatSession = async (sessionId, userId, updates) => {
+  const { data } = await api.patch(`/api/chat/${sessionId}`, updates, { params: { user_id: userId } });
+  return data;
+};
+
+/**
+ * List the distinct folder names a user has created, optionally scoped to
+ * one entity — backs the "Add to folder" picker so it can offer existing
+ * folders instead of only ever letting the user create a new one.
+ * Returns { folders: string[] }.
+ */
+export const getChatFolders = async (userId, entityId = null) => {
+  const params = { user_id: userId };
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.get('/api/chat/folders', { params });
+  return data;
+};
+
+/**
+ * Rename a folder — bulk-renames the folder tag on every session currently
+ * filed under `folderName` to `newName`, since a folder isn't its own row,
+ * just a shared text tag on however many ChatSession records carry it.
+ * Returns { folder: newName, updated: <count of sessions renamed> }.
+ */
+export const renameChatFolder = async (folderName, newName, userId, entityId = null) => {
+  const params = { user_id: userId };
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.patch(`/api/chat/folders/${encodeURIComponent(folderName)}`, { name: newName }, { params });
+  return data;
+};
+
+/**
+ * Delete a folder — un-files every session tagged `folderName` (their
+ * `folder` becomes null) without deleting the conversations themselves.
+ * Returns { updated: <count of sessions un-filed> }.
+ */
+export const deleteChatFolder = async (folderName, userId, entityId = null) => {
+  const params = { user_id: userId };
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.delete(`/api/chat/folders/${encodeURIComponent(folderName)}`, { params });
+  return data;
+};

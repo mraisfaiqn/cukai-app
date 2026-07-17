@@ -49,6 +49,12 @@ export default function LoginPanel({ onLogin }) {
       // as a second account can silently reuse the first account's activeEntityId,
       // making ManageProfile/Overview show the wrong entity's data.
       localStorage.removeItem("activeEntityId");
+      // Same reasoning for CukaiBot.jsx's per-entity "last active chat session"
+      // keys (cukaiActiveSessionId:<entityId>) — swept by prefix since there
+      // can be one per entity the previous account had open, not a single key.
+      for (const key of Object.keys(localStorage)) {
+        if (key.startsWith("cukaiActiveSessionId:")) localStorage.removeItem(key);
+      }
 
       if (response && response.id) {
         localStorage.setItem("userId", String(response.id));

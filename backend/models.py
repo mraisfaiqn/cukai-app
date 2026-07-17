@@ -287,6 +287,12 @@ class Document(Base):
 
     file_name          = Column(String(255), nullable=False)
     file_path          = Column(String(512), nullable=False)
+    # SHA-256 of the file's raw bytes at upload time, hex-encoded (64 chars).
+    # Used by main.py's _check_upload_history (Tier 1) to answer "did I
+    # upload this before?" via an exact-content lookup instead of a Mongo
+    # similarity search. Required — every code path that creates a Document
+    # (_save_and_queue, create_manual_document) computes and sets this.
+    file_hash          = Column(String(64),  nullable=False, index=True)
     status             = Column(String(50),  default="pending")
     document_type      = Column(String(100), default="Unclassified")
     category           = Column(String(255), nullable=True)
@@ -310,6 +316,9 @@ class Document(Base):
         ),
         Index("ix_document_user_ya",   "user_id",   "year_of_assessment"),
         Index("ix_document_entity_ya", "entity_id", "year_of_assessment"),
+        # Supports the Tier 1 exact-match lookup in main.py._check_upload_history
+        # (WHERE user_id = ? AND file_hash = ?) without a table scan.
+        Index("ix_document_user_hash", "user_id", "file_hash"),
     )
 
 
@@ -648,4 +657,195 @@ class FormBProfile(Base):
         # distinct, so the app-level upsert in pipeline.py is what dedupes the
         # no-entity case.)
         Index("ix_formb_user_entity_ya", "user_id", "entity_id", "year_of_assessment", unique=True),
+    )
+
+
+class ChatSession(Base):
+    """
+    A single CukaiBot conversation thread. One user can have several sessions
+    open at once (mirrors a WhatsApp chat-thread model) — session_id is what
+    scopes ChatMessage rows together, separate from user_id, which just
+    records who owns the thread.
+
+    Scoped to an entity the same way Document/CapitalAsset/FormBProfile are,
+    so switching the active entity in the UI swaps to that entity's own
+    conversation (see getInitialMessagesForEntity in CukaiBot.jsx, which this
+    table replaces).
+    """
+    __tablename__ = "chat_sessions"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(64), unique=True, nullable=False, index=True)
+    user_id    = Column(String(128), nullable=True, index=True)
+    entity_id  = Column(Integer, ForeignKey("entities.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    title      = Column(String(255), nullable=True)  # short label, e.g. first user message truncated
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # ── Sidebar customization (pin / rename / folder) ──
+    # pinned sessions are surfaced in their own "Pinned" group above the
+    # normal Today/Yesterday/... recency groups, mirroring Claude's own
+    # sidebar. `title` above doubles as the user-renamable label — a manual
+    # rename just overwrites the AI-generated title in place, and
+    # title_locked prevents any later auto-title logic from clobbering it.
+    # `folder` is a free-text label rather than its own table: folders here
+    # are simple per-user tags, not shared/nested structures, so a plain
+    # nullable string is enough to group sessions by without a join.
+    #
+    # There's no separate `pinned` boolean column — pinned_at is the single
+    # source of truth: NULL means not pinned, a timestamp means pinned (and
+    # is also the sort key for the "Pinned" group / pinned-within-folder
+    # ordering). Set to "now" the moment a session is pinned, and cleared
+    # back to NULL on unpin (see update_chat_session, the only place this
+    # gets written). It's a *separate* signal from updated_at on purpose:
+    # pin/unpin is sidebar bookkeeping, not conversation activity, so it
+    # must never influence the Today/Yesterday/... recency buckets. Every
+    # API response derives a `pinned` boolean from this with `is not None`
+    # rather than storing one, so the two can never drift out of sync.
+    pinned_at    = Column(DateTime, nullable=True)
+    title_locked = Column(Boolean, nullable=False, default=False, server_default="false")
+    folder       = Column(String(120), nullable=True, index=True)
+
+    messages = relationship(
+        "ChatMessage", back_populates="session", cascade="all, delete-orphan",
+        order_by="ChatMessage.created_at",
+    )
+
+    __table_args__ = (
+        Index("ix_chatsession_user_entity", "user_id", "entity_id"),
+    )
+
+
+class ChatMessage(Base):
+    """
+    One turn in a ChatSession. role is 'user' or 'assistant'. citations stores
+    the MongoDB chunks (receipt/tax-law snippets) that were retrieved and used
+    to ground an assistant reply — kept as JSONB so the frontend's existing
+    CitationCard shape (tag/title/snippet/verified) can be persisted verbatim
+    without a schema migration every time that shape changes.
+    """
+    __tablename__ = "chat_messages"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(64), ForeignKey("chat_sessions.session_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id    = Column(String(128), nullable=True, index=True)
+
+    role       = Column(String(20), nullable=False)
+    content    = Column(String, nullable=False)
+    citations  = Column(JSONB, nullable=True)
+    # AI-suggested follow-up questions for this turn (assistant messages only) —
+    # e.g. ["What about Section 38A entertainment caps?", ...]. Generated by
+    # the same Gemini call that writes `content` (see _generate_chat_answer_with_
+    # retrieval / _classify_and_maybe_answer's direct_answer path in main.py),
+    # so persisting them here means a reloaded conversation (get_chat_history)
+    # shows the exact same chips it showed live, instead of recomputing them
+    # or falling back to the generic static prompt list. Null for user
+    # messages, and for older assistant messages saved before this column
+    # existed.
+    followups  = Column(JSONB, nullable=True)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    session     = relationship("ChatSession", back_populates="messages")
+    attachments = relationship("ChatAttachment", cascade="all, delete-orphan", order_by="ChatAttachment.created_at")
+
+    __table_args__ = (
+        CheckConstraint("role IN ('user', 'assistant')", name="ck_chatmessage_role"),
+        Index("ix_chatmessage_session_created", "session_id", "created_at"),
+    )
+
+
+class ChatAttachment(Base):
+    """
+    A file the user attached to a chat message — sent to Gemini as inline
+    multimodal input (image/PDF/etc. bytes alongside the question) so the
+    model can read it directly, and kept on disk so the chat bubble can
+    offer the same click-to-preview experience as a citation.
+
+    Deliberately NOT part of the Document/document_chunks/RAG pipeline:
+    - No OCR, no LLM classification, no MongoDB embedding, no Q1-Q4
+      category, no Form B aggregation. It exists only to be attached to a
+      single conversational turn.
+    - Gemini only ever sees the raw bytes of an attachment on the turn it
+      was sent on (see main.py's post_chat_message) — older attachments are
+      not re-sent as bytes on every later turn, only their presence is
+      visible in reloaded history via this table, so a long conversation
+      doesn't balloon its per-turn payload with every file ever attached.
+
+    `session_id`/`message_id` are both nullable because the frontend
+    uploads the file the moment it's picked (so the user sees an attached
+    chip immediately) — before the message is sent and before a session
+    may even exist yet for a brand-new conversation. Both are backfilled by
+    post_chat_message once the ChatMessage row is created for that turn.
+    An attachment left with message_id=NULL (uploaded, then the user
+    navigated away without sending) is inert — harmless orphaned storage,
+    not linked into any conversation history.
+    """
+    __tablename__ = "chat_attachments"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(64), ForeignKey("chat_sessions.session_id", ondelete="CASCADE"), nullable=True, index=True)
+    message_id = Column(Integer, ForeignKey("chat_messages.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id    = Column(String(128), nullable=True, index=True)
+
+    file_name  = Column(String(255), nullable=False)   # original filename, shown in the UI
+    file_path  = Column(String(512), nullable=False)    # on-disk path under STORAGE_DIR (see main.py)
+    mime_type  = Column(String(127), nullable=False)    # sent to Gemini verbatim as the media block's mime_type
+    file_size  = Column(Integer, nullable=False)         # bytes — shown in the UI, not currently enforced beyond upload-time validation
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class ExternalResource(Base):
+    """
+    Registry of official external reference documents (LHDN Public Rulings,
+    the Income Tax Act 1967, e-Invoice Guidelines, etc.) downloaded and
+    ingested for CukaiBot's RAG retrieval.
+
+    This is the Postgres "library catalog" half of the external-resource
+    pipeline — one row per source document, tracking where it came from and
+    whether it's been embedded yet. The actual embedded text chunks live in
+    MongoDB's separate `external_resource_chunks` collection (see mongo.py),
+    keyed back to this table via external_resource_id. Splitting it this way
+    mirrors the existing Document/document_chunks split: Postgres owns
+    structured bookkeeping (what do we have, where did it come from, is it
+    current), MongoDB owns the embedded content used for similarity search.
+
+    Distinct from Document (which is a user's own uploaded receipt/invoice):
+    an ExternalResource is a shared, authoritative reference text that
+    applies to every user, not something any one user uploaded.
+    """
+    __tablename__ = "external_resources"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Catalog metadata
+    title           = Column(String(500), nullable=False)
+    resource_type   = Column(String(50),  nullable=False)   # "act" | "public_ruling" | "guideline"
+    reference_no    = Column(String(50),  nullable=True)    # e.g. "PR No. 4/2015", "Act 53"
+    category        = Column(String(255), nullable=True)    # human-readable topic, e.g. "Entertainment Expense"
+    source_url      = Column(String(1000), nullable=False)
+    date_issued     = Column(Date,   nullable=True)         # publication date per LHDN, when known
+    superseded_by   = Column(String(50),  nullable=True)    # reference_no of the ruling that replaced this one, if any
+
+    # Ingestion bookkeeping
+    local_path      = Column(String(1000), nullable=True)   # where the downloaded PDF is cached on disk
+    status          = Column(String(20), default="pending") # "pending" | "downloaded" | "embedded" | "failed"
+    chunk_count     = Column(Integer, nullable=True)         # how many chunks this resource produced in Mongo
+    error_message   = Column(String, nullable=True)
+    downloaded_at   = Column(DateTime, nullable=True)
+    embedded_at     = Column(DateTime, nullable=True)
+    created_at      = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint(
+            "resource_type IN ('act', 'public_ruling', 'guideline')",
+            name="ck_externalresource_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'downloaded', 'embedded', 'failed')",
+            name="ck_externalresource_status",
+        ),
+        Index("ix_externalresource_reference_no", "reference_no", unique=True),
     )
