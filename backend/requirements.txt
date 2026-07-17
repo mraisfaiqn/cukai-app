@@ -11,4 +11,4 @@ docling
 slowapi
 python-multipart
 easyocr
-langchain-google-genai
+langchain-google-genai==4.2.7  # pinned: content-shape parsing in engine.py/pipeline.py is validated against this exact version; bump deliberately
