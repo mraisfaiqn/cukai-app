@@ -147,7 +147,7 @@ function StatCard({
 
       {/* Popover — anchored to this card */}
       {open && detail && (
-        <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-xl border border-border bg-surface p-4 shadow-lg">
+        <div className="absolute left-0 top-full z-50 mt-2 max-h-80 w-72 overflow-y-auto rounded-xl border border-border bg-surface p-4 shadow-lg">
           <div className="flex items-start justify-between gap-2">
             <p className="font-headings text-sm font-bold text-headings">{label}</p>
             <button type="button" onClick={() => setOpen(false)} aria-label="Close"
@@ -157,7 +157,7 @@ function StatCard({
           </div>
 
           {detail.formula && (
-            <p className="mt-2 rounded-lg bg-primary-tint px-2.5 py-1.5 text-xs leading-relaxed text-muted">
+            <p className="mt-2 rounded-lg bg-primary-tint px-2.5 py-1.5 text-[11px] leading-relaxed text-muted">
               {detail.formula}
             </p>
           )}

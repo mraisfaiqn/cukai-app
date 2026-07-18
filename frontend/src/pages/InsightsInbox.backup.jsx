@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { getAllEntities } from '../services/api';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -354,8 +354,8 @@ function buildDemoInsights() {
 const MOCK_INSIGHTS_BY_ENTITY = {
   1: () => buildDemoInsights(),
 };
-{/*Added 'export' to function below so that it can be imported in other files.*/}
-export function getInitialInsightsForEntity(entityId) {
+
+function getInitialInsightsForEntity(entityId) {
   const build = MOCK_INSIGHTS_BY_ENTITY[entityId];
   return build ? build() : [];
 }
@@ -600,13 +600,7 @@ function InsightsInbox() {
   // once activeEntity resolves — avoids a flash of the no-entity result.
   const [insights, setInsights] = useState([]);
   const [tab, setTab] = useState('active');          // active | resolved | dismissed
- // Deep-link support: /insightsinbox?filter=Deadlines opens on that chip.
-  // Falls back to 'All' if the param is missing or doesn't match a known group.
-  const [searchParams] = useSearchParams();
-  const filterParam = searchParams.get('filter') || '';
-  const [activeGroup, setActiveGroup] = useState(
-    GROUPS.find((g) => g.toLowerCase() === filterParam.toLowerCase()) || 'All'
-  );
+  const [activeGroup, setActiveGroup] = useState('All');
   const [expandedId, setExpandedId] = useState(null);
   const [toast, setToast] = useState('');
 
