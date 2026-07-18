@@ -252,7 +252,7 @@ function DeadlineBanner({ deadlines, onViewAll }) {
         <p className="text-xs text-muted truncate">{d.sub}</p>
       </div>
 
-      <div className="shrink-0 rounded-lg px-3 py-1.5 text-center bg-critical-bg text-critical">
+      <div className="shrink-0 rounded-lg px-5 py-1.5 text-center bg-critical-bg text-critical">
         <p className="text-xl font-bold leading-none">{d.daysLeft}</p>
         <p className="text-[10px] font-medium mt-0.5">days left</p>
       </div>
@@ -889,25 +889,7 @@ export default function Overview() {
                   + fmtRM(totals.balancePayableMyr || 0) + '. This is an estimate, not your official filing.'
                 : 'This is an estimate to help you plan, based on your documents so far. It is not your official tax filing.',
             } },
-            
-            { label: 'Tax Bracket Headroom',
-            value: fmtRM(totals.headroomToNextBracketMyr || 0),
-            change: `Currently in the ${totals.currentMarginalRatePct}% bracket`,
-            trend: 'flat', tone: 'muted',
-            detail: {
-              formula: `Your chargeable income is taxed in slices. You're in the ${totals.currentMarginalRatePct}% slice — this is how much more you could earn before the next slice (${totals.nextMarginalRatePct}%) starts.`,
-              formula2: 'Next Bracket Floor − Chargeable Income = Headroom',
-              components: [
-                { label: 'Next bracket starts at',
-                  amount: fmtRM((totals.estimatedChargeableIncome || 0) + (totals.headroomToNextBracketMyr || 0)) },
-                { label: 'Your chargeable income',
-                  amount: '− ' + fmtRM(totals.estimatedChargeableIncome || 0) },
-              ],
-              equation: fmtRM((totals.estimatedChargeableIncome || 0) + (totals.headroomToNextBracketMyr || 0))
-                + ' − ' + fmtRM(totals.estimatedChargeableIncome || 0)
-                + ' = ' + fmtRM(totals.headroomToNextBracketMyr || 0),
-              note: `Only the amount above the threshold is taxed at ${totals.nextMarginalRatePct}% — crossing it doesn't re-tax everything.`,
-            } },
+          
 
         ]);
       }
@@ -1030,10 +1012,9 @@ export default function Overview() {
         <StatsGrid stats={liveStats} compact />
       </div>
 
-        {/* ── Body: 3-column grid, fills remaining height ──
-              Col 1-2: Opportunities (scrollable)
-              Col 3:   Pie Charts Carousel */}
-        <div className="grid min-h-0 flex-1 grid-cols-3 gap-3">
+       {/* ── Middle row: chart + opportunities, fixed height so it doesn't
+              stretch and leave the bottom half usable ── */}
+        <div className="grid grid-cols-3 gap-3 h-[300px] shrink-0">
           <div className="col-span-2 min-h-0">
             <PieChartsCarousel charts={livePieCharts} />
           </div>
@@ -1042,6 +1023,15 @@ export default function Overview() {
           </div>
         </div>
 
+        {/* ── Bottom row: CP500 + Tax Bracket Headroom (to be built) ── */}
+        <div className="grid grid-cols-2 gap-3 flex-1 min-h-0">
+          <div className="rounded-xl border border-border bg-surface p-4">
+            <p className="text-sm text-muted">CP500 Coverage — coming next</p>
+          </div>
+          <div className="rounded-xl border border-border bg-surface p-4">
+            <p className="text-sm text-muted">Tax Bracket Headroom — coming next</p>
+          </div>
+        </div>
       </div>
     </main>
   );
