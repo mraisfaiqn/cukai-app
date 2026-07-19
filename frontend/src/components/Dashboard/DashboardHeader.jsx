@@ -3,6 +3,7 @@
 // computes the time-of-day greeting and supplies the entity facts as props.
 // Matches the "Good morning, Hafiz" header in Main_Dashboard_-_Cukai_AI.png.
 
+
 const CalendarIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
@@ -24,25 +25,21 @@ function DashboardHeader({
 }) {
   return (
     <header>
-      {/* Greeting headline */}
       <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">
         {greeting}, {name}
       </h1>
 
-      {/* Entity context line: company · MSIC · [YA chip] · deadline */}
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
         <span className="font-medium text-body-text">{entity}</span>
         <span aria-hidden="true">·</span>
         <span>{msic}</span>
         <span aria-hidden="true">·</span>
 
-        {/* Assessment-year chip — pill-shaped per the design system's chip spec */}
         <span className="rounded-full bg-primary-tint px-2.5 py-0.5 text-xs font-semibold text-primary">
           {assessmentYear}
         </span>
         <span aria-hidden="true">·</span>
 
-        {/* Deadline reminder — clickable, jumps to Generate Forms in Manage Account */}
         <button
           type="button"
           onClick={onDeadlineClick}

@@ -304,15 +304,22 @@ function Cp500Card({ totals }) {
 
   return (
     <section className="flex flex-col rounded-xl border border-border bg-surface p-4">
-      <p className="text-sm font-bold text-headings">CP500 Coverage</p>
-      <p className="text-xs text-muted mt-0.5">YA 2026</p>
-      <p className="text-2xl font-bold mt-2" style={{ color }}>{pct}%</p>
-      <div className="h-2 bg-border rounded-full mt-2 overflow-hidden">
-        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
+  <div className="flex items-baseline gap-2">
+        <p className="text-sm font-bold text-headings">CP500 Coverage</p>
+        <p className="text-xs text-muted">YA 2026</p>
       </div>
-      <p className="text-xs text-muted mt-2">
-        {fmtRM(paid)} of {fmtRM(liability)} estimated liability prepaid via CP500
-      </p>
+
+      <div className="flex items-center gap-3 mt-3">
+        <p className="text-2xl font-bold shrink-0" style={{ color }}>{pct}%</p>
+        <div className="flex-1">
+          <div className="h-2 bg-border rounded-full overflow-hidden">
+            <div className="h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
+          </div>
+          <p className="text-[11px] text-muted mt-1.5">
+            {fmtRM(paid)} of {fmtRM(liability)} estimated liability prepaid via CP500
+          </p>
+        </div>
+      </div>
     </section>
   );
 }

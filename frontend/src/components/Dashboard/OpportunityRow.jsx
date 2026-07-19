@@ -37,7 +37,7 @@ function OpportunityRow({
           {icon ?? <TagIcon />}
         </span>
         <div>
-          <p className="text-sm font-semibold text-headings">{title}</p>
+         <p className="text-xs font-semibold text-headings">{title}</p>
           <p className="mt-0.5 text-xs text-muted">{provision}</p>
         </div>
       </div>
