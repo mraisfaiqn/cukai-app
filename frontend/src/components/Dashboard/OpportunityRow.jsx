@@ -27,10 +27,10 @@ function OpportunityRow({
     // at "/opportunities/capital-allowance" etc. That path matches the
     // "/opportunities/:id" route in App.jsx, and the id we put in the URL is exactly
     // what useParams() reads back on the detail page.
-    <Link
-      to={`/opportunities/${id}`}
-      className="flex items-center justify-between gap-4 rounded-lg px-2 py-4 transition-colors hover:bg-primary-tint/50"
+    <div
+      className="flex items-center justify-between gap-4 rounded-lg px-2 py-4"
     >
+  
       <div className="flex items-start gap-3">
         {/* Icon chip — teal-tinted square per the design's chip language */}
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary-tint text-primary">
@@ -43,7 +43,7 @@ function OpportunityRow({
       </div>
       {/* Saving amount */}
       <p className="shrink-0 text-sm font-semibold text-success">{amount}</p>
-    </Link>
+    </div>
   );
 }
 

@@ -4,6 +4,8 @@
 // Presentational only, no state. Matches Main_Dashboard_-_Cukai_AI.png.
 // `scrollable` prop: when true the list area overflows-y-auto so the card
 // fills its parent height without causing the page to scroll.
+
+import { useNavigate } from 'react-router-dom';
 import OpportunityRow from './OpportunityRow';
 
 const ArrowRight = () => (
@@ -14,6 +16,7 @@ const ArrowRight = () => (
 );
 
 function OpportunitiesCard({ opportunities, scrollable = false }) {
+  const navigate = useNavigate();
   return (
     // h-full so the card expands to fill whatever height the parent grid cell gives it.
     <section className="flex h-full flex-col rounded-xl border border-border bg-surface p-4">
@@ -22,10 +25,10 @@ function OpportunitiesCard({ opportunities, scrollable = false }) {
         <h2 className="font-headings text-sm font-bold text-headings">
           Unclaimed Savings Opportunities
         </h2>
-        <a href="#" className="flex items-center gap-1 text-xs font-medium text-primary hover:text-primary-hover">
+        <button onClick={() => navigate('/insightsinbox?filter=Savings')} className="flex items-center gap-1 text-xs font-medium text-primary hover:text-primary-hover">
           View all
           <ArrowRight />
-        </a>
+        </button>
       </div>
 
       {/* Scrollable rows area */}

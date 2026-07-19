@@ -12,7 +12,6 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getPersonalDetails, getAllEntities, getTaxProfileSummary } from '../../services/api';
 // Static content that isn't document-derived yet (opportunities + deadlines).
-import { opportunities } from '../../data/dashboardData';
 // Deadline banner reads the same mock feed the Insights page shows, so the
 // two can't contradict each other. When getInsights() replaces the mock feed,
 // this import goes with it.
@@ -120,7 +119,7 @@ function CarouselShell({ label, slides, slideLabels, dotsUnderRight = false }) {
   let tabs = null;
   if (slideLabels) {
     tabs = (
-      <div className="flex flex-1 items-center gap-5">
+      <div className="flex flex-1 items-center gap-5 ml-16">
         {slideLabels.map((item, i) => (
           <button
             key={item.name}
@@ -210,7 +209,7 @@ function DeadlinesCarousel({ deadlines }) {
 }
 
 // Cut short the long titlelah
-// "CP500 installment #4 — RM 1,500 due soon" to "CP500 #4"
+// "CP500 installment num. 4
 function shortLabel(title) {
   const m = title.match(/CP500.*?#(\d+)/i);
   if (m) return `CP500 #${m[1]}`;
@@ -224,12 +223,36 @@ const DAY_MS = 86400000;
 function deadlinesFromInsights(entityId) {
   return getInitialInsightsForEntity(entityId)
     .filter((i) => i.insightType === 'deadline' && i.deadlineDate)
-    .map((i) => ({
-      label: shortLabel(i.title),
-      sub: i.rmImpact != null ? fmtRM(i.rmImpact) + ' due' : '',
-      daysLeft: Math.ceil((new Date(i.deadlineDate) - Date.now()) / DAY_MS),
-    }));
+    .map((i) => {
+      const dt = new Date(i.deadlineDate);
+      return {
+        label: i.title,
+        sub: i.rmImpact != null ? 'Amount due: ' + fmtRM(i.rmImpact) : '',
+        daysLeft: Math.ceil((dt - Date.now()) / DAY_MS),
+        month: dt.toLocaleDateString('en-MY', { month: 'short' }).toUpperCase(),
+        day: dt.getDate(),
+      };
+    });
 }
+
+// ── Savings opportunities from insights, to sync for Unclaimed Savings (Overview) ───────────────────────────────────────
+const SAVINGS_TYPES = ['relief_headroom', 'doc_gap'];
+function savingsFromInsights(entityId) {
+  return getInitialInsightsForEntity(entityId)
+   .filter((i) =>
+      SAVINGS_TYPES.includes(i.insightType) &&
+      i.rmImpact != null &&
+      i.state !== 'dismissed' &&
+      i.state !== 'resolved'
+    )
+    .sort((a, b) => (b.rmImpact || 0) - (a.rmImpact || 0))
+    .map((i) => ({
+      id: i.id,
+      title: i.title,
+    provision: i.citation || (i.insightType === 'relief_headroom' ? 'Tax relief' : 'Business deduction'),
+      amount: '+' + fmtRM(i.rmImpact),
+    }));
+  }
 
 
 // ── DeadlineBanner ─────────────────────────────────────────────────────────────
@@ -241,33 +264,60 @@ function DeadlineBanner({ deadlines, onViewAll }) {
   const tone = urgencyFor(d.daysLeft);
 
   return (
-    <section className="flex items-center gap-4 rounded-xl border border-border bg-surface px-4 py-3 shadow-sm">
-      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-critical-bg text-critical">
-        <TbCalendarEvent className="h-5 w-5" />
-      </span>
-
-      <div className="flex-1 min-w-0">
-        <p className="text-xs font-medium text-muted whitespace-nowrap">Upcoming Deadline</p>
-        <p className="mt-0.5 text-sm font-semibold text-headings truncate">{d.label}</p>
-        <p className="text-xs text-muted truncate">{d.sub}</p>
+    <section className="flex flex-col rounded-xl border border-border bg-surface px-4 py-3 shadow-sm">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-muted">Upcoming Deadline</p>
+        {onViewAll && (
+          <button onClick={onViewAll}
+            className="text-xs font-medium text-primary hover:underline whitespace-nowrap">
+            View all
+          </button>
+        )}
       </div>
 
-      <div className="shrink-0 rounded-lg px-5 py-1.5 text-center bg-critical-bg text-critical">
-        <p className="text-xl font-bold leading-none">{d.daysLeft}</p>
-        <p className="text-[10px] font-medium mt-0.5">days left</p>
+      <div className="mt-2 flex items-center gap-3">
+        <div className="flex h-11 w-16 shrink-0 flex-col items-center justify-center rounded-lg bg-critical-bg text-critical leading-none">
+          <span className="text-[9px] font-semibold uppercase">{d.month}</span>
+          <span className="text-base font-bold">{d.day}</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-headings truncate">{d.label}</p>
+          <p className="text-xs text-muted truncate">{d.sub}</p>
+        </div>
+        <span className="shrink-0 rounded-full bg-critical-bg px-2.5 py-1 text-[11px] font-semibold text-critical whitespace-nowrap">
+          {d.daysLeft} days left
+        </span>
       </div>
-
-      {onViewAll && (
-        <button
-          onClick={onViewAll}
-          className="shrink-0 rounded-lg border border-border px-3 py-2 text-xs font-medium text-primary hover:bg-background transition-colors"
-        >
-          View all deadlines →
-        </button>
-      )}
     </section>
   );
 }
+
+//CP500 card
+// ── Cp500Card ──────────────────────────────────────────────────────────────────
+// Shows what fraction of the estimated tax liability has been prepaid via CP500
+// instalments. Reads cp500Paid and estimatedTaxPayable straight from the summary.
+function Cp500Card({ totals }) {
+  const paid = Number(totals?.cp500Paid) || 0;
+  const liability = Number(totals?.estimatedTaxPayable) || 0;
+  const pct = liability > 0 ? Math.round((paid / liability) * 100) : 0;
+  const color = pct > 0 ? '#0D9488' : '#DC2626';
+
+  return (
+    <section className="flex flex-col rounded-xl border border-border bg-surface p-4">
+      <p className="text-sm font-bold text-headings">CP500 Coverage</p>
+      <p className="text-xs text-muted mt-0.5">YA 2026</p>
+      <p className="text-2xl font-bold mt-2" style={{ color }}>{pct}%</p>
+      <div className="h-2 bg-border rounded-full mt-2 overflow-hidden">
+        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <p className="text-xs text-muted mt-2">
+        {fmtRM(paid)} of {fmtRM(liability)} estimated liability prepaid via CP500
+      </p>
+    </section>
+  );
+}
+
+
 
 // ── DonutSlice helper ──────────────────────────────────────────────────────────
 function buildSlices(segments, cx, cy, r, inner) {
@@ -421,7 +471,7 @@ function PieSlide({ chart }) {
   const [hovered, setHovered] = useState(null);
   const [mouse, setMouse] = useState({ x: 0, y: 0 });
 
-  const SIZE = 220;                         // enlarged from 150
+  const SIZE = 160;                         // enlarged from 150
   const CX = SIZE / 2, CY = SIZE / 2;
   const R = SIZE * 0.40, INNER = SIZE * 0.23;
   const { slices, total } = buildSlices(chart.segments, CX, CY, R, INNER);
@@ -453,10 +503,7 @@ function PieSlide({ chart }) {
       {/* Left column (1/4) — legend (scrollable) + footer total */}
       {/* Left column (1/4) — title, legend (scrollable), footer total */}
       <div className="col-span-1 flex flex-col min-h-0">
-        <div className="shrink-0 mb-2">
-          <p className="font-headings text-sm font-bold text-headings">{chart.title}</p>
-          {chart.subtitle && <p className="text-xs text-muted mt-0.5">{chart.subtitle}</p>}
-        </div>
+        
         <div className="flex-1 min-h-0 overflow-y-auto flex flex-col justify-center space-y-1.5 pr-0.5">
           {slices.length === 0 ? (
             <p className="text-xs text-muted">No data yet</p>
@@ -580,12 +627,12 @@ function BarSlide({ chart }) {
           <p className="font-headings text-sm font-bold text-headings">Tax Summary by Year</p>
           <p className="text-xs text-muted mt-0.5">Across years of assessment</p>
         </div>
-        <div className="flex-1 min-h-0 flex flex-col justify-center gap-2.5">
+        <div className="flex-1 min-h-0 flex flex-col justify-center gap-1.5">
           {BAR_METRICS.map(m => (
             <div key={m.key} className="flex items-center gap-2 min-w-0">
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md"
                 style={{ background: m.color + '1A' }}>
-                <span className="h-2.5 w-2.5 rounded-full" style={{ background: m.color }} />
+                <span className="h-2 w-2 rounded-full" style={{ background: m.color }} />
               </span>
               <span className="truncate text-xs font-medium text-headings">{m.label}</span>
             </div>
@@ -670,12 +717,12 @@ function PieChartsCarousel({ charts }) {
   // One tab per chart: a name plus a small icon, same style as the stat
   // card chips. The bar chart has no title field, so we name it here.
  const labels = (charts || []).map((c) => {
-    if (c.type === 'bar') return { name: 'By Year' };
-    if (c.title === 'Business Income') return { name: 'Business' };
-    if (c.title === 'Personal Income') return { name: 'Personal' };
-    if (c.title === 'Deductible Expenses') return { name: 'Deductions' };
-    return { name: 'Reliefs' };
-  });
+  if (c.type === 'bar') return { name: 'By Year' };
+  if (c.title === 'Business Income') return { name: 'Business Income' };
+  if (c.title === 'Personal Income') return { name: 'Personal Income' };
+  if (c.title === 'Deductible Expenses') return { name: 'Deductions' };
+  return { name: 'Reliefs' };
+});
 
   return (
     <CarouselShell
@@ -711,6 +758,7 @@ export default function Overview() {
   // 1. Establish state variables using neutral skeletons as placeholders
   const [liveAccount, setLiveAccount] = useState(SKELETON_ACCOUNT);
   const [liveStats, setLiveStats] = useState(SKELETON_STATS);
+  const [liveTotals, setLiveTotals] = useState(null);
   const [livePieCharts, setLivePieCharts] = useState(SKELETON_PIES);
   const [liveAlert, setLiveAlert] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -762,6 +810,7 @@ export default function Overview() {
       const cy = summary?.currentYear;
       console.log('SUMMARY KEYS', Object.keys(cy || {}).join(', '));
       const totals = cy?.totals;
+      setLiveTotals(totals);
       const docCount = cy?.documentCount ?? 0;
       const pendingReview = cy?.pendingReviewCount ?? 0;
       const daysLeft = daysToFormBDeadline();
@@ -901,6 +950,10 @@ export default function Overview() {
       // yearlyTrend, and projection are top-level keys.
       setLivePieCharts([
         {
+          type: 'bar',                             //for the "By Year" chart to be the landing page of the donut charts carousel
+          years: summary?.yearlyTrend || [],
+        },
+        {
           title: 'Business Income',
           subtitle: `YA ${assessmentYear}`,
           segments: segmentsByCategory(cy?.q1BusinessIncome),
@@ -928,10 +981,6 @@ export default function Overview() {
           segments: segmentsFromReliefBreakdown(totals?.q4ReliefsBreakdown),
           footerLabel: 'Total Reliefs Claimed',
           footerColor: '#6366F1',
-        },
-        {
-          type: 'bar',
-          years: summary?.yearlyTrend || [],
         },
       ]);
 
@@ -973,29 +1022,20 @@ export default function Overview() {
   }, [fetchDashboardMetrics]);
 
   return (
-    <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body flex flex-col">
-      <div className="mx-auto w-full max-w-7xl px-6 py-4 flex flex-col flex-1 min-h-0 gap-3">
+   <main className="min-h-[calc(100vh-4.1rem)] overflow-y-auto bg-background font-body flex flex-col">  {/* for page scrolling */}
+      <div className="mx-auto w-full max-w-7xl px-6 py-3 flex flex-col flex-1 min-h-0 gap-2">
       {/* ── Header using dynamic backend account details ── */}
-     <div className="shrink-0 grid grid-cols-5 gap-3 items-center">
-        <div className="col-span-3">
-          <DashboardHeader
-            greeting={timeOfDayGreeting()}
-            name={liveAccount.name}
-            entity={liveAccount.entity}
-            msic={liveAccount.msic}
-            assessmentYear={liveAccount.assessmentYear}
-            deadlineNote={liveAccount.deadlineNote}
-            onDeadlineClick={() => navigate(FORMS_TAB_ROUTE)}
-          />
-        </div>
-        <div className="col-span-2">
-          <DeadlineBanner
-            deadlines={deadlinesFromInsights(Number(localStorage.getItem('activeEntityId')))}
-            onViewAll={() => navigate('/insightsinbox?filter=Deadlines')}
-          />
-        </div>
+     <div className="shrink-0">
+        <DashboardHeader
+          greeting={timeOfDayGreeting()}
+          name={liveAccount.name}
+          entity={liveAccount.entity}
+          msic={liveAccount.msic}
+          assessmentYear={liveAccount.assessmentYear}
+          deadlineNote={liveAccount.deadlineNote}
+          onDeadlineClick={() => navigate(FORMS_TAB_ROUTE)}
+        />
       </div>
-
       {/* ── Action banner reflects pending-review documents in the Upload tab;
             hidden entirely once nothing needs the user's attention ── */}
       {liveAlert && (
@@ -1008,26 +1048,32 @@ export default function Overview() {
         />
       )}
         {/* for display to fit to screen size and not overly stretched */}
-      <div className="shrink-0">
-        <StatsGrid stats={liveStats} compact />
+      <div className="shrink-0 grid grid-cols-6 gap-3">
+        <div className="col-span-4">
+          <StatsGrid stats={liveStats} compact />
+        </div>
+        <div className="col-span-2">
+          <DeadlineBanner
+            deadlines={deadlinesFromInsights(Number(localStorage.getItem('activeEntityId')))}
+            onViewAll={() => navigate('/insightsinbox?filter=Deadlines')}
+          />
+        </div>
       </div>
 
        {/* ── Middle row: chart + opportunities, fixed height so it doesn't
               stretch and leave the bottom half usable ── */}
-        <div className="grid grid-cols-3 gap-3 h-[300px] shrink-0">
+       <div className="grid grid-cols-3 gap-3 h-[220px] shrink-0">
           <div className="col-span-2 min-h-0">
             <PieChartsCarousel charts={livePieCharts} />
           </div>
           <div className="col-span-1 min-h-0">
-            <OpportunitiesCard opportunities={opportunities} scrollable />
+<OpportunitiesCard opportunities={savingsFromInsights(Number(localStorage.getItem('activeEntityId')))} scrollable />
           </div>
         </div>
 
         {/* ── Bottom row: CP500 + Tax Bracket Headroom (to be built) ── */}
-        <div className="grid grid-cols-2 gap-3 flex-1 min-h-0">
-          <div className="rounded-xl border border-border bg-surface p-4">
-            <p className="text-sm text-muted">CP500 Coverage — coming next</p>
-          </div>
+        <div className="grid grid-cols-2 gap-3 shrink-0 items-start">
+          <Cp500Card totals={liveTotals} />
           <div className="rounded-xl border border-border bg-surface p-4">
             <p className="text-sm text-muted">Tax Bracket Headroom — coming next</p>
           </div>
