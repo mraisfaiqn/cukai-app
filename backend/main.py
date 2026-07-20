@@ -61,6 +61,7 @@ from document_dispatch import dispatch_document
 # Registers the Insight/InsightRun tables on the shared Base (so init_db's
 # create_all picks them up) and provides the /api/insights endpoints.
 from insights.router import router as insights_router
+from insights.models import Insight
 from breastfeeding_relief import compute_breastfeeding_relief_for_year, H11_CAP_MYR
 import mongo
 from embeddings import embed_text
@@ -4523,6 +4524,61 @@ def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -
   return "\n".join(lines) if len(lines) > 1 else None
 
 
+def _insight_context_block(db: Session, user_id: str, insight_id: int) -> Optional[str]:
+  """
+  Fetch one AI Insight (scoped to user_id, same ownership check as
+  insights.router._scoped_insight_or_404) and format it as a context block
+  for the chat LLM.
+
+  This exists for InsightsInbox's "Ask CukaiBot about this" card action
+  (frontend passes insightId via a URL param — see CukaiBot.jsx's mount
+  effect and api.js's sendChatMessage — which lands here as insight_id on
+  the first message of the resulting conversation). Without it, that button
+  dropped the user into a blank chat with no memory of which card they came
+  from, forcing them to re-describe the whole situation by hand.
+
+  Folded into person_context by the caller (post_chat_message) rather than
+  threaded as its own parameter into _classify_and_maybe_answer /
+  _generate_chat_answer_with_retrieval — person_context is already a single
+  free-text CONTEXT block both of those fold in verbatim, so concatenating
+  onto it gets this into both prompts for free, the same way
+  upload_history_context already does for attachment provenance.
+
+  Returns None (not raising) when the id doesn't resolve — wrong user,
+  deleted, bad id — since a stale insightId shouldn't break the chat turn,
+  only mean it proceeds without this extra grounding.
+  """
+  try:
+    person_id = int(user_id)
+  except (TypeError, ValueError):
+    return None
+
+  insight = db.query(Insight).filter(
+    Insight.id == insight_id, Insight.user_id == person_id,
+  ).first()
+  if not insight:
+    return None
+
+  lines = [
+    "The user tapped \"Ask CukaiBot about this\" on the following AI Insight "
+    "card. Ground your answer in it, and answer whatever they ask next about it:",
+    f"- Title: {insight.title}",
+    f"- Details: {insight.body}",
+  ]
+  if insight.rm_impact:
+    lines.append(f"- RM impact: {money(insight.rm_impact)}")
+  if insight.deadline_date:
+    lines.append(f"- Deadline: {insight.deadline_date.isoformat()}")
+  if insight.citation:
+    lines.append(f"- Legal citation: {insight.citation}")
+  for s in (insight.signals or []):
+    label, value = s.get("label"), s.get("value")
+    if label and value:
+      lines.append(f"- {label}: {value}")
+
+  return "\n".join(lines)
+
+
 # Tolerance for a Tier 2 "same document, different scan" match. Amounts are
 # compared after rounding to cents; dates must match exactly (a re-scanned
 # receipt doesn't change its own transaction date). No tolerance on
@@ -5725,7 +5781,7 @@ def post_chat_message(
 
   Request body:
     { "message": str, "user_id": str, "entity_id": int|null, "session_id": str|null,
-      "attachment_ids": [int]|null }
+      "attachment_ids": [int]|null, "insight_id": int|null }
   session_id is optional — a new session is created automatically on first
   message, exactly like starting a new WhatsApp thread.
   attachment_ids are ChatAttachment ids returned by a prior
@@ -5735,6 +5791,9 @@ def post_chat_message(
   user ChatMessage and their bytes are sent to Gemini alongside the
   question (see _attachments_to_media_blocks) — max
   MAX_CHAT_ATTACHMENTS_PER_MESSAGE per call.
+  insight_id is optional — set by InsightsInbox's "Ask CukaiBot about this"
+  card action (see CukaiBot.jsx's mount effect) on the first message of the
+  resulting conversation only. See _insight_context_block()'s docstring.
 
   Response:
     { "session_id", "message": {id, role, text, citations, attachments} }
@@ -5744,6 +5803,7 @@ def post_chat_message(
   entity_id = payload.get("entity_id")
   session_id = payload.get("session_id")
   attachment_ids = payload.get("attachment_ids") or []
+  insight_id = payload.get("insight_id")
 
   # A message can be attachment-only (e.g. just drop a file with no typed
   # question) — only require SOME content, not specifically typed text.
@@ -5861,6 +5921,19 @@ def post_chat_message(
         )
     except Exception as e:
       logger.warning(f"[Chat] Upload-history check failed for session {session.session_id}: {e}")
+
+  # ── Step 2c: fold in the insight the user clicked "Ask CukaiBot about
+  #    this" from, if any (see _insight_context_block()'s docstring) ──────
+  if insight_id:
+    try:
+      insight_context = _insight_context_block(db, user_id, insight_id)
+      if insight_context:
+        person_context = (
+          f"{person_context}\n\n{insight_context}" if person_context
+          else insight_context
+        )
+    except Exception as e:
+      logger.warning(f"[Chat] Insight-context lookup failed for session {session.session_id}: {e}")
 
   # An attachment-only message (no typed text) still needs a non-empty
   # question string to hand the LLM calls below — the attachment itself

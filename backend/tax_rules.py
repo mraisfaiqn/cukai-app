@@ -22,4 +22,7 @@ flagged stale and a scoped engine re-run recomputes it under the current
 rules — figures are never silently mutated outside the engine.
 """
 
-TAX_RULES_VERSION = "YA2026-v1"
+# v2: Q4 Medical & Parental Care relief cap raised RM8,000 → RM10,000
+#     (main.RELIEF_CAPS_FALLBACK_MYR), per the current LHDN personal relief
+#     schedule adopted with the 5-insight engine upgrade.
+TAX_RULES_VERSION = "YA2026-v2"

@@ -468,7 +468,17 @@ function InsightsInbox() {
     }
   };
   // Deep-link: every card's primary action lands the user where the fix happens.
-  const runAction = (insight) => { if (insight.action) navigate(insight.action.to); };
+  // A CukaiBot destination additionally carries this insight's id as a URL
+  // param so the chat can ground its first reply in it (see CukaiBot.jsx's
+  // mount effect + api.js's sendChatMessage) instead of opening a blank chat.
+  const runAction = (insight) => {
+    if (!insight.action) return;
+    if (insight.action.to === '/cukaibot') {
+      navigate(`/cukaibot?insightId=${insight.id}`);
+    } else {
+      navigate(insight.action.to);
+    }
+  };
 
   // ── Derived views ───────────────────────────────────────────────────────────
   const active = insights.filter(i => i.state === 'new' || i.state === 'read');
