@@ -46,6 +46,17 @@ function getCategoryBucket(category) { return _categoryBucketCache[category] || 
 function getCategoryStatus(category) { return _categoryStatusCache[category] || null; }
 function getCategoryRole(category) { return _categoryRoleCache[category] || null; }
 
+// Broadcast that the document set changed on the backend (upload classified,
+// manual entry, delete, reclassify, reset, archive, retry) so other pages —
+// chiefly the AI Insights inbox — know to refresh. Same window-event pattern
+// as ManageAccount's 'entitySwitch'. The sessionStorage timestamp covers the
+// cross-page case: InsightsInbox may MOUNT after the event already fired
+// (upload here → navigate there), so it checks the timestamp on mount too.
+const notifyDocumentsChanged = () => {
+  sessionStorage.setItem('documentsChangedAt', String(Date.now()));
+  window.dispatchEvent(new Event('documentsChanged'));
+};
+
 // Whether amount/date should be editable for a given document ROLE — used
 // by ReclassifyModal, recomputed against whichever category is CURRENTLY
 // SELECTED in the dropdown, not the document's original (possibly wrong)
@@ -1861,6 +1872,10 @@ function CukaiAccount() {
   // as a selectable reclassify option at all). Now there's only one place
   // the taxonomy is defined; this component can't drift from it again.
   const [categoryGroups, setCategoryGroups] = useState(null); // null = still loading
+  // Uploads are gated until the first entity resolution completes: a file
+  // dropped before then would be stored with entity_id=null and its insights
+  // would never appear in an entity-filtered inbox fetch.
+  const [entityResolved, setEntityResolved] = useState(false);
   // Doc IDs currently being polled, so the resume-poller never double-polls a
   // doc that a fresh upload / retry is already tracking.
   const pollingRef = useRef(new Set());
