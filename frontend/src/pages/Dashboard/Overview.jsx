@@ -154,7 +154,7 @@ function CarouselShell({ label, slides, slideLabels, dotsUnderRight = false }) {
   );
 
   return (
-    <section className="flex h-full flex-col rounded-xl border border-border bg-surface p-3">
+    <section className="flex h-full flex-col rounded-xl border border-border bg-surface p-3 shadow-md">
       <style>{'.cukai-carousel::-webkit-scrollbar{display:none}'}</style>
       {(label || tabs) && (
         <div className={'flex items-end gap-4 shrink-0 mb-2 ' + (tabs ? 'border-b border-border' : '')}>
@@ -324,6 +324,139 @@ function Cp500Card({ totals }) {
   );
 }
 
+// ── Upcoming carousel ──────────────────────────────────────────────────────────
+// Side-scrollable box (built on the shared CarouselShell) paging through three
+// slides: nearest deadline, CP500 coverage, and tax bracket headroom.
+function DeadlineSlide({ deadlines, onViewAll }) {
+  if (!deadlines || deadlines.length === 0) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <p className="text-sm text-muted">No upcoming deadlines</p>
+      </div>
+    );
+  }
+  const d = [...deadlines].sort((a, b) => a.daysLeft - b.daysLeft)[0];
+  const tone = urgencyFor(d.daysLeft);
+  return (
+    <div className="flex flex-1 flex-col justify-center">
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-sm font-bold text-headings">Upcoming deadline</p>
+        {onViewAll && (
+          <button onClick={onViewAll}
+            className="text-xs font-medium text-primary hover:underline whitespace-nowrap">
+            View all
+          </button>
+        )}
+      </div>
+      <div className="flex items-center gap-3">
+        <div className="flex h-11 w-16 shrink-0 flex-col items-center justify-center rounded-lg bg-critical-bg text-critical leading-none">
+          <span className="text-[9px] font-semibold uppercase">{d.month}</span>
+          <span className="text-base font-bold">{d.day}</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-headings truncate">{d.label}</p>
+          <p className="text-xs text-muted truncate">{d.sub}</p>
+        </div>
+        <span className={'shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold whitespace-nowrap ' + tone.pill}>
+          {d.daysLeft} days left
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function Cp500Slide({ totals }) {
+  const paid = Number(totals?.cp500Paid) || 0;
+  const liability = Number(totals?.estimatedTaxPayable) || 0;
+  const coverage = liability > 0 ? Math.round((paid / liability) * 100) : 0;
+  const color = coverage > 0 ? '#0D9488' : '#DC2626';
+  return (
+    <div className="flex flex-1 flex-col justify-center">
+      <div className="flex items-baseline gap-2">
+        <p className="text-sm font-bold text-headings">CP500 coverage</p>
+        <p className="text-xs text-muted">YA 2026</p>
+      </div>
+      <div className="flex items-center gap-3 mt-3">
+        <p className="text-2xl font-bold shrink-0" style={{ color }}>{coverage}%</p>
+        <div className="flex-1">
+          <div className="h-2 bg-border rounded-full overflow-hidden">
+            <div className="h-full rounded-full" style={{ width: `${coverage}%`, background: color }} />
+          </div>
+          <p className="text-[11px] text-muted mt-1.5">
+            {fmtRM(paid)} of {fmtRM(liability)} estimated liability prepaid via CP500
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+//Tax bracket info logic
+const TAX_BRACKETS = [
+  {category: 'A', floor: 0, ceiling: 5000, rate: 0},
+  {category: 'B', floor: 5001, ceiling: 20000, rate: 1},
+  {category: 'C', floor: 20001, ceiling: 35000, rate: 3},
+  {category: 'D', floor: 35001, ceiling: 50000, rate: 6},
+  {category: 'E', floor: 50001, ceiling: 70000, rate: 11},
+  {category: 'F', floor: 70001, ceiling: 100000, rate: 19},
+  {category: 'G', floor: 100001, ceiling: 400000, rate: 25},
+  {category: 'H', floor: 400001, ceiling: 600000, rate: 26},
+  {category: 'I', floor: 600001, ceiling: 2000000, rate: 28},
+  {category: 'J', floor: 2000001, ceiling: Infinity, rate: 30},
+];
+
+function bracketHeadroom(chargeableIncome) {
+  const income = Number(chargeableIncome) || 0;
+
+  const index = TAX_BRACKETS.findIndex(b => income >= b.floor && income <= b.ceiling);
+  const current = TAX_BRACKETS[index] || TAX_BRACKETS[0];
+  const next = TAX_BRACKETS[index + 1] || null;
+
+  const headroom = current.ceiling === Infinity ? null : current.ceiling - income;
+
+  const span = current.ceiling === Infinity ? 0 : current.ceiling - current.floor;
+  const filledPct = span > 0
+  ? Math.min(100, Math.max(0, ((income-current.floor) / span) * 100))
+  : 100;
+
+  const suggestSdnBhd = current.rate >= 25;
+  return {income, current, next, headroom, filledPct, suggestSdnBhd};
+}
+function HeadroomSlide() {
+  return (
+    <div className="flex flex-1 flex-col justify-center">
+      <p className="text-sm font-bold text-headings">Tax bracket headroom</p>
+      <p className="text-2xl font-bold text-headings mt-0.5">RM 246,299</p>
+      <p className="text-xs text-muted">before your rate rises to 26% (Category H)</p>
+      <div className="mt-2.5">
+        <div className="h-2 bg-border rounded-full overflow-hidden">
+          <div className="h-full rounded-full" style={{ width: '18%', background: '#0D9488' }} />
+        </div>
+        <div className="mt-1.5 flex justify-between text-[11px] text-muted">
+          <span>RM 100k</span>
+          <span>you: RM 153,701</span>
+          <span>RM 400k</span>
+        </div>
+      </div>
+    {/* The extra advice box for the headroom box
+    <div className="mt-2.5 rounded-lg bg-primary-tint p-2.5">
+        <p className="text-xs font-semibold text-primary">Consider incorporating to an Sdn Bhd</p>
+        <p className="mt-1 text-[11px] leading-relaxed text-muted">
+          At this income level a company is taxed at 15–17% instead of your 25%. Many sole proprietors speak to a tax professional here.
+        </p>
+      </div> */}
+    </div>
+  );
+}
+
+function UpcomingCarousel({ deadlines, totals, onViewAll }) {
+  const slides = [
+    <DeadlineSlide key="deadline" deadlines={deadlines} onViewAll={onViewAll} />,
+    <Cp500Slide key="cp500" totals={totals} />,
+    <HeadroomSlide key="headroom" />,
+  ];
+  return <CarouselShell slides={slides} />;
+}
 
 
 // ── DonutSlice helper ──────────────────────────────────────────────────────────
@@ -478,7 +611,7 @@ function PieSlide({ chart }) {
   const [hovered, setHovered] = useState(null);
   const [mouse, setMouse] = useState({ x: 0, y: 0 });
 
-  const SIZE = 160;                         // enlarged from 150
+  const SIZE = 150;                         // enlarged from 150
   const CX = SIZE / 2, CY = SIZE / 2;
   const R = SIZE * 0.40, INNER = SIZE * 0.23;
   const { slices, total } = buildSlices(chart.segments, CX, CY, R, INNER);
@@ -511,7 +644,7 @@ function PieSlide({ chart }) {
       {/* Left column (1/4) — title, legend (scrollable), footer total */}
       <div className="col-span-1 flex flex-col min-h-0">
         
-        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col justify-center space-y-1.5 pr-0.5">
+       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col justify-start space-y-1.5 pr-0.5">
           {slices.length === 0 ? (
             <p className="text-xs text-muted">No data yet</p>
           ) : (
@@ -520,7 +653,7 @@ function PieSlide({ chart }) {
                 <div className="flex items-start gap-1.5 min-w-0">
                   <span className="mt-1.5 h-2 w-2 shrink-0 rounded-sm" style={{ background: sl.color }} />
                   <div className="min-w-0">
-                    <span className="block truncate text-sm text-muted">{sl.label}</span>
+                    <span className="block leading-tight text-[11px] text-muted">{sl.label}</span>
                     {/* Relief-cap progress: shown only for capped relief categories.
                         Amber once the statutory ceiling is reached. */}
                     {sl.cap != null && (
@@ -1030,7 +1163,7 @@ export default function Overview() {
 
   return (
    <main className="min-h-[calc(100vh-4.1rem)] overflow-y-auto bg-background font-body flex flex-col">  {/* for page scrolling */}
-      <div className="mx-auto w-full max-w-7xl px-6 py-3 flex flex-col flex-1 min-h-0 gap-2">
+      <div className="mx-auto w-full max-w-7xl px-6 py-3 flex flex-col flex-1 min-h-0 gap-4">
       {/* ── Header using dynamic backend account details ── */}
      <div className="shrink-0">
         <DashboardHeader
@@ -1055,17 +1188,19 @@ export default function Overview() {
         />
       )}
         {/* for display to fit to screen size and not overly stretched */}
-      <div className="shrink-0 grid grid-cols-6 gap-3">
-        <div className="col-span-4">
-          <StatsGrid stats={liveStats} compact />
-        </div>
-        <div className="col-span-2">
-          <DeadlineBanner
+     {/* Stat cards (left) + Upcoming carousel (right) */}
+        <div className="shrink-0 grid grid-cols-6 gap-3">
+          <div className="col-span-4 h-full">
+            <StatsGrid stats={liveStats} compact />
+          </div>
+          <div className="col-span-2 h-[190px]"> 
+            <UpcomingCarousel
             deadlines={deadlinesFromInsights(Number(localStorage.getItem('activeEntityId')))}
+            totals={liveTotals}
             onViewAll={() => navigate('/insightsinbox?filter=Deadlines')}
           />
+          </div>
         </div>
-      </div>
 
        {/* ── Middle row: chart + opportunities, fixed height so it doesn't
               stretch and leave the bottom half usable ── */}
@@ -1075,14 +1210,6 @@ export default function Overview() {
           </div>
           <div className="col-span-1 min-h-0">
 <OpportunitiesCard opportunities={savingsFromInsights(Number(localStorage.getItem('activeEntityId')))} scrollable />
-          </div>
-        </div>
-
-        {/* ── Bottom row: CP500 + Tax Bracket Headroom (to be built) ── */}
-        <div className="grid grid-cols-2 gap-3 shrink-0 items-start">
-          <Cp500Card totals={liveTotals} />
-          <div className="rounded-xl border border-border bg-surface p-4">
-            <p className="text-sm text-muted">Tax Bracket Headroom — coming next</p>
           </div>
         </div>
       </div>

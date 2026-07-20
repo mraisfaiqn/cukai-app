@@ -71,52 +71,34 @@ function StatCard({
   className={
     'relative flex h-full flex-col justify-between rounded-2xl border transition-all duration-200 hover:-translate-y-1 hover:shadow-lg ' +
     (open ? 'z-50 ' : 'z-0 ') +
-    (compact ? 'p-4' : 'p-6') + ' ' +
+    (compact ? 'py-3 px-4' : 'py-4 px-6') + ' ' +
     (highlight
       ? 'border-primary/20 bg-primary/5 shadow-md'
       : 'border-slate-200 bg-white shadow-sm')
   }
 >
-     {/* Label row */}
-<div className="flex items-center">
+   {/* Label row: title on the left, icon on the right */}
+      <div className="flex items-start justify-between">
+        <p
+          className={
+            'font-headings text-sm font-semibold text-slate-700 leading-5 ' +
+            (highlight ? 'text-primary' : '')
+          }
+        >
+          {label}
+        </p>
+        {icon && (
+          <span
+            className={
+              'flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ' +
+              iconTint
+            }
+          >
+            {icon}
+          </span>
+        )}
+      </div>
 
-  {icon && (
-    <span
-      className={
-        'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ' +
-        iconTint
-      }
-    >
-      {icon}
-    </span>
-  )}
-
-  <div className="ml-3 flex flex-1 items-center justify-between">
-
-    <p
-      className={
-        'h-12 font-headings text-sm font-semibold text-slate-700 leading-6 ' +
-        (highlight ? 'text-primary' : '')
-      }
-    >
-      {label}
-    </p>
-
-    {detail && (
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-label={`How ${label} is calculated`}
-        aria-expanded={open}
-        className="ml-2 rounded-full p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
-      >
-        <InfoIcon />
-      </button>
-    )}
-
-  </div>
-
-</div>
       {/* Value — the headline figure */}
       <p
   className={
@@ -131,19 +113,31 @@ function StatCard({
         {value}
       </p>
 
-      {/* Change line — icon + text, colored by tone */}
-      {change && (
-        <p
-          className={
-            'flex items-center gap-1.5 text-[10px] font-medium ' +
-            (compact ? 'mt-2' : 'mt-3') + ' ' +
-            (highlight ? 'text-primary' : changeColor)
-   } 
->
-          {changeIcon}
-          {change}
-        </p>
-      )}
+     {/* Change line + info button on the same row */}
+      <div className={'flex items-center justify-between ' + (compact ? 'mt-2' : 'mt-3')}>
+        {change ? (
+          <p
+            className={
+              'flex items-center gap-1.5 text-[10px] font-medium ' +
+              (highlight ? 'text-primary' : changeColor)
+            }
+          >
+            {changeIcon}
+            {change}
+          </p>
+        ) : <span />}
+        {detail && (
+          <button
+            type="button"
+            onClick={() => setOpen(!open)}
+            aria-label={`How ${label} is calculated`}
+            aria-expanded={open}
+            className="rounded-full p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+          >
+            <InfoIcon />
+          </button>
+        )}
+      </div>
 
       {/* Popover — anchored to this card */}
       {open && detail && (

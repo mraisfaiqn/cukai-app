@@ -75,7 +75,8 @@ function StatsGrid({ stats, compact = false }) {
   // `stats` is the array of { label, value, change }; one card per entry.
   return (
     // Always 3-up here since TaxHealthCard occupies the 4th column in the parent grid.
-    <section className="grid h-full grid-cols-4 gap-3">
+    //for the 4 tabs edit - Total Income, Total Deductions, Chargeable Income, Est. Tax Payable
+    <section className="grid grid-cols-4 gap-3">
       {stats.map((stat) => {
         const { icon, changeTone, highlight } = presentationFor(stat);
         return (

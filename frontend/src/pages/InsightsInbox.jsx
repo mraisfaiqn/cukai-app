@@ -354,6 +354,7 @@ function buildDemoInsights() {
 const MOCK_INSIGHTS_BY_ENTITY = {
   1: () => buildDemoInsights(),
 };
+
 {/*Added 'export' to function below so that it can be imported in other files.*/}
 export function getInitialInsightsForEntity(entityId) {
   const build = MOCK_INSIGHTS_BY_ENTITY[entityId];
