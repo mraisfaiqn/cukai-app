@@ -841,7 +841,7 @@ function UserMessage({ message, isActive, onSelectCitations, onPreviewAttachment
               : 'border-border bg-surface hover:bg-slate-50'
           }`}
         >
-          <p className="select-text text-xs leading-relaxed text-headings">{message.text}</p>
+          <span className="select-text block text-xs leading-relaxed text-headings">{message.text}</span>
         </button>
       )}
     </div>
