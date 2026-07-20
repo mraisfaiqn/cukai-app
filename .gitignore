@@ -35,6 +35,7 @@ __pycache__/
 .tox/
 .coverage
 stored_documents/
+scripts/
 htmlcov/
 build/
 develop-eggs/

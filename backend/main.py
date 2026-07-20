@@ -43,6 +43,21 @@ from pipeline import (
   sync_cp500_registry, sync_one_time_relief_registry,
   embed_document_for_rag,
 )
+# ── Taxonomy redesign (registry-based cutover) ─────────────────────────────
+# CATEGORY_REGISTRY/CATEGORY_BUCKET/CATEGORY_TAX_TREATMENT replace the old
+# scattered CATEGORY_STATUS_MAP/ALL_Q1..4 lists as the single source of
+# truth for category behavior. validate_category is the shared check used
+# both by the pipeline's own classification step and by reclassify_document
+# below, so a stale category string can never be persisted from either
+# path. dispatch_document replaces the old per-document quadrant/tax_status
+# branching inside _build_year_summary.
+from category_registry import CATEGORY_REGISTRY, CATEGORY_BUCKET, CATEGORY_TAX_TREATMENT, registry_schedule_note
+from taxonomy_classification import (
+  validate_category,
+  derive_document_role as _new_derive_document_role,
+  derive_aggregation_state as _new_derive_aggregation_state,
+)
+from document_dispatch import dispatch_document
 from breastfeeding_relief import compute_breastfeeding_relief_for_year, H11_CAP_MYR
 import mongo
 from embeddings import embed_text
@@ -335,6 +350,24 @@ def _serialize_doc(doc: Document) -> dict:
   # (${API}/files/<basename>) for ANY document — not just ones still holding a
   # session blob. Fixes previews going blank after retry or page reload.
   file_basename = os.path.basename(doc.file_path) if doc.file_path else None
+
+  # Bug fix (found in review): registryManagedDocuments/categoryDeprecatedDocuments
+  # were computed correctly by _build_year_summary but NEVER rendered anywhere
+  # in the frontend — worse, that endpoint is YEAR-SCOPED, so simply wiring
+  # its output into CukaiAccount (which shows documents across ALL years by
+  # default) would have recreated the exact scoping mismatch already found
+  # twice this session (Part G/H, the Overview banner). Fixed at the
+  # individual-document level instead: neither of these facts needs
+  # year-aggregation context — a document's category alone is enough to know
+  # whether it's registry-managed or its category no longer exists — so this
+  # is computed live, correctly, for every document regardless of which year
+  # it belongs to or how CukaiAccount is currently filtered.
+  category = doc.category or ""
+  category_deprecated = bool(category) and category not in CATEGORY_REGISTRY
+  registry_note = None
+  if not category_deprecated and CATEGORY_REGISTRY.get(category) and CATEGORY_REGISTRY[category].computation_source == "registry":
+    registry_note = registry_schedule_note(category)
+
   return {
     "id":                doc.id,
     "userId":            doc.user_id,
@@ -349,6 +382,8 @@ def _serialize_doc(doc: Document) -> dict:
     "itaSection":        ed.get("ita_section"),
     "documentRole":      ed.get("document_role"),
     "aggregationState":  ed.get("aggregation_state"),
+    "categoryDeprecated": category_deprecated,  # NEW
+    "registryNote":      registry_note,          # NEW
     "fileBasename":      file_basename,
     "extractedData":     doc.extracted_data,
     "uploadedAt":        doc.created_at.strftime("%Y-%m-%d %H:%M:%S"),
@@ -785,20 +820,48 @@ async def get_entity_by_id(
 async def suggest_opening_balance(
   entity_id: int = Path(gt=0),
   target_year: int = Query(..., description="The YA this entity's opening balance would need to cover, e.g. 2024"),
-  user_id: Optional[str] = Query(default=None),   # was Optional[int] — match the app-wide string convention
+  user_id: Optional[str] = Query(default=None),
   db: Session = Depends(get_db),
 ):
+  """
+  Fix (15 Jul 2026): FormBProfile extraction already captures a prior
+  filed Form B's unabsorbed_business_losses / unabsorbed_capital_allowance
+  — LHDN's own accepted figures — but nothing carried them forward to seed
+  Entity.opening_unabsorbed_business_loss_myr / opening_unabsorbed_capital_
+  allowance_myr / opening_balance_year, which still required pure manual
+  entry even when the exact numbers were sitting in an already-processed
+  document.
+
+  This endpoint only SUGGESTS values from FormBProfile for the year
+  immediately preceding target_year — it never writes to the entity.
+  Applying a suggestion still goes through the normal PUT /entities/{id}
+  save flow, with the user able to see and edit the figures first, the
+  same "Suggested Match, not auto-applied" pattern already used for
+  invoice matching in SupportingDocumentsCard. OCR can misread a digit,
+  and this feeds the carry-forward engine for potentially years
+  afterward, so it deserves an explicit confirm click, not a silent write.
+
+  Bug fix (17 Jul 2026): user_id was typed int here — the only place in
+  the whole codebase that treats it as anything other than a plain string
+  (every other endpoint follows the app's user_id-as-string convention,
+  matching Document.user_id / FormBProfile.user_id, both String(128)
+  columns). The query below also compared FormBProfile.user_id directly
+  against entity.person_id (an int, Person's PK) with no cast, which
+  Postgres correctly refuses ("operator does not exist: character
+  varying = integer"). Both the ownership check and the query filter now
+  cast entity.person_id to str() to match the column's actual type.
+  """
   entity = db.query(models.Entity).filter(models.Entity.id == entity_id).first()
   if not entity:
     raise HTTPException(status_code=404, detail="Entity not found")
-  if user_id is not None and str(entity.person_id) != user_id:   # cast entity.person_id to str for the ownership check
+  if user_id is not None and str(entity.person_id) != user_id:
     raise HTTPException(status_code=403, detail="This entity does not belong to the requesting user")
 
   prior_year = target_year - 1
   prior_filing = (
     db.query(FormBProfile)
     .filter(
-      FormBProfile.user_id == str(entity.person_id),   # was entity.person_id (int) — cast to match the varchar column
+      FormBProfile.user_id == str(entity.person_id),
       FormBProfile.entity_id == entity.id,
       FormBProfile.year_of_assessment == prior_year,
     )
@@ -953,6 +1016,21 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
   # Naive UTC to match the (tz-naive) Document.created_at column. utcnow() is
   # deprecated in 3.12, so derive the same value from an aware clock.
   recent_cutoff = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
+
+  # Bug fix (found in review, this session): hashed BEFORE the duplicate
+  # check now, not after — the check itself switched from filename to
+  # content hash. Filename-only matching had it backwards in both
+  # directions: it MISSED a genuine duplicate re-uploaded under a different
+  # name (the hash was already being computed and stored on every Document,
+  # just never checked here), and it WRONGLY BLOCKED two different files
+  # that happened to share a generic filename (e.g. two different receipts
+  # both named "receipt.pdf" from different vendors/downloads) — content
+  # hash is strictly more correct in both cases. Documents from before this
+  # fix (or predating file_hash existing at all) simply have file_hash=NULL
+  # and are never matched by this check — a safe, harmless degradation, not
+  # an error.
+  file_hash = hashlib.sha256(file_content).hexdigest()
+
   # Duplicate check is scoped to the USER, not the entity: the same file should
   # not be uploaded twice across a user's entities either (a receipt belongs to
   # one business, not several). entity_id is deliberately NOT in the filter.
@@ -961,7 +1039,7 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
   # counts, so re-uploading the same file after archiving it would otherwise
   # silently double-count it with no duplicate warning at all.
   duplicate = db.query(Document).filter(
-    Document.file_name == original_name,
+    Document.file_hash == file_hash,
     Document.user_id == user_id,
     Document.created_at >= recent_cutoff,
     Document.status.in_(["pending", "processing", "completed", "archived"]),
@@ -977,11 +1055,6 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
 
   with open(safe_file_path, "wb") as buf:
     buf.write(file_content)
-
-  # Hashed once here, from the bytes already in memory — reused by
-  # _check_upload_history()'s Tier 1 exact-match lookup for "did I upload
-  # this before"-style chat questions. See models.Document.file_hash.
-  file_hash = hashlib.sha256(file_content).hexdigest()
 
   db_doc = Document(
     file_name=original_name, file_path=safe_file_path, file_hash=file_hash,
@@ -1005,7 +1078,7 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
 # ── Document endpoints ───────────────────────────────────────────────────────
 
 @app.post("/api/documents/upload", status_code=202)
-@limiter.limit("30/minute")
+@limiter.limit("10/minute")  # standardized to 10 files/minute across every upload path (17 Jul 2026)
 async def upload_document(
   request: Request,
   file: UploadFile = File(...),
@@ -1021,7 +1094,13 @@ async def upload_document(
 
 
 @app.post("/api/documents/batch-upload", status_code=202)
-@limiter.limit("10/minute")
+# Standardized to 10 files/minute across every upload path (17 Jul 2026):
+# MAX_BATCH_FILES already caps one call at 10 files, so limiting CALLS to
+# 1/minute (rather than the previous 10/minute, which allowed up to 100
+# files/minute in the worst case) makes this path's worst case exactly
+# 10 files/minute too — the same real limit as the single-upload endpoint,
+# not just the same-looking decorator value.
+@limiter.limit("1/minute")
 async def batch_upload_documents(
   request: Request,
   files: list[UploadFile] = File(...),
@@ -1245,7 +1324,7 @@ def _generate_manual_receipt_text(payload: dict, line_items: list[dict], total: 
 
 
 @app.post("/api/documents/manual", status_code=201)
-@limiter.limit("30/minute")
+@limiter.limit("10/minute")  # standardized to 10/minute across every upload path (17 Jul 2026)
 def create_manual_document(
   request: Request,
   payload: dict,
@@ -1355,6 +1434,108 @@ def create_manual_document(
   return _serialize_doc(db_doc)
 
 
+# ── Category taxonomy endpoint (Iteration 5 — fixes T1/T2) ───────────────────
+# Serves CATEGORY_REGISTRY directly, grouped by bucket with a clean display
+# label per category. This is the single source of truth the frontend's
+# reclassify dropdown (CukaiAccount.jsx) should build itself from at
+# runtime, instead of maintaining its own hand-copied category arrays — the
+# hand-copied version is what drifted out of sync across several backend
+# taxonomy refactors (the CP500 split, the H6/H7/H8 granularity split, the
+# Bank Statement category never being added as a selectable option at all)
+# and directly caused a confirmed bug where the reclassify dropdown showed
+# the wrong category for a Bank Statement document. With the frontend
+# fetching this endpoint instead, that entire class of bug becomes
+# structurally impossible: there's only one place the taxonomy is defined.
+_CATEGORY_GROUP_LABELS = {
+  "Q1":              "Business Income",
+  "Q2":              "Personal Income",
+  "Q3":              "Business Expense",
+  "Q4":              "Personal Relief",
+  "DONATIONS":       "Donations & Contributions",
+  "TAX_INSTALMENTS": "Tax Instalments Already Paid",
+  "REBATES":         "Tax Rebates",
+  "REFERENCE":       "Reference & Reconciliation",
+  "NON_TAX":         "Non-Tax Document",
+  "REVIEW":          "Needs Review",
+}
+_CATEGORY_GROUP_ORDER = [
+  "Q1", "Q2", "Q3", "Q4", "DONATIONS", "TAX_INSTALMENTS", "REBATES",
+  "REFERENCE", "NON_TAX", "REVIEW",
+]
+_CATEGORY_LABEL_PREFIX_RE = re.compile(r"^Q[1-4] — (.+)$")
+
+
+def _category_display_label(category: str) -> str:
+  """Strip the redundant 'Q1 — '/'Q2 — '/etc. prefix for a cleaner dropdown
+  label — the bucket the category belongs to is already shown as its own
+  group header, so repeating 'Q1 —' on every single option is noise."""
+  m = _CATEGORY_LABEL_PREFIX_RE.match(category)
+  return m.group(1) if m else category
+
+
+@app.get("/api/categories")
+def get_categories():
+  """
+  Returns the full category taxonomy, grouped by bucket, for the frontend
+  to build its reclassify dropdown from at runtime:
+
+    { "groups": [
+        { "bucket": "Q1", "groupLabel": "Business Income",
+          "categories": [ { "value": "Q1 — Sales & Service Revenue",
+                             "label": "Sales & Service Revenue",
+                             "status": "income",
+                             "role": "transaction" }, ... ] },
+        ...
+    ] }
+
+  `status` is CATEGORY_STATUS_MAP's value for this category — the SAME
+  backward-compatible, legacy-vocabulary value run_document_pipeline
+  persists for an auto-classified document (see pipeline.py). Exposing it
+  here means the frontend's manual-reclassify flow (which sends a `status`
+  value straight to PATCH /api/documents/{id}/reclassify) can look this up
+  directly instead of independently re-deriving/guessing it — so a manual
+  reclassification can never disagree with what auto-classification would
+  have produced for the same category.
+
+  `role` is the NEW registry's document_role for this category
+  ("transaction" | "registry_managed" | "ledger_source" |
+  "reference_document" | "non_tax" | "needs_classification"). This is what
+  lets the frontend's reclassify modal decide whether amount/date fields
+  should be editable/required based on whichever category the user has
+  CURRENTLY SELECTED in the dropdown — not the document's original (and
+  possibly wrong) classification. Bug found in testing: without this, a
+  document originally misclassified as "Mixed / Pending Review" (role
+  "transaction") that a user then reclassifies to "Bank Statement —
+  Transaction Ledger" (role "ledger_source", which never has a single
+  amount) still demanded an amount before allowing the reclassification to
+  be confirmed, since the modal's editability logic never recomputed for
+  the newly-selected category.
+
+  No auth/scoping needed — this is static taxonomy data, identical for
+  every user, not personal data.
+  """
+  groups_by_bucket: dict[str, list] = {b: [] for b in _CATEGORY_GROUP_ORDER}
+  for category, d in CATEGORY_REGISTRY.items():
+    groups_by_bucket.setdefault(d.bucket, []).append({
+      "value": category,
+      "label": _category_display_label(category),
+      "status": CATEGORY_STATUS_MAP.get(category, "mixed"),
+      "role": _new_derive_document_role(category),
+    })
+
+  return {
+    "groups": [
+      {
+        "bucket": b,
+        "groupLabel": _CATEGORY_GROUP_LABELS.get(b, b),
+        "categories": sorted(groups_by_bucket[b], key=lambda c: c["label"]),
+      }
+      for b in _CATEGORY_GROUP_ORDER
+      if groups_by_bucket.get(b)
+    ],
+  }
+
+
 @app.get("/api/documents")
 def get_all_documents(
   user_id:   str            = Query(..., description="Owner of the documents — required so results are scoped to one user."),
@@ -1460,6 +1641,33 @@ def delete_document(
   )
   if bc_deleted:
     logger.info(f"[Delete] Removed {bc_deleted} BreastfeedingEquipmentClaim row(s) linked to document ID {doc_id}.")
+
+  # Bug fix (17 Jul 2026): CP500Record and OneTimeReliefClaim were the only
+  # two source_document_id-linked registries NOT cleaned up here, even
+  # though they follow the exact same "multi-year eligibility registry"
+  # pattern as CapitalAsset/BreastfeedingEquipmentClaim above. Both FKs are
+  # ondelete=SET NULL, not a cascading delete, so without this the row
+  # survives as an orphan (source_document_id merely goes null) and keeps
+  # being picked up by compute_cp500_for_year() / compute_one_time_relief_
+  # for_year()'s full-history queries (which scope by user_id + year, not
+  # by source_document_id) — surfacing a stale "needs review" entry in
+  # mixed_pending/pendingReviewCount for a document the user already
+  # deleted, even once EVERY document has been removed.
+  cp_deleted = (
+    db.query(CP500Record)
+    .filter(CP500Record.source_document_id == doc_id, CP500Record.user_id == user_id)
+    .delete(synchronize_session=False)
+  )
+  if cp_deleted:
+    logger.info(f"[Delete] Removed {cp_deleted} CP500Record row(s) linked to document ID {doc_id}.")
+
+  otr_deleted = (
+    db.query(OneTimeReliefClaim)
+    .filter(OneTimeReliefClaim.source_document_id == doc_id, OneTimeReliefClaim.user_id == user_id)
+    .delete(synchronize_session=False)
+  )
+  if otr_deleted:
+    logger.info(f"[Delete] Removed {otr_deleted} OneTimeReliefClaim row(s) linked to document ID {doc_id}.")
 
   # Phase 6: FinancialStatementProfile is shared between up to TWO documents
   # (one owning the pl_* half, a different one owning the bs_* half), so —
@@ -1602,6 +1810,63 @@ def unarchive_document(
   return {"message": f"Document ID {doc_id} unarchived.", "document_id": doc_id, "status": "completed"}
 
 
+@app.patch("/api/documents/{doc_id}/mark-reviewed", status_code=200)
+def mark_bank_statement_reviewed(
+  doc_id: int,
+  payload: dict,
+  user_id:   str            = Query(..., description="Owner of the document."),
+  entity_id: Optional[int] = Query(default=None),
+  db: Session = Depends(get_db),
+):
+  """
+  Toggle whether a bank statement's line-matching has been reviewed by the
+  user. See derive_aggregation_state's `bank_statement_reviewed` parameter
+  (taxonomy_classification.py) for the full rationale: a bank statement's
+  aggregation_state never resolves on its own — its lines are matched ONCE,
+  at classification time, against whatever else existed then — so without
+  this explicit action, a bank statement would sit in "needs review" (and
+  count toward pendingReviewCount / the Overview action banner) forever,
+  with no way for the user to ever clear it. Found in review: no code path
+  anywhere previously changed a ledger_source document's aggregation_state,
+  and archive_document explicitly refuses to archive anything unresolved.
+
+  Only valid for documents whose category currently resolves to
+  document_role == "ledger_source" (i.e. an actual bank statement) —
+  attempting this on any other document type is a 422, not a silent no-op.
+
+  Request body: { "reviewed": true | false } — a TOGGLE, not one-directional,
+  so a user can re-open review later if they realize they missed something.
+
+  Writes the resulting aggregation_state back to the document immediately
+  (not just computed transiently for the next /api/profile/summary call) —
+  CukaiAccount's per-document badge/filter reads the STORED
+  extracted_data.aggregation_state directly, so this must be persisted here
+  for the UI to reflect the change right away, not just the next time
+  totals happen to be recomputed.
+  """
+  doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
+  reviewed = bool(payload.get("reviewed", True))
+
+  role = _new_derive_document_role(doc.category or "")
+  if role != "ledger_source":
+    raise HTTPException(
+      status_code=422,
+      detail=f"Document ID {doc_id} is not a bank statement (role='{role}') — nothing to mark reviewed.",
+    )
+
+  ed = dict(doc.extracted_data or {})
+  ed["bank_statement_reviewed"] = reviewed
+  confidence = ed.get("confidence", 0) or 0
+  ed["aggregation_state"] = _new_derive_aggregation_state(
+    doc.category or "", confidence, ed.get("deductible_pct"), reviewed
+  )
+  doc.extracted_data = ed
+  db.commit()
+  db.refresh(doc)
+
+  return _serialize_doc(doc)
+
+
 @app.patch("/api/documents/{doc_id}/reclassify", status_code=200)
 def reclassify_document(
   doc_id: int,
@@ -1617,6 +1882,15 @@ def reclassify_document(
   new_amount   = payload.get("amount")
   new_date     = payload.get("date")
   new_deductible_pct = payload.get("deductible_pct")
+  # T1/T2 fix: a stale frontend dropdown (or any other caller) can no
+  # longer persist a category the backend doesn't recognize — validated
+  # against the SAME CATEGORY_REGISTRY the pipeline itself uses, so this
+  # check can never drift out of sync with what's actually a valid category
+  # the way the old hand-duplicated frontend category lists did.
+  if new_category:
+    _cat_valid, _cat_err = validate_category(new_category)
+    if not _cat_valid:
+      raise HTTPException(status_code=422, detail=_cat_err)
   # Reuse the SAME canonical status set the pipeline itself validates
   # against, rather than a hand-duplicated literal here — a second copy is
   # exactly how this drifted out of sync before (it was missing 'donation'
@@ -2489,6 +2763,60 @@ def get_tax_profile_summary(
         _one_time_relief_claims, "Q4 — Home CCTV", target_year, HOME_CCTV_WINDOW),
     }
 
+    # These three categories are now document_role == "registry_managed"
+    # (see category_registry.py), so they no longer reach the per-document
+    # Q4 dispatch branch at all — their eligible amount must be added to
+    # reliefs_q4 HERE instead, once per category, as a synthetic entry (no
+    # single source document — this is a category-level, multi-year
+    # eligibility result). This preserves _cap_reliefs' EXISTING EV/home-
+    # improvement pooling logic completely unmodified, since that logic
+    # reads its raw totals from reliefs_q4 grouped by category.
+    #
+    # The is_standalone_unconfirmed_year guard below is carried over
+    # UNCHANGED from the old per-document branch: Food Waste Compost
+    # Machine's own eligible window starts a year (YA2025) before the
+    # shared RM2,500 EV/home-improvement pool exists (YA2026-2027), and it
+    # has no confirmed standalone cap of its own for that gap year — without
+    # this guard, a YA2025 claim would reach _cap_reliefs with no cap found
+    # anywhere and pass through completely UNCAPPED, a real leak.
+    for _otr_cat, _otr_result in _one_time_relief_results.items():
+      _is_standalone_unconfirmed_year = (
+        _otr_result["isEligibleYear"]
+        and not (EV_HOME_IMPROVEMENT_POOL_FIRST_YA <= target_year <= EV_HOME_IMPROVEMENT_POOL_LAST_YA)
+      )
+      _otr_entry = {
+        "documentId": None, "entityId": None, "fileName": _otr_cat,
+        "documentType": "One-Time Relief (registry-computed)", "category": _otr_cat,
+        "amount": str(_otr_result["amountMyr"]), "amountNumeric": _otr_result["amountMyr"],
+        "currency": "MYR", "vendor": None, "date": None, "itaSection": None,
+        "confidence": 100, "ocrQuality": None, "note": _otr_result["note"],
+        "documentRole": "registry_managed", "aggregationState": "resolved",
+        "needsReview": _otr_result["needsReview"],
+      }
+      if _is_standalone_unconfirmed_year:
+        reason = (
+          f"YA{target_year} is within this relief's own eligible window, but the shared RM2,500 "
+          f"pool with EV charging only applies from YA{EV_HOME_IMPROVEMENT_POOL_FIRST_YA} onward — "
+          "no confirmed standalone cap is available for this year from current sources. Excluded "
+          "pending confirmation rather than applied uncapped."
+        )
+        non_deductible_q4.append({**_otr_entry, "reason": reason})
+        mixed_pending.append({
+          **_otr_entry, "needsReview": True, "reason": reason,
+          "question": "Confirm the correct cap for this relief in this filing year before including it.",
+        })
+      elif _otr_result["isEligibleYear"] and _otr_result["amountMyr"] > 0:
+        reliefs_q4.append({**_otr_entry, "reliefCapMyr": None})
+        if _otr_result["needsReview"]:
+          mixed_pending.append({
+            **_otr_entry, "reason": _otr_result["note"],
+            "question": "Confirm this one-time relief's eligible year before relying on this claim.",
+          })
+      elif not _otr_result["isEligibleYear"] and _otr_result["amountMyr"] == 0 and _otr_result["note"]:
+        # Only note-worthy (not just "no claim this year") when there's an
+        # actual note to show — mirrors the old branch's behavior exactly.
+        pass
+
     # Donations (Part G) — one bucket per G-line, since they're subject to
     # DIFFERENT caps (Phase 5, 14 Jul 2026) — see the category list's
     # comment in pipeline.py and the tiered-cap computation below.
@@ -2507,7 +2835,22 @@ def get_tax_profile_summary(
     }
     reference_documents = []
     bank_statement_reviews = []
+    registry_managed_documents = []       # NEW — replaces the old scattered
+                                           # "pass # handled elsewhere" no-ops;
+                                           # every registry-managed document is
+                                           # now always visible in one list.
+    category_deprecated_documents = []    # NEW — surfaces any document whose
+                                           # stored category no longer exists
+                                           # in CATEGORY_REGISTRY at all.
     total_confidence = 0
+
+    # is_married is needed by dispatch_document() (below) for the H6(ii)
+    # fertility-treatment marital-status check, which used to run as a
+    # POST-loop pass over reliefs_q4 and now runs inline per-document
+    # instead — so it must be resolved BEFORE the loop starts, not after
+    # it (moved up from its old position further down in this function,
+    # alongside the rest of the H4/H14/H15/H16 block).
+    is_married = bool(person and person.marital_status == "married")
 
     for doc in docs:
       ed         = doc.extracted_data or {}
@@ -2545,12 +2888,10 @@ def get_tax_profile_summary(
       }
 
       # Display-only list of CP500 documents for this year — kept for the UI
-      # (e.g. the document list in CukaiAccount.jsx), but this is NOT where
-      # B33's actual figure comes from any more (see total_cp500 below,
-      # computed from the full multi-year CP500Record registry via
-      # cp500.py). A document appearing here with recordType "notice" must
-      # never be mistaken for a paid amount — that distinction is exactly
-      # the bug this split fixes.
+      # cp500_installments is a DISPLAY-ONLY list (e.g. the raw documents
+      # view in CukaiAccount.jsx) — kept exactly as before; it is NOT where
+      # B33's actual figure comes from (see total_cp500 below, computed
+      # from the full multi-year CP500Record registry via cp500.py).
       if doc.category == "Q3 — CP500 Instalment Notice" and ed.get("total_scheduled_amount") is not None:
         cp500_installments.append({
           **entry,
@@ -2567,323 +2908,30 @@ def get_tax_profile_summary(
           "referenceNo":    ed.get("reference_no"),
         })
 
-      # Bank statements carry per-line matches, not one pending amount — give
-      # them their own review bucket instead of a confusing RM0 entry in the
-      # generic mixed-pending list.
-      if document_role == "ledger_source":
-        line_items = ed.get("line_items", [])
-        bank_statement_reviews.append({
-          **entry,
-          "summary": ed.get("bank_statement_summary"),
-          "unmatchedLines": [
-            li for li in line_items
-            if li.get("matchStatus") in ("unmatched_credit", "unmatched_debit", "unmatched")
-          ],
-        })
-        continue
-
-      # Summary statements (P&L, balance sheet, prior Form B) are derived
-      # aggregates, not independent transactions — including their amount in
-      # totals double-counts income/expenses already captured by the
-      # individual documents that make them up. Route them to a reference
-      # bucket for reconciliation display instead of the totals.
-      #
-      # Capital gains (s.4(aa)) documents share this same bucket for a
-      # DIFFERENT reason (bug fix, 14 Jul 2026) — not because they're a
-      # derived aggregate, but because they're a genuinely separate class of
-      # income that must never be summed into ordinary B1 business income.
-      # Attach the specific disposal/acquisition/gain-loss fields so the
-      # figures needed for that SEPARATE s.4(aa) filing are still visible to
-      # the user, not just a generic reference entry with no real detail.
-      if doc.category == "Q1 — Capital Gains (s.4aa)":
-        reference_documents.append({
-          **entry, "quadrant": quadrant,
-          "cgtDisposalConsideration": ed.get("cgt_disposal_consideration"),
-          "cgtAcquisitionCost":       ed.get("cgt_acquisition_cost"),
-          "cgtGainLoss":              ed.get("cgt_gain_loss"),
-        })
-      elif doc.category == "Q1 — Voluntary Disclosure (Prior Year Income)":
-        # Part K (16 Jul 2026 fix): captured separately from the generic
-        # reference_documents bucket below, since K needs its own
-        # income_type/disclosed_ya fields for the printed K1/K2 table —
-        # never summed into THIS year's B1/aggregate income (that's what
-        # document_role="summary_statement" already guarantees).
-        k_disclosures.append({
-          **entry,
-          "incomeType":   ed.get("income_type"),
-          "disclosedYa":  ed.get("disclosed_ya"),
-        })
-      elif document_role == "summary_statement":
-        reference_documents.append({**entry, "quadrant": quadrant, "lineItems": ed.get("line_items", [])})
-      elif quadrant == "Q1":
-        if aggregation_state == "resolved":
-          income_q1.append(entry)
-      elif quadrant == "Q2":
-        if aggregation_state == "resolved":
-          income_q2.append({**entry, "formEa": ed.get("form_ea"), "fsiSourceCountry": ed.get("fsi_source_country")})
-      elif quadrant == "Q3":
-        if tax_status == "capital":
-          # Handled via the CapitalAsset registry below, not per-document —
-          # an asset bought in a prior year still generates Annual Allowance
-          # this year even with no document in THIS year's query.
-          pass
-        elif aggregation_state == "resolved":
-          # Apportioned categories (entertainment/gifts/vehicle/HP) are only
-          # partially deductible: sum deductible_pct% of the amount, never the
-          # full value. Non-apportioned expenses deduct in full.
-          _ded_pct = ed.get("deductible_pct")
-          if _ded_pct is not None:
-            _deductible = money(_parse_amount(amount) * Decimal(_ded_pct) / Decimal(100))
-          else:
-            _deductible = _parse_amount(amount)
-          deductions_q3.append({**entry, "deductibleNumeric": _deductible, "deductiblePct": _ded_pct})
-      elif quadrant == "Q4":
-        if tax_status == "donation":
-          # Approved donations (Part G / B17) are deducted from aggregate
-          # income before chargeable income is derived — NOT a capped
-          # personal relief, so they never enter reliefs_q4 / _cap_reliefs.
-          # Their caps (10%-of-B11 pool for some G-lines, individual
-          # RM20,000 for others, uncapped for others) can only be applied
-          # once total income for the year is known (see the tiered-cap
-          # block below), not per-document.
-          gline = DONATION_CATEGORY_TO_GLINE.get(doc.category)
-          if gline and aggregation_state == "resolved":
-            donation_entries_by_gline[gline].append({**entry, "reliefCapMyr": ed.get("relief_cap_myr")})
-        elif tax_status == "relief":
-          relief_entry = {**entry, "reliefCapMyr": ed.get("relief_cap_myr"), "zakatAmount": ed.get("zakat_amount")}
-          # Zakat is a REBATE against tax payable (s.6A ITA), not a relief that
-          # reduces chargeable income — keep it out of the capped-relief pool.
-          if doc.category == "Q4 — Zakat":
-            if aggregation_state == "resolved":
-              zakat_entries.append(relief_entry)
-          elif doc.category == "Q4 — Section 110 Withholding (Others)":
-            if aggregation_state == "resolved":
-              section110_entries.append(relief_entry)
-          elif doc.category == "Q4 — Section 107D Withholding":
-            if aggregation_state == "resolved":
-              section107d_entries.append(relief_entry)
-          elif doc.category == "Q4 — SSPN Net Deposit":
-            # H13 only allows the NET amount deposited this basis year
-            # (deposits minus withdrawals) — never the gross deposit figure
-            # alone, and never a brought-forward balance. Recompute the
-            # entry's amount from the two extracted fields rather than
-            # trusting `amount`, since the LLM may have extracted a gross
-            # deposit figure into `amount` even when a withdrawal also
-            # appears on the same statement.
-            sspn_deposit    = _parse_amount(ed.get("sspn_deposit_myr"))
-            sspn_withdrawal = _parse_amount(ed.get("sspn_withdrawal_myr"))
-            sspn_net        = max(Decimal("0"), sspn_deposit - sspn_withdrawal)
-            if aggregation_state == "resolved":
-              reliefs_q4.append({
-                **relief_entry,
-                "amountNumeric": sspn_net,
-                "sspnDepositMyr": money(sspn_deposit),
-                "sspnWithdrawalMyr": money(sspn_withdrawal),
-              })
-          elif doc.category == "Q4 — Breastfeeding Equipment":
-            # Handled via the BreastfeedingEquipmentClaim registry below, not
-            # per-document — H11's "once every 2 years of assessment" rule
-            # needs claim history across YEARS (see breastfeeding_relief.py),
-            # which a plain per-document sum can't express. Same pattern as
-            # J1 used to be (now removed) and capital assets still are.
-            # Explicit no-op, not an oversight.
-            pass
-          elif doc.category == "Q4 — Departure Levy (Umrah/Religious Travel)":
-            # Handled via the OneTimeReliefClaim registry below, not
-            # per-document — the 2-trips-IN-A-LIFETIME cap needs the full
-            # claim history across every year ever filed (see
-            # compute_departure_levy_rebate_for_year in one_time_relief.py).
-            # Explicit no-op, not an oversight.
-            pass
-          elif doc.category == "Q4 — Medical Equipment Relief":
-            # Bug fix (15 Jul 2026): H3 previously had no special handling at
-            # all — it fell straight into the generic branch below with no
-            # review flag, despite LHDN's own rule being an absolute
-            # disqualifier ("NOT allowed if the disabled individual... is not
-            # registered with DSW") that no purchase receipt can prove either
-            # way. Every other multi-fact relief in this codebase (H11's
-            # mother/child-age facts, the gender-direction checks on H14/B21)
-            # gets an explicit review flag rather than silent trust — H3 is
-            # the one relief that had fallen through that pattern. It's
-            # included in the total either way (excluding it outright would
-            # be just as wrong as including it silently, since most claims
-            # ARE genuine), but always flagged so the fact gets confirmed
-            # before filing, same philosophy as H11.
-            dsw = (ed.get("dsw_registered") or "unclear").lower()
-            dsw_note = {
-              "yes":     "The document indicates DSW registration — confirm this matches your actual DSW/JKM registration before filing.",
-              "no":      "The document indicates the disabled person is NOT registered with DSW — this relief is not allowed unless DSW registration is confirmed. Excluded pending correction.",
-              "unclear": "This relief requires the disabled person (self/spouse/child/parent) to be registered with the Department of Social Welfare (DSW) — a purchase receipt alone can't confirm this. Confirm registration before filing.",
-            }.get(dsw, "Confirm DSW registration for the disabled person before filing.")
-            if dsw == "no":
-              # An explicit "not registered" is a hard disqualifier per LHDN's
-              # own wording — unlike the ambiguous "unclear" case, this isn't
-              # a fact to confirm, it's already known to fail the test.
-              non_deductible_q4.append({**entry, "reason": dsw_note})
-              mixed_pending.append({
-                **entry, "amount": str(entry["amountNumeric"]), "needsReview": True, "reason": dsw_note,
-                "question": "This claim is currently excluded — confirm DSW registration to include it.",
-              })
-            elif aggregation_state == "resolved":
-              reliefs_q4.append({**relief_entry, "needsReview": True, "reason": dsw_note})
-              mixed_pending.append({
-                **entry, "amount": str(entry["amountNumeric"]), "needsReview": True, "reason": dsw_note,
-                "question": "Confirm DSW/JKM registration for the disabled person before filing.",
-              })
-          elif doc.category == "Q4 — Childcare Fees":
-            # Bug fix (15 Jul 2026): the classification prompt already routes
-            # an EXPLICITLY unregistered provider to the non-deductible
-            # category, but left the ordinary "receipt just doesn't say
-            # either way" case silently trusted as a valid H12 claim. Flag
-            # that ambiguity instead of guessing.
-            #
-            # Also: Finance Act 2025 (Act 874) s.6(a)(iv), effective YA2026
-            # onward, adds a second age band (7-12, Care Centres Act 1993
-            # registration) sharing the SAME RM3,000 pool as the existing
-            # ≤6 band — before this fix, that band didn't exist in the code
-            # at all.
-            reg = (ed.get("provider_registration_status") or "unclear").lower()
-            age_band = (ed.get("child_age_band") or "unclear").lower()
-
-            if age_band == "over 12":
-              non_deductible_q4.append({**entry, "reason": "Child is over 12 — H12 does not apply at any age above 12, even from YA2026."})
-            elif age_band == "7 to 12" and target_year < H12_CARE_CENTRE_BAND_YA:
-              non_deductible_q4.append({
-                **entry,
-                "reason": f"The 7-12 age band for H12 only applies from YA{H12_CARE_CENTRE_BAND_YA} onward (Finance Act 2025) — not eligible for this filing year.",
-              })
-            elif aggregation_state == "resolved":
-              entry_out = {**relief_entry}
-              if reg == "unclear":
-                reason = (
-                  "Could not confirm from this receipt whether the provider is registered "
-                  "(DSW/MOE for a child 6 or under, or under the Care Centres Act 1993 for a "
-                  "child aged 7-12 from YA2026 onward), which H12 requires — confirm before filing."
-                )
-                entry_out["needsReview"] = True
-                entry_out["reason"] = reason
-                mixed_pending.append({
-                  **entry, "amount": str(entry["amountNumeric"]), "needsReview": True, "reason": reason,
-                  "question": "Confirm this childcare provider is registered.",
-                })
-              reliefs_q4.append(entry_out)
-          elif doc.category == "Q4 — Vaccination":
-            # Bug fix (15 Jul 2026): Finance Act 2025 (Act 874) s.6(a)(i)-(ii)
-            # expands this relief to ANY NPRA-registered vaccine from YA2026
-            # onward — before that, only the historical fixed list qualifies.
-            # Previously this category had no year-awareness at all.
-            vaccine_name = (ed.get("vaccine_name") or "").lower()
-            npra = (ed.get("npra_registered") or "unclear").lower()
-            if target_year >= H6_VACCINATION_NPRA_EXPANSION_YA:
-              # Any vaccine qualifies YA2026 onward, unless the document
-              # explicitly says it's NOT NPRA-registered — a known-ineligible
-              # fact, not just an unconfirmed one.
-              if npra == "no":
-                non_deductible_q4.append({
-                  **entry,
-                  "reason": "This vaccine is explicitly stated as not NPRA-registered — not eligible even under the expanded YA2026+ rule.",
-                })
-              elif aggregation_state == "resolved":
-                entry_out = {**relief_entry}
-                if npra == "unclear":
-                  reason = (
-                    "Could not confirm NPRA registration for this vaccine from the receipt — any "
-                    "NPRA-registered vaccine qualifies from YA2026 onward, but confirm before filing."
-                  )
-                  entry_out["needsReview"] = True
-                  entry_out["reason"] = reason
-                  mixed_pending.append({
-                    **entry, "amount": str(entry["amountNumeric"]), "needsReview": True, "reason": reason,
-                    "question": "Confirm this vaccine is NPRA-registered.",
-                  })
-                reliefs_q4.append(entry_out)
-            else:
-              # Before YA2026: only the historical fixed list qualifies. A
-              # missing vaccine_name isn't treated as a failure — that would
-              # be punishing an extraction gap, not enforcing the actual
-              # rule — so it passes through as the ordinary case, same as
-              # before this fix existed (no regression for existing data).
-              matches_old_list = any(v in vaccine_name for v in H6_VACCINATION_PRE_2026_FIXED_LIST)
-              if not vaccine_name or matches_old_list:
-                if aggregation_state == "resolved":
-                  reliefs_q4.append(relief_entry)
-              else:
-                reason = (
-                  f"'{ed.get('vaccine_name')}' is not on the pre-YA2026 eligible vaccination list "
-                  "(pneumococcal, HPV, influenza, rotavirus, varicella, meningococcal, Tdap, COVID-19) "
-                  "— the expansion to any NPRA-registered vaccine only applies from YA2026 onward."
-                )
-                non_deductible_q4.append({**entry, "reason": reason})
-                mixed_pending.append({
-                  **entry, "amount": str(entry["amountNumeric"]), "needsReview": True, "reason": reason,
-                  "question": "This vaccine isn't on the eligible list for this filing year — confirm or reclassify.",
-                })
-          elif doc.category == "Q4 — Life Insurance & Takaful Relief":
-            # Bug fix (15 Jul 2026): a policy on the taxpayer's CHILD's life
-            # was never actually excluded pre-2026 despite ITA 1967 saying so
-            # explicitly — this closes that pre-existing gap AND applies
-            # Finance Act 2025 (Act 874) s.7's YA2026 extension permitting it
-            # from that year onward.
-            life_insured = (ed.get("policy_life_insured") or "unclear").lower()
-            if life_insured == "child" and target_year < H17_CHILD_LIFE_INSURANCE_YA:
-              non_deductible_q4.append({
-                **entry,
-                "reason": f"A life insurance policy on a child's life only qualifies for H17 from YA{H17_CHILD_LIFE_INSURANCE_YA} onward (Finance Act 2025) — not eligible for this filing year.",
-              })
-            elif aggregation_state == "resolved":
-              reliefs_q4.append(relief_entry)
-          elif doc.category in _one_time_relief_results:
-            # Finance Act 2025 (Act 874) one-time reliefs (15 Jul 2026):
-            # eligibility was already decided once per category, above, from
-            # the FULL multi-year claim history — this branch just routes
-            # each document according to that pre-computed result rather
-            # than deciding anything itself.
-            #
-            # Bug fix, found in final pre-production review: these three
-            # categories have NO entry in RELIEF_CAPS_FALLBACK_MYR, because
-            # their only confirmed cap is the RM2,500 pool shared with EV
-            # charging — which only exists for YA2026-2027. Food waste
-            # compost machine's own eligible window starts a year earlier,
-            # YA2025, when it existed on its own with no pool and (from the
-            # sources available) no confirmed standalone cap either. Without
-            # this guard, such a claim would reach _cap_reliefs' simple
-            # per-category path, find no cap anywhere (cap stays None), and
-            # pass through completely UNCAPPED — a real leak, not a
-            # hypothetical one.
-            otr_result = _one_time_relief_results[doc.category]
-            is_standalone_unconfirmed_year = (
-              otr_result["isEligibleYear"]
-              and not (EV_HOME_IMPROVEMENT_POOL_FIRST_YA <= target_year <= EV_HOME_IMPROVEMENT_POOL_LAST_YA)
-            )
-            if is_standalone_unconfirmed_year:
-              reason = (
-                f"YA{target_year} is within this relief's own eligible window, but the shared RM2,500 "
-                f"pool with EV charging only applies from YA{EV_HOME_IMPROVEMENT_POOL_FIRST_YA} onward — "
-                "no confirmed standalone cap is available for this year from current sources. Excluded "
-                "pending confirmation rather than applied uncapped."
-              )
-              non_deductible_q4.append({**entry, "reason": reason})
-              mixed_pending.append({
-                **entry, "amount": str(entry["amountNumeric"]), "needsReview": True, "reason": reason,
-                "question": "Confirm the correct cap for this relief in this filing year before including it.",
-              })
-            elif otr_result["isEligibleYear"] and aggregation_state == "resolved":
-              reliefs_q4.append(relief_entry)
-            else:
-              non_deductible_q4.append({**entry, "reason": otr_result["note"] or "Not eligible for this filing year."})
-              if otr_result["needsReview"]:
-                mixed_pending.append({
-                  **entry, "amount": str(entry["amountNumeric"]), "needsReview": True,
-                  "reason": otr_result["note"],
-                  "question": "Confirm this one-time relief's eligible year before relying on this claim.",
-                })
-          elif aggregation_state == "resolved":
-            reliefs_q4.append(relief_entry)
-        else:
-          non_deductible_q4.append(entry)
-
-      if is_pending_review:
-        mixed_pending.append({**entry, "reason": ed.get("reason"), "question": ed.get("question"), "source": ed.get("source")})
+      # Everything else — routing to income_q1/q2, deductions_q3, reliefs_q4,
+      # non_deductible_q4, zakat/section110/section107d, donations, reference
+      # documents, bank statement review, mixed_pending, and (NEW) the
+      # registry_managed_documents / category_deprecated_documents lists —
+      # is now handled by ONE call, driven by CATEGORY_REGISTRY's
+      # bucket/tax_treatment/computation_source rather than the old
+      # quadrant/tax_status branching chain. See document_dispatch.py
+      # for the full rationale; every genuine tax-rule check that used to
+      # live inline here (DSW registration, H12 age bands, H6 vaccination
+      # NPRA scope, H6(ii) marital status, H17 child-life-policy scope, the
+      # one-time-relief eligibility window) is preserved unchanged inside
+      # dispatch_document — nothing about the STATUTORY logic changed here,
+      # only how a document gets routed to it.
+      dispatch_document(
+        doc, ed, entry, target_year, is_married,
+        income_q1, income_q2, deductions_q3, reliefs_q4, non_deductible_q4,
+        zakat_entries, section110_entries, section107d_entries,
+        donation_entries_by_gline, DONATION_CATEGORY_TO_GLINE,
+        reference_documents, bank_statement_reviews, k_disclosures, mixed_pending,
+        registry_managed_documents, category_deprecated_documents,
+        H12_CARE_CENTRE_BAND_YA, H6_VACCINATION_NPRA_EXPANSION_YA,
+        H6_VACCINATION_PRE_2026_FIXED_LIST, H17_CHILD_LIFE_INSURANCE_YA,
+        _one_time_relief_results,
+      )
 
     # ── Capital allowance (Schedule 3 ITA 1967) ─────────────────────────
     # Pulled from the persisted CapitalAsset registry, NOT from documents in
@@ -3185,7 +3233,8 @@ def get_tax_profile_summary(
     # amount can't be reused across this endpoint's current/prior/trend-year
     # calls. H4/H15 are static per person but harmless to recompute per call.
     h4_disabled_individual = Decimal("6000") if (person and person.is_disabled_self) else Decimal("0")
-    is_married = bool(person and person.marital_status == "married")
+    # is_married is now resolved near the top of this function (before the
+    # per-document loop) — see the comment there for why.
     is_divorced = bool(person and person.marital_status == "divorced-widowed")
 
     # Bug fix (15 Jul 2026): H6(ii) fertility treatment is restricted by
@@ -3602,9 +3651,28 @@ def get_tax_profile_summary(
       est_tax          = _parse_amount(form_b_record.tax_payable)
       fb_income        = _parse_amount(form_b_record.aggregate_income)
       fb_deductions    = _parse_amount(form_b_record.total_business_deductions)
+      if not fb_deductions:
+        # LHDN's printed Form B has no line literally called "total business
+        # deductions" — most filers never attach the Part N financial
+        # particulars page, so this field is legitimately null far more
+        # often than not. When Part N WAS included on the same document,
+        # derive an equivalent figure from it: N8 (gross profit) minus N26
+        # (net profit) = N25 (total expenditure) — the same quantity Part N
+        # itself would report as N25 directly. Previously this silently left
+        # the deductions trend chart empty for a Form-B-only year even when
+        # the uploaded document actually contained enough information to
+        # compute it (bug fix, 17 Jul 2026).
+        raw = form_b_record.raw_extracted or {}
+        n8_raw, n26_raw = raw.get("n8_gross_profit"), raw.get("n26_net_profit")
+        if n8_raw is not None and n26_raw is not None:
+          n8, n26 = _parse_amount(n8_raw), _parse_amount(n26_raw)
+          if n8 >= n26:
+            fb_deductions = money(n8 - n26)
       individual_relief_applied = None
       low_income_rebate_applied = None
       spouse_rebate_applied     = None
+      departure_levy_rebate_applied = None   # B27iii — not recomputed for a filed-Form-B year (bug fix, 17 Jul 2026)
+      section110_rebate_applied     = None   # B29 — same reasoning (bug fix, 17 Jul 2026)
       zakat_rebate_applied      = _parse_amount(form_b_record.zakat_rebate)
       source = "filed_form_b"
       # B25a/B25b aren't stored on a filed Form B (LHDN doesn't retain the
@@ -3977,6 +4045,8 @@ def get_tax_profile_summary(
       "q4DonationsByLine": donation_entries_by_gline,
       "mixedPendingReview": mixed_pending,
       "referenceDocuments": reference_documents,
+      "registryManagedDocuments": registry_managed_documents,        # NEW
+      "categoryDeprecatedDocuments": category_deprecated_documents,  # NEW
       "kDisclosures": k_disclosures,
       "bankStatementReviews": bank_statement_reviews,
       "reconciliation":     reconciliation,
