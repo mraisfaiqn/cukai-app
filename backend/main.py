@@ -4507,6 +4507,29 @@ the upload-history finding. A finding phrased as "appears to be the SAME
 document... though it may be a different scan or copy" should be relayed
 with that same caveat, not flattened into a flat "yes".
 
+If the CONTEXT contains a deterministic spending summary (a line starting
+with "The following is a deterministic spending summary..."), treat its
+total/biggest-expense/top-N/category figures as authoritative for any part
+of the question asking about the user's own spending totals, largest
+expense, top expenses, or spending by category — it comes from a direct
+Postgres aggregation over the user's documents, not from the document-
+search citations elsewhere in this CONTEXT, and document-search citations
+must never be summed or compared against each other to answer that kind of
+question instead. When the question also asks something the spending
+summary doesn't cover (e.g. whether the largest expense is deductible),
+combine the spending summary's figures with the document/reference search
+results for the rest of the answer.
+
+If the CONTEXT contains a deterministic tax computation (a line starting
+with "The following is a deterministic tax computation..."), treat its
+chargeable income/tax payable/relief/balance-due figures as authoritative
+for any part of the question asking about the user's estimated tax
+position — it comes from the same computation the Generate Forms panel
+uses, not from document-search citations, which can only ever show
+individual receipts, never the computed total. Combine it with document/
+reference search results when the question also needs something the tax
+computation doesn't cover.
+
 Rules:
 - Be concise and specific. Reference concrete figures/dates from the context when relevant.
 - Always mention the general Malaysian tax rule/section if it's present in the context.
@@ -4627,6 +4650,296 @@ def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -
   # lines always has at least the header — that alone isn't useful context,
   # so require at least one real fact before returning a block.
   return "\n".join(lines) if len(lines) > 1 else None
+
+
+# Cap on how many of a user's documents _get_spending_context() will pull
+# into memory to compute totals/rankings. Generous for how many receipts a
+# single person or small business realistically uploads in the app's
+# lifetime; exists as a guardrail against an unbounded table scan, not
+# because normal usage would ever approach it. If a real user's document
+# count grows past this, the aggregation below should move to SQL-side
+# SUM/MAX/GROUP BY instead of summing in Python — see the function
+# docstring for why it's done in Python for now.
+_SPENDING_CONTEXT_DOC_LIMIT = 5000
+
+
+def _get_spending_context(
+  db: Session, user_id: str, entity_id: Optional[int], year_of_assessment: Optional[int] = None,
+) -> Optional[str]:
+  """
+  Deterministic Postgres aggregation over the user's own Document rows —
+  biggest expense, total spending, top-N, per-category subtotals — folded
+  into person_context exactly like _person_context_block, so
+  _classify_and_maybe_answer can answer "what's my biggest expense?" /
+  "how much did I spend in total?" directly from CONTEXT instead of setting
+  needs_document_search true.
+
+  This exists for the same reason _check_upload_history exists: Mongo's
+  $vectorSearch is semantic similarity over document text, not a
+  calculator. It can retrieve the k chunks that most resemble the
+  QUESTION's wording, but it cannot sum, rank, or take a max over the
+  user's documents — "biggest spending" and "total spent" are aggregation
+  questions, not retrieval questions, so they need a real SQL/Python
+  aggregation over Postgres, not a similarity search over Mongo.
+
+  Reuses the exact same "is this document's amount safe to count right
+  now" gate _business_totals_for_year() already uses for the tax-summary
+  totals, rather than treating every non-null extracted_data.amount as
+  real spending:
+    - document_role == "summary_statement" is skipped — a bank statement's
+      own top-level amount is a statement-period total, not a transaction
+      (its lines are reconciled against the user's OTHER documents, see
+      _match_bank_statement_lines; counting it too would double-count every
+      transaction it lists). Likewise a Form B / CP500 summary document's
+      amount is a filed-return or notice total, not new spending.
+    - aggregation_state != "resolved" is skipped — "needs_apportionment"
+      (e.g. a Q3 entertainment receipt awaiting its business-use %) and
+      "needs_user_confirmation" (e.g. an unreviewed bank statement) haven't
+      had a final, safe-to-count amount established yet; "reference_only"
+      is a period/registry total, not this year's spending;
+      "excluded_by_rule" (not_applicable/non_deductible) was determined not
+      to count at all.
+  Falling back to derive_document_role()/derive_aggregation_state() when a
+  document's own extracted_data doesn't have these fields stored (older
+  rows, or a row whose fields were never backfilled) mirrors
+  _business_totals_for_year()'s exact fallback, so this function can never
+  silently disagree with the numbers the rest of the app already shows the
+  user on the tax-summary screen.
+
+  Scoped the same way _scoped_document_or_404 scopes a single document:
+  always by user_id, additionally by entity_id only when one is supplied
+  (so a personal-only conversation doesn't pull in a business's spending,
+  and vice versa) — matching how the rest of chat's context (person_context,
+  upload-history) is scoped. year_of_assessment, when given, narrows further
+  to a single filing year (e.g. "what did I spend in 2024?"); when omitted,
+  spending is summarized across all years the user has documents for, and
+  each finding names the year(s) involved so the model doesn't present a
+  multi-year total as if it were one year's figure.
+
+  Returns None (not an empty string) when the user has no documents with a
+  resolved, countable amount at all, so the caller can tell "nothing to
+  add" apart from "checked, found nothing" — same contract as
+  _person_context_block and _check_upload_history.
+  """
+  q = db.query(Document).filter(Document.user_id == user_id, Document.extracted_data.isnot(None))
+  if entity_id is not None:
+    q = q.filter(Document.entity_id == entity_id)
+  if year_of_assessment is not None:
+    q = q.filter(Document.year_of_assessment == year_of_assessment)
+  docs = q.limit(_SPENDING_CONTEXT_DOC_LIMIT).all()
+  if not docs:
+    return None
+
+  # (amount, doc) pairs for every document whose amount is safe to count —
+  # kept alongside the source doc so findings below can cite vendor/
+  # category/file_name/date without a second pass over the query results.
+  countable: list[tuple[Decimal, "Document"]] = []
+  category_totals: dict[str, Decimal] = {}
+  years_seen: set[int] = set()
+
+  for doc in docs:
+    ed = doc.extracted_data or {}
+    category = doc.category or ""
+    tax_status = doc.tax_status or ""
+    document_role = ed.get("document_role") or derive_document_role(category)
+    aggregation_state = ed.get("aggregation_state") or derive_aggregation_state(category, tax_status)
+
+    if document_role == "summary_statement" or aggregation_state != "resolved":
+      continue
+
+    amt = parse_amount(ed.get("amount"))
+    if amt <= 0:
+      # Zero/missing/unparsed amount — nothing to rank or sum. Not an
+      # error (parse_amount never raises), just not spending data.
+      continue
+
+    countable.append((amt, doc))
+    if category:
+      category_totals[category] = category_totals.get(category, Decimal("0")) + amt
+    if doc.year_of_assessment:
+      years_seen.add(doc.year_of_assessment)
+
+  if not countable:
+    return None
+
+  year_label = (
+    f"YA{year_of_assessment}" if year_of_assessment is not None
+    else (f"YA{min(years_seen)}-{max(years_seen)}" if len(years_seen) > 1
+          else (f"YA{next(iter(years_seen))}" if years_seen else "unspecified year(s)"))
+  )
+
+  total = sum((amt for amt, _ in countable), Decimal("0"))
+  countable.sort(key=lambda pair: pair[0], reverse=True)
+  biggest_amt, biggest_doc = countable[0]
+  biggest_ed = biggest_doc.extracted_data or {}
+
+  lines = [
+    "The following is a deterministic spending summary computed directly from the "
+    "user's own stored documents (Postgres aggregation, not a document search) — "
+    f"covering {len(countable)} document(s) with a resolved amount, {year_label}:",
+    f"- Total recorded spending: RM {total:,.2f}.",
+    (
+      f"- Largest single recorded expense: RM {biggest_amt:,.2f} "
+      f"('{biggest_ed.get('vendor') or 'Unknown vendor'}', category: "
+      f"{biggest_doc.category or 'uncategorised'}, document '{biggest_doc.file_name}', "
+      f"dated {biggest_ed.get('date') or 'unknown date'})."
+    ),
+  ]
+
+  if len(countable) > 1:
+    top_n = countable[:5]
+    lines.append("- Top expenses, largest first:")
+    for amt, doc in top_n:
+      ed_i = doc.extracted_data or {}
+      lines.append(
+        f"  - RM {amt:,.2f} — {ed_i.get('vendor') or 'Unknown vendor'} "
+        f"(category: {doc.category or 'uncategorised'}, document '{doc.file_name}', "
+        f"dated {ed_i.get('date') or 'unknown date'})"
+      )
+
+  if len(category_totals) > 1:
+    lines.append("- Spending by category:")
+    for cat, cat_total in sorted(category_totals.items(), key=lambda kv: kv[1], reverse=True):
+      lines.append(f"  - {cat}: RM {cat_total:,.2f}")
+
+  lines.append(
+    "(This summary excludes documents that are bank-statement/summary totals, "
+    "still pending review or apportionment, or marked not-applicable/non-deductible "
+    "— the same rule the app's own tax-summary totals use.)"
+  )
+
+  return "\n".join(lines)
+
+
+def _get_tax_summary_context(
+  db: Session, user_id: str, entity_id: Optional[int], year_of_assessment: Optional[int] = None,
+) -> Optional[str]:
+  """
+  Deterministic tax-computation summary (estimated chargeable income, tax
+  payable, total relief, business income/deductions) for the CURRENT filing
+  year — folded into person_context exactly like _get_spending_context, so
+  the chat LLM can answer "what's my estimated tax payable?" / "what's my
+  chargeable income?" / "how much relief have I claimed?" directly from
+  CONTEXT instead of trying (and failing) to answer it from Mongo document
+  search.
+
+  This deliberately calls get_tax_profile_summary() — the SAME function
+  backing GET /api/profile/summary, which the Manage Account "Generate
+  Forms" panel (ManageProfile.jsx) reads its numbers from — rather than
+  re-deriving brackets/reliefs/chargeable-income here. get_tax_profile_summary
+  is a plain Python function; FastAPI's Query(...)/Depends(get_db) are only
+  interpreted specially when a request is routed through the framework, so
+  calling it directly here (db=db, the SAME session this chat turn already
+  has open) is an ordinary function call that reuses 100% of the real
+  computation, not a parallel copy of it.
+
+  This is a deliberate departure from _get_spending_context's approach (a
+  fresh, self-contained Postgres aggregation): chargeable income and tax
+  payable aren't a straightforward sum over Document rows — they run
+  through tax brackets, capped reliefs (per-category caps, donation tiers),
+  business-loss/capital-allowance carryforward, joint-assessment handling,
+  zakat/CP500/MTD offsets, and more, all of which ALREADY exist inside
+  get_tax_profile_summary()'s ~1400-line _build_year_summary() closure. A
+  second implementation of that here would either be a shallow approximation
+  (wrong numbers) or a full duplicate (a second copy that WILL drift the
+  next time a relief cap or bracket changes only one of the two copies —
+  see the "Bug fix (14 Jul 2026)" comment on get_tax_profile_summary itself
+  for a real prior incident of exactly this kind of drift, which is why
+  that endpoint became the single source of truth for these reliefs in the
+  first place). Calling the existing function keeps this a single source of
+  truth with zero invalidation logic to maintain — the same reasoning
+  _get_spending_context uses for reading Document rows directly instead of
+  a cached total.
+
+  year_of_assessment: when omitted, defaults to the latest year the user
+  (optionally scoped to entity_id) has any document on record for — NOT a
+  30-June-cutoff "current filing year" calculation, since that logic lives
+  only in the frontend today (formB.js's currentFilingYear()) and duplicating
+  a date-cutoff rule here risks the exact same two-copies-drift problem this
+  function exists to avoid for the tax math itself. If the user has no
+  documents at all yet, there is no sensible year to compute, and this
+  returns None.
+
+  Returns None (not an empty string) when there's nothing to summarize —
+  no year could be determined, entity ownership doesn't check out, or the
+  underlying call raises — so a failure here only means one fewer fact in
+  person_context for this turn, never a broken turn. Errors are swallowed
+  here rather than left to the caller because get_tax_profile_summary()
+  raises HTTPException on bad entity ownership, which is meaningful for an
+  HTTP route but not for a best-effort chat context lookup — this is
+  exactly the JSON:API-shaped exception that a plain internal call has to
+  translate into "just skip this lookup", same as any other best-effort
+  helper in this file.
+  """
+  try:
+    person_id = int(user_id)
+  except (TypeError, ValueError):
+    return None
+
+  if year_of_assessment is None:
+    q = db.query(func.max(Document.year_of_assessment)).filter(
+      Document.user_id == user_id, Document.year_of_assessment.isnot(None)
+    )
+    if entity_id is not None:
+      q = q.filter(Document.entity_id == entity_id)
+    row = q.first()
+    year_of_assessment = row[0] if row and row[0] is not None else None
+    if year_of_assessment is None:
+      return None
+
+  try:
+    summary = get_tax_profile_summary(
+      year=year_of_assessment, user_id=str(person_id), entity_id=entity_id, db=db,
+    )
+  except HTTPException:
+    # Entity ownership mismatch or similar — a chat turn should just skip
+    # this context, not surface an HTTP error to the LLM prompt.
+    return None
+  except Exception as e:
+    logger.warning(f"[Chat] Tax summary computation failed for user {user_id}, YA{year_of_assessment}: {e}")
+    return None
+
+  cy = summary.get("currentYear")
+  if not cy:
+    return None
+  totals = cy.get("totals") or {}
+
+  def _fmt_amt(v) -> str:
+    """RM amount with no decimals, grouped thousands — mirrors formB.js's
+    fmtAmt() ('amount without sen', used on the actual Form B cells), so a
+    figure quoted in chat reads identically to the same figure on the
+    generated form instead of showing cents nobody asked for."""
+    try:
+      n = float(v) if v is not None else 0.0
+    except (TypeError, ValueError):
+      n = 0.0
+    return f"{round(n):,}"
+
+  lines = [
+    f"The following is a deterministic tax computation for YA{year_of_assessment}, computed the "
+    "SAME way as the user's own Generate Forms / Form B draft (Postgres calculation, not a "
+    "document search) — treat these figures as authoritative for questions about the user's "
+    "estimated tax position:",
+    f"- Estimated chargeable income (B24): RM {_fmt_amt(totals.get('estimatedChargeableIncome'))}.",
+    f"- Estimated tax charged (B25): RM {_fmt_amt(totals.get('taxChargedMyr'))}.",
+    f"- Estimated tax payable (B31): RM {_fmt_amt(totals.get('estimatedTaxPayable'))}.",
+    (
+      f"- Balance payable/refundable (B33): RM {_fmt_amt(totals.get('balancePayableMyr'))} "
+      "(negative means a refund is due)."
+    ),
+    f"- Total income before deductions (B18/B22): RM {_fmt_amt(totals.get('totalIncome'))}.",
+    f"- Total business deductions (Q3): RM {_fmt_amt(totals.get('q3TotalDeductions'))}.",
+    f"- Total personal reliefs (B23): RM {_fmt_amt((totals.get('profileReliefs') or {}).get('totalMyr'))}.",
+    f"- Approved donations claimed (Part G): RM {_fmt_amt(totals.get('approvedDonationsMyr'))}.",
+  ]
+  if cy.get("documentCount") is not None:
+    lines.append(
+      f"(Based on {cy['documentCount']} document(s) on file for this year; this is an ESTIMATE "
+      "for planning purposes, not a filed return, and should be verified with a licensed tax "
+      "agent or LHDN before relying on it.)"
+    )
+
+  return "\n".join(lines)
 
 
 def _insight_context_block(db: Session, user_id: str, insight_id: int) -> Optional[str]:
@@ -4897,6 +5210,10 @@ A single message can need BOTH document and reference lookups at once (e.g. "is 
 If the user has attached a file to this message, it appears below the question as an image/PDF/etc. you can see directly. A question that's fully answerable from the attachment itself (e.g. "what does this say?", "summarize this", "is this a valid invoice?") needs NEITHER document nor reference search — treat it like any other self-contained question. Only set needs_document_search/needs_reference_search true if answering also genuinely requires the user's OTHER stored documents or the tax law corpus, not just the attached file.
 
 If the question is specifically "did I upload this before?" / "is this already in my account?" / "have I filed this?" about an attached file, and the CONTEXT below already contains an upload-history finding for it (a line starting with "The attached file..." or "No matching or previously-uploaded document was found..."), that question needs NEITHER document nor reference search — the CONTEXT already has the direct, authoritative answer. Write it as a direct_answer instead of setting either search flag true; do not trigger a document search just to double-check a finding that's already been looked up.
+
+If the question asks about the user's own spending totals, biggest/largest/most expensive purchase, top expenses, or spending broken down by category, and the CONTEXT below already contains a line starting with "The following is a deterministic spending summary...", answer directly from those figures — do NOT set needs_document_search true just to double-check a number that CONTEXT already computed. Mongo's document search finds text that resembles the question, it cannot sum, rank, or take a max over the user's documents, so it is never the right tool for this kind of question even if needs_document_search would otherwise seem plausible. If the question also asks something the spending summary doesn't cover — e.g. "is my biggest expense deductible under the law?" — still answer the spending-figures part directly from CONTEXT, but DO set needs_reference_search (or needs_document_search, if it needs a specific receipt's other details) true for the remaining part; the two are not mutually exclusive.
+
+If the question asks about the user's estimated chargeable income, tax charged/payable, total relief, or refund/balance due, and the CONTEXT below already contains a line starting with "The following is a deterministic tax computation...", answer directly from those figures — do NOT set needs_document_search true to try to re-derive them from citations. These figures already went through the full bracket/relief/carryforward computation; document search can only surface individual receipts, never the computed result. As with the spending summary, if part of the question needs something else too (e.g. "why is my relief lower than last year?" needing specific documents), set the relevant search flag true for that part while still answering the figures directly.
 
 When uncertain, prefer setting a flag to true rather than false — a citation the user didn't strictly need is a much smaller problem than answering a real tax question with no grounding at all.
 
@@ -5992,40 +6309,57 @@ def post_chat_message(
     if attachments:
       db.commit()
 
-  # ── Step 2: fetch the user's own Postgres profile (name, TIN, active
-  #    entity, etc.) before classification, since the combined
-  #    classify-and-maybe-answer call below needs it immediately if it turns
-  #    out no retrieval is needed — see _person_context_block()'s docstring
-  #    for the "what is my name?" case this fixes. Best-effort: a lookup
-  #    failure here shouldn't break the rest of the turn.
+  # ── Step 2: fold every best-effort Postgres context lookup for this turn
+  #    into a single person_context string, in order. Each lookup answers a
+  #    different kind of question the chat LLM can't get from Mongo's
+  #    $vectorSearch (see each function's own docstring for why it exists as
+  #    its own query rather than a similarity search):
+  #      - _person_context_block:  identity/profile facts ("what's my TIN?")
+  #      - _get_spending_context:  deterministic totals/rankings over the
+  #                                user's documents ("what's my biggest expense?")
+  #      - _get_tax_summary_context: the actual tax computation (chargeable
+  #                                income, tax payable, reliefs) — reuses
+  #                                get_tax_profile_summary()'s own logic, the
+  #                                SAME function the Generate Forms panel
+  #                                calls, rather than a second copy of it
+  #      - _check_upload_history:  provenance for THIS turn's attachment(s)
+  #                                ("did I upload this before?") — only
+  #                                meaningful when an attachment was sent,
+  #                                so it's the one lookup here that's
+  #                                conditional rather than unconditional
+  #    All three fold into the SAME person_context string (rather than each
+  #    becoming its own parameter threaded through _classify_and_maybe_answer
+  #    and _generate_chat_answer_with_retrieval) so both call sites see every
+  #    lookup automatically, with no signature change needed the next time a
+  #    new lookup is added here.
+  #
+  #    Each entry is (log_label, callable). The callable takes no arguments —
+  #    wrapped in a lambda so a lookup that doesn't apply this turn (e.g. no
+  #    attachments) can be skipped WITHOUT running its try/except at all,
+  #    rather than every lookup unconditionally querying and then discarding
+  #    its own result.
   person_context: Optional[str] = None
-  try:
-    person_context = _person_context_block(db, user_id, entity_id)
-  except Exception as e:
-    logger.warning(f"[Chat] Person profile lookup failed for session {session.session_id}: {e}")
 
-  # ── Step 2b: provenance check for THIS turn's attachment(s), if any ─────
-  #    Only runs when an attachment was actually sent (cheap no-op otherwise
-  #    — no extra Gemini call, no extra Postgres query, for ordinary
-  #    text-only turns). Answers "did I upload this before?" from Postgres
-  #    identity checks (exact hash, then extracted-field match), NOT from
-  #    Mongo semantic similarity — see _check_upload_history()'s docstring
-  #    for why a vector search is the wrong tool for this specific question.
-  #    Folded into person_context (rather than added as a new parameter to
-  #    both _classify_and_maybe_answer and _generate_chat_answer_with_
-  #    retrieval) so both call sites automatically see it without a
-  #    signature change, the same way person_context itself is threaded
-  #    through today.
-  if attachments:
+  def _fold_in_context(label: str, lookup) -> None:
+    """Run one best-effort Postgres context lookup and fold its result into
+    person_context if it returned anything. A lookup failing (bad data,
+    a transient DB error) only loses THAT lookup's contribution to
+    person_context for this turn — it never breaks the rest of the turn,
+    matching how each of these lookups already behaved individually."""
+    nonlocal person_context
     try:
-      upload_history_context = _check_upload_history(db, user_id, attachments)
-      if upload_history_context:
-        person_context = (
-          f"{person_context}\n\n{upload_history_context}" if person_context
-          else upload_history_context
-        )
+      block = lookup()
     except Exception as e:
-      logger.warning(f"[Chat] Upload-history check failed for session {session.session_id}: {e}")
+      logger.warning(f"[Chat] {label} lookup failed for session {session.session_id}: {e}")
+      return
+    if block:
+      person_context = f"{person_context}\n\n{block}" if person_context else block
+
+  _fold_in_context("Person profile", lambda: _person_context_block(db, user_id, entity_id))
+  _fold_in_context("Spending aggregation", lambda: _get_spending_context(db, user_id, entity_id))
+  _fold_in_context("Tax summary", lambda: _get_tax_summary_context(db, user_id, entity_id))
+  if attachments:
+    _fold_in_context("Upload-history", lambda: _check_upload_history(db, user_id, attachments))
 
   # ── Step 2c: fold in the insight the user clicked "Ask CukaiBot about
   #    this" from, if any (see _insight_context_block()'s docstring) ──────
