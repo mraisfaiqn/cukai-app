@@ -58,6 +58,9 @@ from taxonomy_classification import (
   derive_aggregation_state as _new_derive_aggregation_state,
 )
 from document_dispatch import dispatch_document
+# Registers the Insight/InsightRun tables on the shared Base (so init_db's
+# create_all picks them up) and provides the /api/insights endpoints.
+from insights.router import router as insights_router
 from breastfeeding_relief import compute_breastfeeding_relief_for_year, H11_CAP_MYR
 import mongo
 from embeddings import embed_text
@@ -163,6 +166,8 @@ app.add_middleware(
   allow_methods=["*"],
   allow_headers=["*"],
 )
+
+app.include_router(insights_router)
 
 
 def get_db():
