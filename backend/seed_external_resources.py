@@ -199,6 +199,14 @@ EXTERNAL_RESOURCES = [
     "date_issued": "2026-07-07",
   },
   {
+    "reference_no": "EN-B-2024",
+    "resource_type": "guideline",
+    "title": "Explanatory Notes B 2024 — Resident Individual Who Carries On Business",
+    "category": "Form B Filing Guidance — Reliefs, Deductions & Income Tax Computation",
+    "source_url": "https://www.hasil.gov.my/wp-content/uploads/explanatory_notes_b2024_2.pdf",
+    "date_issued": "2024-01-01",
+  },
+  {
     "reference_no": "ACT-874",
     "resource_type": "act",
     "title": "Finance Act 2025 (Act 874)",

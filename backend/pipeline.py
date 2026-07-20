@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import threading
+import time
 from datetime import date as _date_cls
 from decimal import Decimal
 from dotenv import load_dotenv
@@ -14,7 +15,22 @@ from typing import Literal
 import pandas as pd
 from sqlalchemy.orm import Session
 from models import Document, FormBProfile, CapitalAsset, BreastfeedingEquipmentClaim, FinancialStatementProfile, Entity, CP500Record, OneTimeReliefClaim
-from utils import parse_amount
+from utils import parse_amount, extract_llm_text
+from category_registry import CATEGORY_REGISTRY, CATEGORY_BUCKET, CATEGORY_TAX_TREATMENT
+# Aliased (not imported under the same names) — pipeline.py's OWN
+# derive_document_role/derive_aggregation_state, defined further down in
+# this file, are still exported unchanged for main.py call sites not yet
+# migrated to the registry (e.g. _business_totals_for_year,
+# reset_document_classification). Those still pass a STATUS STRING as the
+# second argument; the new functions expect a CONFIDENCE INTEGER — importing
+# them under the same name would silently shadow the old ones module-wide
+# and break every un-migrated call site with a real type mismatch, not just
+# a routing difference. Only run_document_pipeline's classification step
+# (below) uses these aliased versions.
+from taxonomy_classification import (
+  derive_document_role as _new_derive_document_role,
+  derive_aggregation_state as _new_derive_aggregation_state,
+)
 from capital_allowance import resolve_capital_allowance_rates
 
 from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -328,10 +344,10 @@ ALL_Q2 = Q2_PERSONAL_INCOME_CATEGORIES
 ALL_Q3 = Q3_BUSINESS_EXPENSE_CATEGORIES
 ALL_Q4 = Q4_PERSONAL_RELIEF_CATEGORIES
 
-ALL_CATEGORIES = (
-  ALL_Q1 + ALL_Q2 + ALL_Q3 + ALL_Q4
-  + [REVIEW_CATEGORY, NON_TAX_CATEGORY, BANK_STATEMENT_CATEGORY]
-)
+# ALL_CATEGORIES removed (dead code cleanup, this session): its only reader
+# was the old validate_llm_result's category check, which now checks
+# CATEGORY_REGISTRY membership instead (see category_registry.py) — this
+# variable had zero remaining references anywhere once that change landed.
 
 # Status vocabulary
 # income       — a receipt of money (Q1 or Q2); no deductibility; declared as income on Form B
@@ -538,11 +554,10 @@ SUPPORTING_EVIDENCE_CATEGORIES = {
   NON_TAX_CATEGORY,
 }
 
-VALID_DOCUMENT_ROLES = {"transaction", "summary_statement", "schedule_source", "supporting_evidence", "ledger_source"}
-VALID_AGGREGATION_STATES = {
-  "resolved", "needs_apportionment", "needs_user_confirmation",
-  "reference_only", "excluded_by_rule",
-}
+# VALID_DOCUMENT_ROLES / VALID_AGGREGATION_STATES removed (dead code
+# cleanup, this session): neither had any reference anywhere beyond its own
+# definition — they documented the valid literal values but nothing ever
+# actually validated against them.
 
 
 def derive_document_role(category: str) -> str:
@@ -838,7 +853,6 @@ If truly Non-Tax, return ONLY:
   "ita_section": null,
   "document_type": "<e.g. Identity Document, Medical Record, Photograph>",
   "category": "Non-Tax Document",
-  "status": "not_applicable",
   "note": "<one sentence: why this has no financial or tax relevance>",
   "confidence": 95
 }}
@@ -1294,6 +1308,19 @@ Identify the document type precisely from content headers, vendor names, and fil
         balance_payable_refundable : balance payable or refund amount (string amount or null)
         unabsorbed_business_losses : carried-forward losses to next YA (string amount or null)
         unabsorbed_capital_allowance : carried-forward CA to next YA (string amount or null)
+        n8_gross_profit      : Part N line N8 "GROSS PROFIT / LOSS", ONLY if this Form B
+                                also includes the optional Part N financial particulars page
+                                (string amount or null — most filers don't attach Part N,
+                                so this will usually be null, which is fine)
+        n26_net_profit        : Part N line N26 "NET PROFIT / LOSS", same condition as above
+                                (string amount or null)
+        # NOTE: total_business_deductions is frequently null, because LHDN's printed Form B
+        # has NO single line item literally called "total business deductions" — it's a
+        # working-sheet figure most filers never attach. When it's null but n8_gross_profit
+        # AND n26_net_profit are BOTH present (i.e. this Form B happens to include Part N),
+        # the main.py summary derives it as n8 - n26 (gross profit minus net profit =
+        # total expenditure) rather than leaving the deductions trend chart empty for that
+        # year (bug fix, 17 Jul 2026).
       Classify as: Q1 — Filed Form B (Prior Year); status: income (it is a comprehensive income record).
       Populate the form_b field in the JSON output with all extracted fields above.
     → Q1 — Filed Form B (Prior Year)
@@ -1980,21 +2007,6 @@ ITA SECTION TAGGING — always populate the ita_section field:
 STEP 4 — DEDUCTIBILITY & COMPLIANCE RULES (ITA 1967)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-STATUS DEFINITIONS:
-  income         → document evidences money received; declared as income in the relevant
-                   s.4 section of Form B; no deductibility question applies
-  deductible     → wholly & exclusively incurred in producing business income (s.33(1));
-                   reduces s.4(a) net profit
-  mixed          → partially deductible or requires apportionment / user confirmation;
-                   MUST include reason + question + source fields
-  capital        → capital asset (deducted via Schedule 3 IA+AA, not directly) — equipment,
-                   renovation/fit-out, or similar capitalised expenditure
-  not_applicable → supporting document with no standalone deductibility (e.g. CP500 / tax
-                   installment notice, generic non-tax document)
-  relief         → reduces individual chargeable income; claimed in the personal relief
-                   section of Form B (Schedule 9); subject to annual caps
-  non_deductible → personal spending with no tax benefit of any kind
-
 ──────────────────────────────────────────────────
 Q1 BUSINESS INCOME RULES
 ──────────────────────────────────────────────────
@@ -2346,12 +2358,11 @@ OUTPUT FORMAT — return ONLY valid JSON, no markdown fences, no preamble
   "ita_section": "<s.4a | s.4aa | s.4b | s.4c | s.4d | s.4e | s.4f | s.33 | s.39 | sch3 | relief | nil>",
   "document_type": "<precise label from Step 2>",
   "category": "<exactly one category from Step 3>",
-  "status": "<income | deductible | mixed | capital | not_applicable | relief | non_deductible>",
   "vendor": "<vendor/company/payer name, or 'Unknown'>",
   "vendor_reg": "<SSM/ROC/ROB number if visible, else null>",
   "vendor_addr": "<vendor address if visible, else null>",
   "doc_no": "<invoice/receipt/reference number, or null>",
-  "date": "<document date DD Mon YYYY e.g. 15 Jun 2024, or null>",
+  "date": "<document date DD Mon YYYY e.g. 15 Jun 2024, or null. If the document shows a PERIOD/RANGE instead of a single date (e.g. 'Statement Period: 01/01/2024 - 31/12/2024', 'Billing Period: Feb 2024', a tenancy/coverage/policy period), extract the END date of that range/period — never the start date>",
   "tax_year": "<financial year this document belongs to, e.g. 2024, or null>",
   "amount": "<total amount as string e.g. RM 1,240.00, or null>",
   "gst_sst_amount": "<SST amount if separately stated, else null>",
@@ -2409,7 +2420,9 @@ OUTPUT FORMAT — return ONLY valid JSON, no markdown fences, no preamble
     "cp500_total_paid": "<string amount or null>",
     "balance_payable_refundable": "<string amount or null>",
     "unabsorbed_business_losses": "<string amount or null>",
-    "unabsorbed_capital_allowance": "<string amount or null>"
+    "unabsorbed_capital_allowance": "<string amount or null>",
+    "n8_gross_profit": "<string amount or null — ONLY if Part N financial particulars is also on this document>",
+    "n26_net_profit": "<string amount or null — same condition as n8_gross_profit>"
   }},
   "form_ea": {{
     "ONLY for Q2 — Employment Income (s.4b). Null any field not found on the document.",
@@ -2574,9 +2587,24 @@ def extract_text_from_spreadsheet(file_path: str) -> str:
   Parse Excel or CSV files into a plain-text representation for the LLM.
 
   Strategy:
-  - Read all sheets (Excel) or the single sheet (CSV).
+  - Read all sheets (Excel) or the single sheet (CSV) with NO header row
+    assumed (header=None). Real-world spreadsheets routinely have a title/
+    watermark row, blank rows, and label/value metadata rows (e.g.
+    "Business: ...", "Period: 01/01/2024 - 31/12/2024") BEFORE the actual
+    data table starts. Blindly trusting row 1 as the header (pandas'
+    default) silently swallows all of that into a single garbled column
+    under a meaningless header, corrupting the table before the LLM ever
+    sees it — this was the root cause of financial-statement and CP500
+    xlsx uploads sometimes extracting no fields / no amount at all (bug
+    fix, 17 Jul 2026). Passing the full raw grid instead — every row
+    shown, nothing pre-judged as metadata vs. header vs. data — lets the
+    LLM itself locate the real table structure from complete context, the
+    same "don't pre-guess, give full context" approach used elsewhere in
+    this pipeline.
   - Drop completely empty rows/columns.
-  - Convert each sheet to a markdown-style table.
+  - Convert each sheet to a markdown-style table, with the ORIGINAL 1-based
+    row numbers kept as the index so the LLM can still refer back to "row 3"
+    etc. when explaining what it read.
   - Prepend a summary (sheet name, row/column counts, detected numeric columns).
   - Cap at 8,000 characters.
   """
@@ -2585,43 +2613,55 @@ def extract_text_from_spreadsheet(file_path: str) -> str:
 
   try:
     if ext == ".csv":
-      sheets = {"Sheet1": pd.read_csv(file_path, dtype=str, keep_default_na=False)}
+      sheets = {"Sheet1": pd.read_csv(file_path, dtype=str, keep_default_na=False, header=None)}
     else:
       xf = pd.ExcelFile(file_path, engine="openpyxl")
       sheets = {
-        name: xf.parse(name, dtype=str, keep_default_na=False)
+        name: xf.parse(name, dtype=str, keep_default_na=False, header=None)
         for name in xf.sheet_names
       }
   except Exception as e:
     raise ValueError(f"Could not parse spreadsheet '{os.path.basename(file_path)}': {e}")
 
   for sheet_name, df in sheets.items():
+    # Preserve original row numbers BEFORE dropping empty rows, so the row
+    # numbers shown to the LLM (and usable in any follow-up reference) match
+    # what a human would count looking at the actual spreadsheet, not a
+    # renumbered post-drop index.
+    df.index = range(1, len(df) + 1)
     df = df.dropna(how="all").dropna(axis=1, how="all")
     if df.empty:
       sections.append(f"## Sheet: {sheet_name}\n(empty sheet — no data)\n")
       continue
 
     row_count, col_count = df.shape
-    col_names = list(df.columns)
+    # No real header row is assumed, so columns get simple positional labels
+    # rather than pandas' default 0/1/2 integer columns (which read
+    # ambiguously once mixed into markdown output).
+    df.columns = [f"Col{i + 1}" for i in range(col_count)]
     numeric_cols = [
-      c for c in col_names
+      c for c in df.columns
       if pd.to_numeric(df[c], errors="coerce").notna().sum() > row_count * 0.5
     ]
 
     summary = (
       f"## Sheet: {sheet_name}\n"
       f"Rows: {row_count} | Columns: {col_count}\n"
-      f"Columns: {', '.join(str(c) for c in col_names)}\n"
+      f"(No header row assumed — every row below is shown with its original "
+      f"spreadsheet row number in the leftmost index column. Identify the "
+      f"real header/label row(s) and data table yourself from context; "
+      f"title, watermark, and metadata rows may appear before the real "
+      f"table starts.)\n"
     )
     if numeric_cols:
-      summary += f"Numeric columns (likely amounts): {', '.join(str(c) for c in numeric_cols)}\n"
+      summary += f"Columns with mostly-numeric values: {', '.join(str(c) for c in numeric_cols)}\n"
 
     preview_df = df.head(50)
     try:
-      table_md = preview_df.to_markdown(index=False)
+      table_md = preview_df.to_markdown(index=True)
     except Exception:
       buf = io.StringIO()
-      preview_df.to_csv(buf, index=False)
+      preview_df.to_csv(buf, index=True)
       table_md = buf.getvalue()
 
     if row_count > 50:
@@ -2634,6 +2674,81 @@ def extract_text_from_spreadsheet(file_path: str) -> str:
 
 
 # ─── LLM call ─────────────────────────────────────────────────────────────────
+# ── LLM call pacing & quota retry (bug fix, 17 Jul 2026) ─────────────────────
+# main.py's pipeline thread pool runs up to 4 documents concurrently
+# (ThreadPoolExecutor max_workers=4). With no coordination between those
+# workers, a burst of documents (e.g. a 10-file batch upload) could have
+# several of them calling the Gemini API within the same few seconds —
+# comfortably enough to exceed the free tier's per-minute input-token quota
+# (generativelanguage.googleapis.com/generate_content_free_tier_input_token_count),
+# which is shared across the WHOLE app, not scoped to any one upload or user.
+#
+# _throttle_llm_call() serializes only the START of each call across every
+# worker thread, spacing them at least LLM_MIN_CALL_INTERVAL_SECONDS apart —
+# OCR and everything else in the pipeline still runs fully in parallel; only
+# the moment a thread is about to actually invoke the model gets gated, and
+# the lock is released again before the (multi-second) API round trip itself,
+# so one slow call never blocks another thread from at least taking its turn.
+#
+# _invoke_llm_with_quota_retry() additionally retries specifically on a
+# RESOURCE_EXHAUSTED/429 response, honouring Gemini's own suggested wait
+# ("Please retry in 13.47s" / retryDelay) when the error provides one, rather
+# than guessing — previously any quota hit permanently failed the document
+# (status: "failed", needing a manual re-upload) even though the condition is
+# transient and normally clears within seconds once the per-minute window
+# rolls over. Non-quota errors are re-raised immediately and unaffected.
+LLM_MIN_CALL_INTERVAL_SECONDS = 6.0
+LLM_MAX_RETRIES_ON_QUOTA = 3
+LLM_DEFAULT_QUOTA_RETRY_SECONDS = 20.0  # used only if Gemini's own error has no retry hint to parse
+
+_llm_call_lock = threading.Lock()
+_llm_last_call_started_at = 0.0
+
+
+def _throttle_llm_call() -> None:
+  global _llm_last_call_started_at
+  with _llm_call_lock:
+    now = time.monotonic()
+    wait_needed = LLM_MIN_CALL_INTERVAL_SECONDS - (now - _llm_last_call_started_at)
+    if wait_needed > 0:
+      time.sleep(wait_needed)
+    _llm_last_call_started_at = time.monotonic()
+
+
+def _extract_retry_delay_seconds(error_message: str) -> float | None:
+  """Parse Gemini's own suggested wait out of a RESOURCE_EXHAUSTED error message,
+  e.g. "Please retry in 13.467381968s." or a structured retryDelay: '13s' field —
+  trust the provider's own figure over a guessed default when it's available."""
+  match = re.search(r"retry in (\d+(?:\.\d+)?)s", error_message)
+  if match:
+    return float(match.group(1))
+  match = re.search(r"retryDelay['\"]?\s*:\s*['\"](\d+(?:\.\d+)?)s", error_message)
+  if match:
+    return float(match.group(1))
+  return None
+
+
+def _invoke_llm_with_quota_retry(llm, messages):
+  last_error = None
+  for attempt in range(1, LLM_MAX_RETRIES_ON_QUOTA + 1):
+    _throttle_llm_call()
+    try:
+      return llm.invoke(messages)
+    except Exception as e:
+      msg = str(e)
+      is_quota_error = "RESOURCE_EXHAUSTED" in msg or "429" in msg
+      if not is_quota_error or attempt == LLM_MAX_RETRIES_ON_QUOTA:
+        raise
+      wait_seconds = _extract_retry_delay_seconds(msg) or LLM_DEFAULT_QUOTA_RETRY_SECONDS
+      logger.warning(
+        f"[Pipeline] Gemini quota exceeded (attempt {attempt}/{LLM_MAX_RETRIES_ON_QUOTA}) — "
+        f"waiting {wait_seconds:.1f}s before retrying, per the provider's own retry hint."
+      )
+      time.sleep(wait_seconds)
+      last_error = e
+  raise last_error
+
+
 def classify_and_extract_with_llm(
   content: str,
   filename: str,
@@ -2701,7 +2816,7 @@ def classify_and_extract_with_llm(
     HumanMessage(content=user_message),
   ]
 
-  response = llm.invoke(messages)
+  response = _invoke_llm_with_quota_retry(llm, messages)
   raw_content = response.content
 
   if isinstance(raw_content, list):
@@ -2741,41 +2856,37 @@ def classify_and_extract_with_llm(
 
 # ─── Output validation ─────────────────────────────────────────────────────────
 def validate_llm_result(llm_result: dict, filename: str) -> dict:
-  """Sanitise LLM output: enforce valid status, known category, and bounded confidence."""
+  """
+  Sanitise LLM output: enforce a known category and bounded confidence.
 
-  raw_status = llm_result.get("status", "")
-  if raw_status not in VALID_STATUSES:
-    logger.warning(
-      f"[Pipeline] Invalid status '{raw_status}' for '{filename}' — defaulting to 'mixed'."
-    )
-    llm_result["status"] = "mixed"
-
+  NOTE THE SHAPE CHANGE (taxonomy redesign, this session): `status` is no
+  longer read from, validated, or trusted in the LLM's output at all — it
+  is never part of the JSON contract the model is asked to fill in (see
+  EXTRACTION_SYSTEM_PROMPT). The model's ONLY classification job is picking
+  the right `category`; tax_treatment/bucket/document_role/aggregation_state
+  are ALWAYS derived from CATEGORY_REGISTRY by category name alone, with no
+  exceptions and no override chain to have a missing branch — this is what
+  eliminates (not patches) the original override-gap bug: a category like
+  "Q4 — Donation: Library Facilities" or "Q3 — CP500 Instalment Notice" can
+  no longer be silently mis-tagged just because the model guessed a
+  different status than the canonical one.
+  """
   raw_category = llm_result.get("category", REVIEW_CATEGORY)
-  if raw_category not in ALL_CATEGORIES:
+  if raw_category not in CATEGORY_REGISTRY:
     logger.warning(
       f"[Pipeline] Unknown category '{raw_category}' for '{filename}' — defaulting to '{REVIEW_CATEGORY}'."
     )
     llm_result["category"] = REVIEW_CATEGORY
-    llm_result["status"] = "mixed"
 
   try:
     llm_result["confidence"] = max(0, min(100, int(llm_result.get("confidence", 0))))
   except (TypeError, ValueError):
     llm_result["confidence"] = 0
 
-  # Enforce quadrant consistency
-  cat = llm_result.get("category", "")
-  if cat in ALL_Q1 and llm_result.get("quadrant") != "Q1":
-    llm_result["quadrant"] = "Q1"
-  elif cat in ALL_Q2 and llm_result.get("quadrant") != "Q2":
-    llm_result["quadrant"] = "Q2"
-  elif cat in ALL_Q3 and llm_result.get("quadrant") != "Q3":
-    llm_result["quadrant"] = "Q3"
-  elif cat in ALL_Q4 and llm_result.get("quadrant") != "Q4":
-    llm_result["quadrant"] = "Q4"
-  elif cat == NON_TAX_CATEGORY:
-    llm_result["quadrant"] = "NonTax"
-    llm_result["status"] = "not_applicable"
+  # Quadrant is now cosmetic/display-only, filled straight from the
+  # registry's bucket for the FINAL category — never left for the LLM's own
+  # guess to drift from what the category itself implies.
+  llm_result["quadrant"] = CATEGORY_BUCKET.get(llm_result["category"], "REVIEW")
 
   return llm_result
 
@@ -2802,10 +2913,28 @@ def normalize_date(raw_date: str | None, tax_year: str | int | None = None) -> d
   receipt) or that only ever state a year/month (e.g. annual summaries).
   We deliberately do not fabricate a day (e.g. defaulting to the 1st) for
   month/year-only documents, since that would silently imply false precision.
+
+  Also defensively handles a RANGE/PERIOD string (e.g. "01/01/2024 - 31/12/2024",
+  "1 Jan 2024 to 31 Dec 2024") even though the extraction prompt now asks the
+  LLM to return only the range's END date directly (bug fix, 17 Jul 2026) —
+  real-world extraction won't always follow that instruction perfectly, so
+  this is a second line of defense: if a range slips through anyway, split on
+  the separator and re-parse just the END half through the normal single-date
+  logic below, rather than letting the whole string fall through to
+  "Unrecognized date format" and lose day-level precision entirely.
   """
   s = (raw_date or "").strip()
 
   if s:
+    # Range/period string — split on a dash/en-dash/em-dash/"to" separator
+    # (requires whitespace on both sides, so a plain single date like
+    # "15-03-2024" or an ISO "2024-01-15" is never mistaken for a range and
+    # accidentally split) and keep only the END date, then fall through to
+    # the normal single-date parsing below.
+    range_match = re.match(r"^.+?\s+(?:-|–|—|to)\s+(.+)$", s, re.IGNORECASE)
+    if range_match:
+      s = range_match.group(1).strip()
+
     # DD Mon YYYY / DD Month YYYY  e.g. "15 Jun 2024", "5 June 2024"
     m = re.match(r"^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$", s)
     if m:
@@ -2968,6 +3097,8 @@ def build_extracted_data(
       "balance_payable_refundable":   form_b_raw.get("balance_payable_refundable"),
       "unabsorbed_business_losses":   form_b_raw.get("unabsorbed_business_losses"),
       "unabsorbed_capital_allowance": form_b_raw.get("unabsorbed_capital_allowance"),
+      "n8_gross_profit":              form_b_raw.get("n8_gross_profit"),
+      "n26_net_profit":               form_b_raw.get("n26_net_profit"),
     } if form_b_raw else None,
 
     # Narrative / audit trail
@@ -3572,24 +3703,35 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
     llm_result = validate_llm_result(llm_result, filename)
 
     category = llm_result.get("category", REVIEW_CATEGORY)
-    status   = llm_result.get("status") or CATEGORY_STATUS_MAP.get(category, "mixed")
 
-    # Hard overrides — enforce correct status regardless of what the LLM returned
-    if category == NON_TAX_CATEGORY:
-      status = "not_applicable"
-    elif category == BANK_STATEMENT_CATEGORY:
-      status = "mixed"
-    elif category in ("Q3 — Capital Assets & Equipment", "Q3 — Capital Renovation & Fit-Out"):
-      status = "capital"
-    elif category in ALL_Q1 or category in ALL_Q2:
-      status = "income"
-    elif category in _Q4_RELIEF_CATS:
-      status = "relief"
-    elif category in _Q4_NON_DED_CATS:
-      status = "non_deductible"
+    # NO MORE OVERRIDE CHAIN, and the LLM's own guess is NEVER trusted. The
+    # original bug was never that CATEGORY_STATUS_MAP's own values were
+    # wrong — CP500 and donations were already correctly mapped there. The
+    # bug was purely that the override chain could be bypassed (it had no
+    # branch for donations/CP500/etc.) and the LLM's own guessed status,
+    # when present, won outright. Removing the "llm_result.get('status') or"
+    # fallback and the elif chain entirely — status is now ALWAYS this
+    # dict's canonical value for the category, no exceptions.
+    #
+    # Deliberately still CATEGORY_STATUS_MAP (the original dict), not the
+    # new registry's CATEGORY_TAX_TREATMENT — the new registry introduces
+    # vocabulary ("tax_instalment", "rebate", "reference") that other,
+    # not-yet-migrated code still reading this persisted value from
+    # doc.tax_status (e.g. main.py's _business_totals_for_year, used by the
+    # carryforward engine) doesn't yet know how to interpret. Swapping the
+    # PERSISTED vocabulary is a separate, later migration step, done
+    # together with migrating those other call sites — not bundled into
+    # this fix, to avoid a cross-module mismatch this session's testing
+    # (dispatch_comparison.py) doesn't cover.
+    status = CATEGORY_STATUS_MAP.get(category, "mixed")
 
-    # Second & third dimensions — always derived in code, from the FINAL
-    # (post-override) category/status, so they can never disagree with them.
+    # document_role/aggregation_state: kept on pipeline.py's OWN existing
+    # functions here too (not the new registry-based ones), for the exact
+    # same reason — those old functions already interpret CATEGORY_STATUS_MAP's
+    # vocabulary correctly and are what every other un-migrated call site
+    # in main.py still expects. The override-chain elimination above is the
+    # actual root-cause fix; swapping these two functions' own internals is
+    # a separate, later step.
     document_role     = derive_document_role(category)
     aggregation_state = derive_aggregation_state(category, status)
 
@@ -3809,6 +3951,41 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
         db.rollback()  # don't fail the main document record over a matching error
 
     logger.info(f"[Pipeline] Document ID {doc_id} committed successfully.")
+
+    # ── Insight engine ───────────────────────────────────────────────────
+    # Recompute the user's insight feed now that a new document is classified.
+    # This whole pipeline already runs off the request thread (submitted to
+    # main._pipeline_executor at upload time), so the upload response was
+    # never blocked on it — the engine simply runs at the tail of the same
+    # background execution. Deferred import: insights.engine reaches back
+    # into main/pipeline at call time, so importing it at module top here
+    # would be circular. run_insight_engine never raises — an insight
+    # failure must not fail an already-committed document.
+    if document.user_id and document.year_of_assessment is not None:
+      from insights.engine import queue_insight_run, run_insight_engine
+      # assessment_year comes from the DOCUMENT, not the wall clock: a 2025
+      # receipt uploaded in July 2026 must refresh the YA2025 feed, never
+      # pollute YA2026. The engine also enforces the per-YA amendment lock
+      # (filed Form B on record ⇒ analysis skipped, with an audit log entry).
+      run_id, created = queue_insight_run(
+        document.user_id, document.entity_id, "document_classified", db_session_factory,
+        assessment_year=document.year_of_assessment,
+      )
+      if created:
+        run_insight_engine(
+          document.user_id, document.entity_id, "document_classified", db_session_factory,
+          assessment_year=document.year_of_assessment, run_id=run_id,
+        )
+    elif document.user_id:
+      # No year_of_assessment could be derived (undated/unparseable document).
+      # The year summary filters on that exact column, so ANY year's engine
+      # run would be blind to this document — a wall-clock-year run learns
+      # nothing and risks auto-resolving unrelated current-year cards off an
+      # unchanged snapshot. Skip, and leave a trace for debugging.
+      logger.info(
+        f"[Pipeline] Document ID {doc_id} classified without a year_of_assessment — "
+        "insight engine run skipped (no year feed can see this document)."
+      )
 
   except Exception as e:
     logger.error(f"[Pipeline Error] Document ID {doc_id}: {e}", exc_info=True)

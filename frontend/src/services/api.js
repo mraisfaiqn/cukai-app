@@ -92,6 +92,23 @@ export const getAllEntities = async (personId) => {
 };
 
 /**
+ * Fetch the canonical document category taxonomy, grouped by bucket.
+ * This is the SINGLE SOURCE the reclassify dropdown (CukaiAccount.jsx)
+ * builds itself from — replacing the old hand-copied category arrays that
+ * drifted out of sync with the backend across several taxonomy refactors
+ * (the CP500 split, the H6/H7/H8 granularity split, and — most concretely —
+ * Bank Statement never being added as a selectable option at all, which
+ * caused a confirmed bug where the reclassify dropdown showed the wrong
+ * category for a bank statement document). Static taxonomy data, identical
+ * for every user — no personId/auth needed.
+ * Returns { groups: [{ bucket, groupLabel, categories: [{ value, label, status }] }] }.
+ */
+export const getCategories = async () => {
+  const { data } = await api.get('/api/categories');
+  return data;
+};
+
+/**
  * Create a new entity under a person.
  * `payload` should use camelCase keys matching the backend's expected shape.
  * Returns the newly created Entity record.
@@ -261,6 +278,22 @@ export const unarchiveDocument = async (docId, userId = null, entityId = null) =
 };
 
 /**
+ * Toggle a bank statement's review flag — this is what lets a bank
+ * statement actually resolve out of "needs review" once the user has
+ * looked at its unmatched lines and confirmed there's nothing missing.
+ * Only valid for documents whose category is a bank statement (422
+ * otherwise). `reviewed` is a toggle, not one-directional — pass false to
+ * re-open review later if needed.
+ */
+export const markDocumentReviewed = async (docId, reviewed = true, userId = null, entityId = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.patch(`/api/documents/${docId}/mark-reviewed`, { reviewed }, { params });
+  return data;
+};
+
+/**
  * Re-run OCR/classification on a previously failed document using the file
  * already stored on disk. Returns { document_id, status: 'pending' }.
  */
@@ -328,6 +361,56 @@ export const getTaxProfileSummary = async (year, userId = null, entityId = null)
   return data;
 };
 
+// ── AI Insights ───────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the AI Insights feed for a user (optionally scoped to an entity).
+ * Returns a WRAPPED payload: { insights: [...], lastRun: {...}|null } —
+ * consumers must read `.insights`, not map the response directly.
+ */
+export const getInsights = async (userId, entityId = null) => {
+  const params = { user_id: userId };
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.get('/api/insights', { params });
+  return data;
+};
+
+/**
+ * Transition an insight's lifecycle state.
+ * `payload` is { state: 'new'|'read'|'dismissed'|'actioned', dismissReason?,
+ * snoozeUntil? (YYYY-MM-DD), resolvedNote? }. Dismiss reasons containing
+ * "snooze" auto-snooze for 2 weeks; "Not relevant this year" hides the card
+ * until 1 Jan after its assessment year. Returns the updated insight.
+ */
+export const updateInsightState = async (insightId, payload, userId) => {
+  const { data } = await api.patch(`/api/insights/${insightId}/state`, payload, {
+    params: { user_id: userId },
+  });
+  return data;
+};
+
+/**
+ * Queue a manual re-run of the insight engine (fire-and-forget, 202).
+ * The refreshed feed lands on the next getInsights() call. Pass
+ * assessmentYear to recompute a prior year's feed — omitted, the engine
+ * defaults to the current year.
+ */
+export const runInsightEngine = async (userId, entityId = null, assessmentYear = null) => {
+  const params = { user_id: userId };
+  if (entityId) params.entity_id = entityId;
+  if (assessmentYear) params.assessment_year = assessmentYear;
+  const { data } = await api.post('/api/insights/run', {}, { params });
+  return data;
+};
+
+/** Fetch one durable analysis run, including lifecycle timestamps and changes. */
+export const getInsightRun = async (runId, userId) => {
+  const { data } = await api.get(`/api/insights/runs/${runId}`, {
+    params: { user_id: userId },
+  });
+  return data;
+};
+
 /**
  * Fetch the structured Form B data extracted from a previously filed return.
  * Pass entityId to scope to a specific business entity (each entity keeps its
@@ -339,42 +422,6 @@ export const getFormBProfile = async (year, userId = null, entityId = null) => {
   if (userId)   params.user_id   = userId;
   if (entityId) params.entity_id = entityId;
   const { data } = await api.get(`/api/profile/form-b/${year}`, { params });
-  return data;
-};
-
-// ── Insights ──────────────────────────────────────────────────────────────────
-// The AI insight feed is scoped to a user and (optionally) a single business
-// entity, exactly like documents and the tax profile summary. Pass the same
-// entityId used elsewhere (typically localStorage('activeEntityId')) so
-// switching entities returns that entity's own insights.
-
-/**
- * Fetch the insight feed for a user, optionally scoped to one entity.
- * Omit entityId to aggregate across all of the user's entities. `state`
- * optionally filters by lifecycle (new | read | dismissed | actioned).
- * Returns an array of insight rows (already shaped like the InsightsInbox card).
- */
-export const getInsights = async (userId = null, entityId = null, state = null) => {
-  const params = {};
-  if (userId)   params.user_id   = userId;
-  if (entityId) params.entity_id = entityId;
-  if (state)    params.state     = state;
-  const { data } = await api.get('/api/insights', { params });
-  return data;
-};
-
-/**
- * Transition a single insight's lifecycle state (read | dismissed | actioned).
- * `reason` carries the dismiss reason for "dismiss with memory" so a later
- * regeneration won't resurrect the card. Returns the updated insight row.
- */
-export const updateInsightState = async (insightId, state, reason = null, userId = null, entityId = null) => {
-  const params = {};
-  if (userId)   params.user_id   = userId;
-  if (entityId) params.entity_id = entityId;
-  const body = { state };
-  if (reason !== null && reason !== undefined && reason !== '') body.reason = reason;
-  const { data } = await api.patch(`/api/insights/${insightId}/state`, body, { params });
   return data;
 };
 
@@ -438,16 +485,22 @@ export const getChatHistory = async (sessionId, userId) => {
  * to Gemini alongside the message text (see main.py's post_chat_message).
  * `message` may be an empty string when attachmentIds is non-empty
  * (attachment-only message).
+ * Pass `insightId` on the first message of a conversation started from an
+ * AI Insight card's "Ask CukaiBot about this" action (see InsightsInbox.jsx's
+ * runAction and CukaiBot.jsx's mount effect) — the backend grounds its
+ * answer in that insight's title/body/signals (see main.py's
+ * _insight_context_block). Not needed on later turns in the same session.
  * Returns { sessionId, userMessage: {id, role, text, attachments}, message: {id, role, text, citations, followups} }.
  * followups is an array of up to 3 AI-suggested next questions for THIS
  * reply (may be empty, e.g. on a generation error) — drives the chip tray
  * under the conversation instead of a fixed static prompt list.
  */
-export const sendChatMessage = async (message, userId, entityId = null, sessionId = null, attachmentIds = []) => {
+export const sendChatMessage = async (message, userId, entityId = null, sessionId = null, attachmentIds = [], insightId = null) => {
   const body = { message, user_id: userId };
   if (entityId)  body.entity_id  = entityId;
   if (sessionId) body.session_id = sessionId;
   if (attachmentIds && attachmentIds.length) body.attachment_ids = attachmentIds;
+  if (insightId) body.insight_id = insightId;
   const { data } = await api.post('/api/chat', body);
   return data;
 };

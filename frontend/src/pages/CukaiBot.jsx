@@ -841,7 +841,7 @@ function UserMessage({ message, isActive, onSelectCitations, onPreviewAttachment
               : 'border-border bg-surface hover:bg-slate-50'
           }`}
         >
-          <p className="select-text text-xs leading-relaxed text-headings">{message.text}</p>
+          <span className="select-text block text-xs leading-relaxed text-headings">{message.text}</span>
         </button>
       )}
     </div>
@@ -1737,6 +1737,13 @@ function CukaiBot() {
   // (or until an existing session is resolved for this entity), mirroring
   // how a WhatsApp thread gets its ID on its first message.
   const [sessionId, setSessionId] = useState(null);
+  // Set from a "?insightId=" URL param (InsightsInbox's "Ask CukaiBot about
+  // this" card action — see runAction there) and cleared once the resulting
+  // first message is sent. Carried in state rather than re-read from the URL
+  // each send, since the param is stripped from the URL as soon as it's
+  // consumed (see the mount effect below) so a later refresh doesn't try to
+  // re-attach it to an unrelated message.
+  const [pendingInsightId, setPendingInsightId] = useState(null);
 
   // ── Chat history sidebar state ─────────────────────────────────────────
   const SESSIONS_PAGE_SIZE = 20;
@@ -1831,8 +1838,36 @@ function CukaiBot() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const paramSessionId = params.get('session');
+    const paramInsightId = params.get('insightId');
     const userId = localStorage.getItem('userId');
     const entityId = activeEntity?.id ?? null;
+
+    // An insightId (from InsightsInbox's "Ask CukaiBot about this" card
+    // action — see runAction there) always starts a brand-new conversation
+    // grounded in that specific card, rather than silently resuming whatever
+    // session was last open, which may be about something unrelated. Stripped
+    // from the URL immediately so a later refresh/back doesn't re-trigger it.
+    if (paramInsightId) {
+      setPendingInsightId(paramInsightId);
+      setInputValue('Tell me more about this and what I should do next.');
+      setMessages([]);
+      setDismissedFollowupIds(new Set());
+      setActiveCitations([]);
+      setActiveCitationsMessageId(null);
+      setSessionId(null);
+      const nextParams = new URLSearchParams(window.location.search);
+      nextParams.delete('insightId');
+      const qs = nextParams.toString();
+      window.history.replaceState(null, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
+      return;
+    }
+    // A pending insight staged by a previous run of this effect (e.g. once
+    // activeEntity finished resolving right after the branch above already
+    // ran once) means a fresh, not-yet-sent conversation is already staged —
+    // don't let this later re-run clobber it by resuming an unrelated old
+    // session underneath the still-prefilled input box.
+    if (pendingInsightId) return;
+
     const resumeSessionId = paramSessionId || getPersistedSessionId(entityId);
 
     if (!resumeSessionId || !userId) {
@@ -1876,6 +1911,10 @@ function CukaiBot() {
       }
     })();
     return () => { cancelled = true; };
+    // pendingInsightId deliberately excluded — it's read only as a guard
+    // against this effect's own earlier run, not something a change to it
+    // should re-trigger (that would re-fetch/resume mid-staged-insight).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEntity?.id]);
 
   // Load the sidebar's session list for the active entity, and reload it
@@ -1987,6 +2026,11 @@ function CukaiBot() {
     setMessages((prev) => [...prev, userMsg]);
     setInputValue('');
     setPendingAttachments([]);
+    // Only the message that actually carries it should — clear now so a
+    // later message in the same session (or a failed/retried send) doesn't
+    // keep re-attaching a stale insight id.
+    const insightIdForThisSend = pendingInsightId;
+    setPendingInsightId(null);
     setIsTyping(true);
     setActiveCitations([]);
     setActiveCitationsMessageId(null);
@@ -1994,7 +2038,7 @@ function CukaiBot() {
     try {
       const res = await sendChatMessage(
         trimmed, userId, activeEntity?.id ?? null, sessionId,
-        readyAttachments.map((a) => a.id),
+        readyAttachments.map((a) => a.id), insightIdForThisSend,
       );
       // First message of a brand-new conversation returns a freshly created
       // session_id — remember it so every subsequent message in this tab

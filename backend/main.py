@@ -27,6 +27,7 @@ from sqlalchemy import or_, func
 from database import init_db, SessionLocal
 import models
 from models import Document, FormBProfile, CapitalAsset, BreastfeedingEquipmentClaim, FinancialStatementProfile, Child, CP500Record, OneTimeReliefClaim, ChatSession, ChatMessage, ChatAttachment
+from insights.models import Insight
 from capital_allowance import compute_capital_allowance_for_year
 from carryforward import compute_multi_year_carryforward, MAX_LOSS_CARRYFORWARD_YEARS
 from child_relief import compute_h16_for_children
@@ -43,6 +44,25 @@ from pipeline import (
   sync_cp500_registry, sync_one_time_relief_registry,
   embed_document_for_rag,
 )
+# ── Taxonomy redesign (registry-based cutover) ─────────────────────────────
+# CATEGORY_REGISTRY/CATEGORY_BUCKET/CATEGORY_TAX_TREATMENT replace the old
+# scattered CATEGORY_STATUS_MAP/ALL_Q1..4 lists as the single source of
+# truth for category behavior. validate_category is the shared check used
+# both by the pipeline's own classification step and by reclassify_document
+# below, so a stale category string can never be persisted from either
+# path. dispatch_document replaces the old per-document quadrant/tax_status
+# branching inside _build_year_summary.
+from category_registry import CATEGORY_REGISTRY, CATEGORY_BUCKET, CATEGORY_TAX_TREATMENT, registry_schedule_note
+from taxonomy_classification import (
+  validate_category,
+  derive_document_role as _new_derive_document_role,
+  derive_aggregation_state as _new_derive_aggregation_state,
+)
+from document_dispatch import dispatch_document
+# Registers the Insight/InsightRun tables on the shared Base (so init_db's
+# create_all picks them up) and provides the /api/insights endpoints.
+from insights.router import router as insights_router
+from insights.models import Insight
 from breastfeeding_relief import compute_breastfeeding_relief_for_year, H11_CAP_MYR
 import mongo
 from embeddings import embed_text
@@ -69,6 +89,40 @@ MAX_CHAT_ATTACHMENT_MB = 20
 # Files API upload step), so a handful of large files per turn adds up fast --
 # cap the count too, not just per-file size.
 MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5
+
+
+def _queue_insight_refresh(user_id, entity_id, trigger: str, *assessment_years) -> None:
+  """Queue insight-engine run(s) after a document mutation, off the request
+  thread. The engine is otherwise only triggered from the classification
+  pipeline's tail (pipeline.run_document_pipeline), so endpoints that mutate
+  documents WITHOUT re-running the pipeline (manual entry, delete, reclassify,
+  reset, archive) must call this — otherwise the AI Insights feed goes stale
+  until an unrelated upload happens to land in the same assessment year.
+
+  Accepts multiple candidate years (varargs) and deduplicates: reclassify/reset
+  pass (previous_ya, new_ya) so a date edit that MOVED the document across
+  years refreshes both feeds, while a same-year edit fires exactly one run.
+  Null years are dropped — a document with no year_of_assessment is invisible
+  to every year summary, so a run would learn nothing from it."""
+  if not user_id:
+    return
+  years = sorted({int(y) for y in assessment_years if y is not None})
+  if not years:
+    logger.info(f"[Insights] Skipping insight refresh ({trigger}): no year_of_assessment.")
+    return
+  # Deferred import — main.py imports pipeline.py, pipeline.py invokes the
+  # engine, and the engine imports main at call time; a top-level import here
+  # would be circular. Same pattern as pipeline.py's tail trigger.
+  from insights.engine import queue_insight_run, run_insight_engine
+  for ya in years:
+    run_id, created = queue_insight_run(
+      user_id, entity_id, trigger, SessionLocal, assessment_year=ya,
+    )
+    if created:
+      _pipeline_executor.submit(
+        run_insight_engine, user_id, entity_id, trigger, SessionLocal,
+        assessment_year=ya, run_id=run_id,
+      )
 
 
 def _requeue_interrupted_documents() -> None:
@@ -104,6 +158,41 @@ def _requeue_interrupted_documents() -> None:
     db.close()
 
 
+def _requeue_interrupted_insight_runs() -> None:
+  """Resume durable queued/running insight jobs after a process restart."""
+  from insights.engine import run_insight_engine
+  from insights.models import InsightRun
+
+  db = SessionLocal()
+  try:
+    pending = db.query(InsightRun).filter(
+      InsightRun.status.in_(["queued", "running"]),
+      InsightRun.assessment_year.isnot(None),
+    ).order_by(InsightRun.id.asc()).all()
+    for run in pending:
+      if run.status == "running":
+        run.status = "queued"
+        run.started_at = None
+        run.logs = list(run.logs or []) + [
+          "Previous process stopped while this run was active; queued again at startup."
+        ]
+    db.commit()
+
+    for run in pending:
+      _pipeline_executor.submit(
+        run_insight_engine,
+        run.user_id, run.entity_id, run.trigger, SessionLocal,
+        assessment_year=run.assessment_year, run_id=run.id,
+      )
+    if pending:
+      logger.info(f"[Startup] Re-queued {len(pending)} interrupted insight run(s).")
+  except Exception as e:
+    logger.error(f"[Startup] Failed to re-queue interrupted insight runs: {e}")
+    db.rollback()
+  finally:
+    db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
   # ── Startup ──
@@ -111,6 +200,7 @@ async def lifespan(app: FastAPI):
   os.makedirs(STORAGE_DIR, exist_ok=True)
   app.mount("/files", StaticFiles(directory=STORAGE_DIR), name="stored_documents")
   _requeue_interrupted_documents()
+  _requeue_interrupted_insight_runs()
   # Best-effort: verify/create the MongoDB Atlas vector search index used by
   # CukaiBot's RAG retrieval (one index on the one document_chunks
   # collection, which holds user receipts and external_resource PDF chunks
@@ -126,7 +216,6 @@ async def lifespan(app: FastAPI):
   finally:
     # ── Shutdown ── stop accepting new pipeline work and wind the pool down.
     _pipeline_executor.shutdown(wait=False, cancel_futures=True)
-
 
 # slowapi = a rate limiting library
 limiter = Limiter(key_func=get_remote_address)
@@ -148,6 +237,8 @@ app.add_middleware(
   allow_methods=["*"],
   allow_headers=["*"],
 )
+
+app.include_router(insights_router)
 
 
 def get_db():
@@ -335,6 +426,24 @@ def _serialize_doc(doc: Document) -> dict:
   # (${API}/files/<basename>) for ANY document — not just ones still holding a
   # session blob. Fixes previews going blank after retry or page reload.
   file_basename = os.path.basename(doc.file_path) if doc.file_path else None
+
+  # Bug fix (found in review): registryManagedDocuments/categoryDeprecatedDocuments
+  # were computed correctly by _build_year_summary but NEVER rendered anywhere
+  # in the frontend — worse, that endpoint is YEAR-SCOPED, so simply wiring
+  # its output into CukaiAccount (which shows documents across ALL years by
+  # default) would have recreated the exact scoping mismatch already found
+  # twice this session (Part G/H, the Overview banner). Fixed at the
+  # individual-document level instead: neither of these facts needs
+  # year-aggregation context — a document's category alone is enough to know
+  # whether it's registry-managed or its category no longer exists — so this
+  # is computed live, correctly, for every document regardless of which year
+  # it belongs to or how CukaiAccount is currently filtered.
+  category = doc.category or ""
+  category_deprecated = bool(category) and category not in CATEGORY_REGISTRY
+  registry_note = None
+  if not category_deprecated and CATEGORY_REGISTRY.get(category) and CATEGORY_REGISTRY[category].computation_source == "registry":
+    registry_note = registry_schedule_note(category)
+
   return {
     "id":                doc.id,
     "userId":            doc.user_id,
@@ -349,6 +458,8 @@ def _serialize_doc(doc: Document) -> dict:
     "itaSection":        ed.get("ita_section"),
     "documentRole":      ed.get("document_role"),
     "aggregationState":  ed.get("aggregation_state"),
+    "categoryDeprecated": category_deprecated,  # NEW
+    "registryNote":      registry_note,          # NEW
     "fileBasename":      file_basename,
     "extractedData":     doc.extracted_data,
     "uploadedAt":        doc.created_at.strftime("%Y-%m-%d %H:%M:%S"),
@@ -785,20 +896,48 @@ async def get_entity_by_id(
 async def suggest_opening_balance(
   entity_id: int = Path(gt=0),
   target_year: int = Query(..., description="The YA this entity's opening balance would need to cover, e.g. 2024"),
-  user_id: Optional[str] = Query(default=None),   # was Optional[int] — match the app-wide string convention
+  user_id: Optional[str] = Query(default=None),
   db: Session = Depends(get_db),
 ):
+  """
+  Fix (15 Jul 2026): FormBProfile extraction already captures a prior
+  filed Form B's unabsorbed_business_losses / unabsorbed_capital_allowance
+  — LHDN's own accepted figures — but nothing carried them forward to seed
+  Entity.opening_unabsorbed_business_loss_myr / opening_unabsorbed_capital_
+  allowance_myr / opening_balance_year, which still required pure manual
+  entry even when the exact numbers were sitting in an already-processed
+  document.
+
+  This endpoint only SUGGESTS values from FormBProfile for the year
+  immediately preceding target_year — it never writes to the entity.
+  Applying a suggestion still goes through the normal PUT /entities/{id}
+  save flow, with the user able to see and edit the figures first, the
+  same "Suggested Match, not auto-applied" pattern already used for
+  invoice matching in SupportingDocumentsCard. OCR can misread a digit,
+  and this feeds the carry-forward engine for potentially years
+  afterward, so it deserves an explicit confirm click, not a silent write.
+
+  Bug fix (17 Jul 2026): user_id was typed int here — the only place in
+  the whole codebase that treats it as anything other than a plain string
+  (every other endpoint follows the app's user_id-as-string convention,
+  matching Document.user_id / FormBProfile.user_id, both String(128)
+  columns). The query below also compared FormBProfile.user_id directly
+  against entity.person_id (an int, Person's PK) with no cast, which
+  Postgres correctly refuses ("operator does not exist: character
+  varying = integer"). Both the ownership check and the query filter now
+  cast entity.person_id to str() to match the column's actual type.
+  """
   entity = db.query(models.Entity).filter(models.Entity.id == entity_id).first()
   if not entity:
     raise HTTPException(status_code=404, detail="Entity not found")
-  if user_id is not None and str(entity.person_id) != user_id:   # cast entity.person_id to str for the ownership check
+  if user_id is not None and str(entity.person_id) != user_id:
     raise HTTPException(status_code=403, detail="This entity does not belong to the requesting user")
 
   prior_year = target_year - 1
   prior_filing = (
     db.query(FormBProfile)
     .filter(
-      FormBProfile.user_id == str(entity.person_id),   # was entity.person_id (int) — cast to match the varchar column
+      FormBProfile.user_id == str(entity.person_id),
       FormBProfile.entity_id == entity.id,
       FormBProfile.year_of_assessment == prior_year,
     )
@@ -953,6 +1092,21 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
   # Naive UTC to match the (tz-naive) Document.created_at column. utcnow() is
   # deprecated in 3.12, so derive the same value from an aware clock.
   recent_cutoff = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
+
+  # Bug fix (found in review, this session): hashed BEFORE the duplicate
+  # check now, not after — the check itself switched from filename to
+  # content hash. Filename-only matching had it backwards in both
+  # directions: it MISSED a genuine duplicate re-uploaded under a different
+  # name (the hash was already being computed and stored on every Document,
+  # just never checked here), and it WRONGLY BLOCKED two different files
+  # that happened to share a generic filename (e.g. two different receipts
+  # both named "receipt.pdf" from different vendors/downloads) — content
+  # hash is strictly more correct in both cases. Documents from before this
+  # fix (or predating file_hash existing at all) simply have file_hash=NULL
+  # and are never matched by this check — a safe, harmless degradation, not
+  # an error.
+  file_hash = hashlib.sha256(file_content).hexdigest()
+
   # Duplicate check is scoped to the USER, not the entity: the same file should
   # not be uploaded twice across a user's entities either (a receipt belongs to
   # one business, not several). entity_id is deliberately NOT in the filter.
@@ -961,7 +1115,7 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
   # counts, so re-uploading the same file after archiving it would otherwise
   # silently double-count it with no duplicate warning at all.
   duplicate = db.query(Document).filter(
-    Document.file_name == original_name,
+    Document.file_hash == file_hash,
     Document.user_id == user_id,
     Document.created_at >= recent_cutoff,
     Document.status.in_(["pending", "processing", "completed", "archived"]),
@@ -977,11 +1131,6 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
 
   with open(safe_file_path, "wb") as buf:
     buf.write(file_content)
-
-  # Hashed once here, from the bytes already in memory — reused by
-  # _check_upload_history()'s Tier 1 exact-match lookup for "did I upload
-  # this before"-style chat questions. See models.Document.file_hash.
-  file_hash = hashlib.sha256(file_content).hexdigest()
 
   db_doc = Document(
     file_name=original_name, file_path=safe_file_path, file_hash=file_hash,
@@ -1005,7 +1154,7 @@ def _save_and_queue(file_content: bytes, original_name: str, user_id: Optional[s
 # ── Document endpoints ───────────────────────────────────────────────────────
 
 @app.post("/api/documents/upload", status_code=202)
-@limiter.limit("30/minute")
+@limiter.limit("10/minute")  # standardized to 10 files/minute across every upload path (17 Jul 2026)
 async def upload_document(
   request: Request,
   file: UploadFile = File(...),
@@ -1021,7 +1170,13 @@ async def upload_document(
 
 
 @app.post("/api/documents/batch-upload", status_code=202)
-@limiter.limit("10/minute")
+# Standardized to 10 files/minute across every upload path (17 Jul 2026):
+# MAX_BATCH_FILES already caps one call at 10 files, so limiting CALLS to
+# 1/minute (rather than the previous 10/minute, which allowed up to 100
+# files/minute in the worst case) makes this path's worst case exactly
+# 10 files/minute too — the same real limit as the single-upload endpoint,
+# not just the same-looking decorator value.
+@limiter.limit("1/minute")
 async def batch_upload_documents(
   request: Request,
   files: list[UploadFile] = File(...),
@@ -1245,7 +1400,7 @@ def _generate_manual_receipt_text(payload: dict, line_items: list[dict], total: 
 
 
 @app.post("/api/documents/manual", status_code=201)
-@limiter.limit("30/minute")
+@limiter.limit("10/minute")  # standardized to 10/minute across every upload path (17 Jul 2026)
 def create_manual_document(
   request: Request,
   payload: dict,
@@ -1352,7 +1507,113 @@ def create_manual_document(
   sync_cp500_registry(db, db_doc, category, db_doc.year_of_assessment, extracted_data, db_doc.id)
   sync_one_time_relief_registry(db, db_doc, category, db_doc.year_of_assessment, extracted_data, db_doc.id)
 
+  # Manual entries never pass through the classification pipeline, so the
+  # engine's pipeline-tail trigger never fires for them — refresh explicitly.
+  _queue_insight_refresh(db_doc.user_id, db_doc.entity_id, "document_manual_entry", db_doc.year_of_assessment)
+
   return _serialize_doc(db_doc)
+
+
+# ── Category taxonomy endpoint (Iteration 5 — fixes T1/T2) ───────────────────
+# Serves CATEGORY_REGISTRY directly, grouped by bucket with a clean display
+# label per category. This is the single source of truth the frontend's
+# reclassify dropdown (CukaiAccount.jsx) should build itself from at
+# runtime, instead of maintaining its own hand-copied category arrays — the
+# hand-copied version is what drifted out of sync across several backend
+# taxonomy refactors (the CP500 split, the H6/H7/H8 granularity split, the
+# Bank Statement category never being added as a selectable option at all)
+# and directly caused a confirmed bug where the reclassify dropdown showed
+# the wrong category for a Bank Statement document. With the frontend
+# fetching this endpoint instead, that entire class of bug becomes
+# structurally impossible: there's only one place the taxonomy is defined.
+_CATEGORY_GROUP_LABELS = {
+  "Q1":              "Business Income",
+  "Q2":              "Personal Income",
+  "Q3":              "Business Expense",
+  "Q4":              "Personal Relief",
+  "DONATIONS":       "Donations & Contributions",
+  "TAX_INSTALMENTS": "Tax Instalments Already Paid",
+  "REBATES":         "Tax Rebates",
+  "REFERENCE":       "Reference & Reconciliation",
+  "NON_TAX":         "Non-Tax Document",
+  "REVIEW":          "Needs Review",
+}
+_CATEGORY_GROUP_ORDER = [
+  "Q1", "Q2", "Q3", "Q4", "DONATIONS", "TAX_INSTALMENTS", "REBATES",
+  "REFERENCE", "NON_TAX", "REVIEW",
+]
+_CATEGORY_LABEL_PREFIX_RE = re.compile(r"^Q[1-4] — (.+)$")
+
+
+def _category_display_label(category: str) -> str:
+  """Strip the redundant 'Q1 — '/'Q2 — '/etc. prefix for a cleaner dropdown
+  label — the bucket the category belongs to is already shown as its own
+  group header, so repeating 'Q1 —' on every single option is noise."""
+  m = _CATEGORY_LABEL_PREFIX_RE.match(category)
+  return m.group(1) if m else category
+
+
+@app.get("/api/categories")
+def get_categories():
+  """
+  Returns the full category taxonomy, grouped by bucket, for the frontend
+  to build its reclassify dropdown from at runtime:
+
+    { "groups": [
+        { "bucket": "Q1", "groupLabel": "Business Income",
+          "categories": [ { "value": "Q1 — Sales & Service Revenue",
+                             "label": "Sales & Service Revenue",
+                             "status": "income",
+                             "role": "transaction" }, ... ] },
+        ...
+    ] }
+
+  `status` is CATEGORY_STATUS_MAP's value for this category — the SAME
+  backward-compatible, legacy-vocabulary value run_document_pipeline
+  persists for an auto-classified document (see pipeline.py). Exposing it
+  here means the frontend's manual-reclassify flow (which sends a `status`
+  value straight to PATCH /api/documents/{id}/reclassify) can look this up
+  directly instead of independently re-deriving/guessing it — so a manual
+  reclassification can never disagree with what auto-classification would
+  have produced for the same category.
+
+  `role` is the NEW registry's document_role for this category
+  ("transaction" | "registry_managed" | "ledger_source" |
+  "reference_document" | "non_tax" | "needs_classification"). This is what
+  lets the frontend's reclassify modal decide whether amount/date fields
+  should be editable/required based on whichever category the user has
+  CURRENTLY SELECTED in the dropdown — not the document's original (and
+  possibly wrong) classification. Bug found in testing: without this, a
+  document originally misclassified as "Mixed / Pending Review" (role
+  "transaction") that a user then reclassifies to "Bank Statement —
+  Transaction Ledger" (role "ledger_source", which never has a single
+  amount) still demanded an amount before allowing the reclassification to
+  be confirmed, since the modal's editability logic never recomputed for
+  the newly-selected category.
+
+  No auth/scoping needed — this is static taxonomy data, identical for
+  every user, not personal data.
+  """
+  groups_by_bucket: dict[str, list] = {b: [] for b in _CATEGORY_GROUP_ORDER}
+  for category, d in CATEGORY_REGISTRY.items():
+    groups_by_bucket.setdefault(d.bucket, []).append({
+      "value": category,
+      "label": _category_display_label(category),
+      "status": CATEGORY_STATUS_MAP.get(category, "mixed"),
+      "role": _new_derive_document_role(category),
+    })
+
+  return {
+    "groups": [
+      {
+        "bucket": b,
+        "groupLabel": _CATEGORY_GROUP_LABELS.get(b, b),
+        "categories": sorted(groups_by_bucket[b], key=lambda c: c["label"]),
+      }
+      for b in _CATEGORY_GROUP_ORDER
+      if groups_by_bucket.get(b)
+    ],
+  }
 
 
 @app.get("/api/documents")
@@ -1416,6 +1677,9 @@ def delete_document(
 ):
   doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
   file_path = doc.file_path
+  # Captured BEFORE deletion — needed to refresh the right insight feed after
+  # the row (and its year_of_assessment) is gone.
+  doc_ya, doc_user, doc_entity = doc.year_of_assessment, doc.user_id, doc.entity_id
 
   # A filed Form B document also created a FormBProfile row, linked back to this
   # document via source_document_id. That column is a plain integer, not a
@@ -1461,6 +1725,33 @@ def delete_document(
   if bc_deleted:
     logger.info(f"[Delete] Removed {bc_deleted} BreastfeedingEquipmentClaim row(s) linked to document ID {doc_id}.")
 
+  # Bug fix (17 Jul 2026): CP500Record and OneTimeReliefClaim were the only
+  # two source_document_id-linked registries NOT cleaned up here, even
+  # though they follow the exact same "multi-year eligibility registry"
+  # pattern as CapitalAsset/BreastfeedingEquipmentClaim above. Both FKs are
+  # ondelete=SET NULL, not a cascading delete, so without this the row
+  # survives as an orphan (source_document_id merely goes null) and keeps
+  # being picked up by compute_cp500_for_year() / compute_one_time_relief_
+  # for_year()'s full-history queries (which scope by user_id + year, not
+  # by source_document_id) — surfacing a stale "needs review" entry in
+  # mixed_pending/pendingReviewCount for a document the user already
+  # deleted, even once EVERY document has been removed.
+  cp_deleted = (
+    db.query(CP500Record)
+    .filter(CP500Record.source_document_id == doc_id, CP500Record.user_id == user_id)
+    .delete(synchronize_session=False)
+  )
+  if cp_deleted:
+    logger.info(f"[Delete] Removed {cp_deleted} CP500Record row(s) linked to document ID {doc_id}.")
+
+  otr_deleted = (
+    db.query(OneTimeReliefClaim)
+    .filter(OneTimeReliefClaim.source_document_id == doc_id, OneTimeReliefClaim.user_id == user_id)
+    .delete(synchronize_session=False)
+  )
+  if otr_deleted:
+    logger.info(f"[Delete] Removed {otr_deleted} OneTimeReliefClaim row(s) linked to document ID {doc_id}.")
+
   # Phase 6: FinancialStatementProfile is shared between up to TWO documents
   # (one owning the pl_* half, a different one owning the bs_* half), so —
   # unlike the two bulk deletes above — deleting this document must only
@@ -1498,8 +1789,21 @@ def delete_document(
       db.delete(_row)
       logger.info(f"[Delete] Removed empty FinancialStatementProfile row (id={_row.id}) — both halves cleared.")
 
+  # Wipe out any Insight where the source_document_ids JSONB array contains this doc_id.
+  # Using .contains([doc_id]) ensures we match the PostgreSQL JSONB array logic correctly.
+  ins_deleted = (
+    db.query(Insight)
+    .filter(Insight.source_document_ids.contains([doc_id]))
+    .delete(synchronize_session=False)
+  )
+  if ins_deleted:
+    logger.info(f"[Delete] Removed {ins_deleted} Insight row(s) whose source was document ID {doc_id}.")
+
   db.delete(doc)
   db.commit()
+  # Removing a document can invalidate insights built from it (doc_gap,
+  # provision, audit-risk ratios…) — re-run so stale cards auto-resolve.
+  _queue_insight_refresh(doc_user, doc_entity, "document_deleted", doc_ya)
   try:
     if file_path and os.path.isfile(file_path):
       os.remove(file_path)
@@ -1578,6 +1882,9 @@ def archive_document(
 
   doc.status = "archived"
   db.commit()
+  # Archiving removes the doc from the year summary (status filter is
+  # 'completed'), so its insights must recompute just like a deletion.
+  _queue_insight_refresh(doc.user_id, doc.entity_id, "document_archived", doc.year_of_assessment)
   return {"message": f"Document ID {doc_id} archived.", "document_id": doc_id, "status": "archived"}
 
 
@@ -1602,6 +1909,63 @@ def unarchive_document(
   return {"message": f"Document ID {doc_id} unarchived.", "document_id": doc_id, "status": "completed"}
 
 
+@app.patch("/api/documents/{doc_id}/mark-reviewed", status_code=200)
+def mark_bank_statement_reviewed(
+  doc_id: int,
+  payload: dict,
+  user_id:   str            = Query(..., description="Owner of the document."),
+  entity_id: Optional[int] = Query(default=None),
+  db: Session = Depends(get_db),
+):
+  """
+  Toggle whether a bank statement's line-matching has been reviewed by the
+  user. See derive_aggregation_state's `bank_statement_reviewed` parameter
+  (taxonomy_classification.py) for the full rationale: a bank statement's
+  aggregation_state never resolves on its own — its lines are matched ONCE,
+  at classification time, against whatever else existed then — so without
+  this explicit action, a bank statement would sit in "needs review" (and
+  count toward pendingReviewCount / the Overview action banner) forever,
+  with no way for the user to ever clear it. Found in review: no code path
+  anywhere previously changed a ledger_source document's aggregation_state,
+  and archive_document explicitly refuses to archive anything unresolved.
+
+  Only valid for documents whose category currently resolves to
+  document_role == "ledger_source" (i.e. an actual bank statement) —
+  attempting this on any other document type is a 422, not a silent no-op.
+
+  Request body: { "reviewed": true | false } — a TOGGLE, not one-directional,
+  so a user can re-open review later if they realize they missed something.
+
+  Writes the resulting aggregation_state back to the document immediately
+  (not just computed transiently for the next /api/profile/summary call) —
+  CukaiAccount's per-document badge/filter reads the STORED
+  extracted_data.aggregation_state directly, so this must be persisted here
+  for the UI to reflect the change right away, not just the next time
+  totals happen to be recomputed.
+  """
+  doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
+  reviewed = bool(payload.get("reviewed", True))
+
+  role = _new_derive_document_role(doc.category or "")
+  if role != "ledger_source":
+    raise HTTPException(
+      status_code=422,
+      detail=f"Document ID {doc_id} is not a bank statement (role='{role}') — nothing to mark reviewed.",
+    )
+
+  ed = dict(doc.extracted_data or {})
+  ed["bank_statement_reviewed"] = reviewed
+  confidence = ed.get("confidence", 0) or 0
+  ed["aggregation_state"] = _new_derive_aggregation_state(
+    doc.category or "", confidence, ed.get("deductible_pct"), reviewed
+  )
+  doc.extracted_data = ed
+  db.commit()
+  db.refresh(doc)
+
+  return _serialize_doc(doc)
+
+
 @app.patch("/api/documents/{doc_id}/reclassify", status_code=200)
 def reclassify_document(
   doc_id: int,
@@ -1617,6 +1981,15 @@ def reclassify_document(
   new_amount   = payload.get("amount")
   new_date     = payload.get("date")
   new_deductible_pct = payload.get("deductible_pct")
+  # T1/T2 fix: a stale frontend dropdown (or any other caller) can no
+  # longer persist a category the backend doesn't recognize — validated
+  # against the SAME CATEGORY_REGISTRY the pipeline itself uses, so this
+  # check can never drift out of sync with what's actually a valid category
+  # the way the old hand-duplicated frontend category lists did.
+  if new_category:
+    _cat_valid, _cat_err = validate_category(new_category)
+    if not _cat_valid:
+      raise HTTPException(status_code=422, detail=_cat_err)
   # Reuse the SAME canonical status set the pipeline itself validates
   # against, rather than a hand-duplicated literal here — a second copy is
   # exactly how this drifted out of sync before (it was missing 'donation'
@@ -1680,6 +2053,11 @@ def reclassify_document(
     "aggregation_state":  _pre_edit_ed.get("aggregation_state"),
     "quadrant":           _pre_edit_ed.get("quadrant"),
   }
+
+  # Captured fresh on EVERY edit (unlike _original, written once): a date edit
+  # below may move the document to another assessment year, and both the old
+  # and new years' insight feeds must then recompute.
+  prev_ya = doc.year_of_assessment
 
   if new_status:
     doc.tax_status = new_status
@@ -1775,6 +2153,9 @@ def reclassify_document(
   except Exception as e:
     logger.warning(f"[Reclassify] Could not re-embed document ID {doc.id} for RAG: {e}")
 
+  # One run normally; two when the date edit moved the document across years
+  # (the varargs set-dedupe collapses same-year edits to a single run).
+  _queue_insight_refresh(doc.user_id, doc.entity_id, "document_reclassified", prev_ya, doc.year_of_assessment)
   return _serialize_doc(doc)
 
 
@@ -1795,6 +2176,9 @@ def reset_document_classification(
   orig = ed.get("_original")
   if not orig:
     raise HTTPException(status_code=400, detail="This document hasn't been edited — there's nothing to reset.")
+  # Reverting may move the document back to its original assessment year —
+  # refresh both the year it's leaving and the year it returns to.
+  prev_ya = doc.year_of_assessment
 
   doc.category   = orig.get("category")
   doc.tax_status = orig.get("tax_status")
@@ -1853,6 +2237,7 @@ def reset_document_classification(
   except Exception as e:
     logger.warning(f"[Reset] Could not re-embed document ID {doc.id} for RAG: {e}")
 
+  _queue_insight_refresh(doc.user_id, doc.entity_id, "document_reset", prev_ya, doc.year_of_assessment)
   return _serialize_doc(doc)
 
 
@@ -2489,6 +2874,60 @@ def get_tax_profile_summary(
         _one_time_relief_claims, "Q4 — Home CCTV", target_year, HOME_CCTV_WINDOW),
     }
 
+    # These three categories are now document_role == "registry_managed"
+    # (see category_registry.py), so they no longer reach the per-document
+    # Q4 dispatch branch at all — their eligible amount must be added to
+    # reliefs_q4 HERE instead, once per category, as a synthetic entry (no
+    # single source document — this is a category-level, multi-year
+    # eligibility result). This preserves _cap_reliefs' EXISTING EV/home-
+    # improvement pooling logic completely unmodified, since that logic
+    # reads its raw totals from reliefs_q4 grouped by category.
+    #
+    # The is_standalone_unconfirmed_year guard below is carried over
+    # UNCHANGED from the old per-document branch: Food Waste Compost
+    # Machine's own eligible window starts a year (YA2025) before the
+    # shared RM2,500 EV/home-improvement pool exists (YA2026-2027), and it
+    # has no confirmed standalone cap of its own for that gap year — without
+    # this guard, a YA2025 claim would reach _cap_reliefs with no cap found
+    # anywhere and pass through completely UNCAPPED, a real leak.
+    for _otr_cat, _otr_result in _one_time_relief_results.items():
+      _is_standalone_unconfirmed_year = (
+        _otr_result["isEligibleYear"]
+        and not (EV_HOME_IMPROVEMENT_POOL_FIRST_YA <= target_year <= EV_HOME_IMPROVEMENT_POOL_LAST_YA)
+      )
+      _otr_entry = {
+        "documentId": None, "entityId": None, "fileName": _otr_cat,
+        "documentType": "One-Time Relief (registry-computed)", "category": _otr_cat,
+        "amount": str(_otr_result["amountMyr"]), "amountNumeric": _otr_result["amountMyr"],
+        "currency": "MYR", "vendor": None, "date": None, "itaSection": None,
+        "confidence": 100, "ocrQuality": None, "note": _otr_result["note"],
+        "documentRole": "registry_managed", "aggregationState": "resolved",
+        "needsReview": _otr_result["needsReview"],
+      }
+      if _is_standalone_unconfirmed_year:
+        reason = (
+          f"YA{target_year} is within this relief's own eligible window, but the shared RM2,500 "
+          f"pool with EV charging only applies from YA{EV_HOME_IMPROVEMENT_POOL_FIRST_YA} onward — "
+          "no confirmed standalone cap is available for this year from current sources. Excluded "
+          "pending confirmation rather than applied uncapped."
+        )
+        non_deductible_q4.append({**_otr_entry, "reason": reason})
+        mixed_pending.append({
+          **_otr_entry, "needsReview": True, "reason": reason,
+          "question": "Confirm the correct cap for this relief in this filing year before including it.",
+        })
+      elif _otr_result["isEligibleYear"] and _otr_result["amountMyr"] > 0:
+        reliefs_q4.append({**_otr_entry, "reliefCapMyr": None})
+        if _otr_result["needsReview"]:
+          mixed_pending.append({
+            **_otr_entry, "reason": _otr_result["note"],
+            "question": "Confirm this one-time relief's eligible year before relying on this claim.",
+          })
+      elif not _otr_result["isEligibleYear"] and _otr_result["amountMyr"] == 0 and _otr_result["note"]:
+        # Only note-worthy (not just "no claim this year") when there's an
+        # actual note to show — mirrors the old branch's behavior exactly.
+        pass
+
     # Donations (Part G) — one bucket per G-line, since they're subject to
     # DIFFERENT caps (Phase 5, 14 Jul 2026) — see the category list's
     # comment in pipeline.py and the tiered-cap computation below.
@@ -2507,7 +2946,22 @@ def get_tax_profile_summary(
     }
     reference_documents = []
     bank_statement_reviews = []
+    registry_managed_documents = []       # NEW — replaces the old scattered
+                                           # "pass # handled elsewhere" no-ops;
+                                           # every registry-managed document is
+                                           # now always visible in one list.
+    category_deprecated_documents = []    # NEW — surfaces any document whose
+                                           # stored category no longer exists
+                                           # in CATEGORY_REGISTRY at all.
     total_confidence = 0
+
+    # is_married is needed by dispatch_document() (below) for the H6(ii)
+    # fertility-treatment marital-status check, which used to run as a
+    # POST-loop pass over reliefs_q4 and now runs inline per-document
+    # instead — so it must be resolved BEFORE the loop starts, not after
+    # it (moved up from its old position further down in this function,
+    # alongside the rest of the H4/H14/H15/H16 block).
+    is_married = bool(person and person.marital_status == "married")
 
     for doc in docs:
       ed         = doc.extracted_data or {}
@@ -2545,12 +2999,10 @@ def get_tax_profile_summary(
       }
 
       # Display-only list of CP500 documents for this year — kept for the UI
-      # (e.g. the document list in CukaiAccount.jsx), but this is NOT where
-      # B33's actual figure comes from any more (see total_cp500 below,
-      # computed from the full multi-year CP500Record registry via
-      # cp500.py). A document appearing here with recordType "notice" must
-      # never be mistaken for a paid amount — that distinction is exactly
-      # the bug this split fixes.
+      # cp500_installments is a DISPLAY-ONLY list (e.g. the raw documents
+      # view in CukaiAccount.jsx) — kept exactly as before; it is NOT where
+      # B33's actual figure comes from (see total_cp500 below, computed
+      # from the full multi-year CP500Record registry via cp500.py).
       if doc.category == "Q3 — CP500 Instalment Notice" and ed.get("total_scheduled_amount") is not None:
         cp500_installments.append({
           **entry,
@@ -2567,323 +3019,30 @@ def get_tax_profile_summary(
           "referenceNo":    ed.get("reference_no"),
         })
 
-      # Bank statements carry per-line matches, not one pending amount — give
-      # them their own review bucket instead of a confusing RM0 entry in the
-      # generic mixed-pending list.
-      if document_role == "ledger_source":
-        line_items = ed.get("line_items", [])
-        bank_statement_reviews.append({
-          **entry,
-          "summary": ed.get("bank_statement_summary"),
-          "unmatchedLines": [
-            li for li in line_items
-            if li.get("matchStatus") in ("unmatched_credit", "unmatched_debit", "unmatched")
-          ],
-        })
-        continue
-
-      # Summary statements (P&L, balance sheet, prior Form B) are derived
-      # aggregates, not independent transactions — including their amount in
-      # totals double-counts income/expenses already captured by the
-      # individual documents that make them up. Route them to a reference
-      # bucket for reconciliation display instead of the totals.
-      #
-      # Capital gains (s.4(aa)) documents share this same bucket for a
-      # DIFFERENT reason (bug fix, 14 Jul 2026) — not because they're a
-      # derived aggregate, but because they're a genuinely separate class of
-      # income that must never be summed into ordinary B1 business income.
-      # Attach the specific disposal/acquisition/gain-loss fields so the
-      # figures needed for that SEPARATE s.4(aa) filing are still visible to
-      # the user, not just a generic reference entry with no real detail.
-      if doc.category == "Q1 — Capital Gains (s.4aa)":
-        reference_documents.append({
-          **entry, "quadrant": quadrant,
-          "cgtDisposalConsideration": ed.get("cgt_disposal_consideration"),
-          "cgtAcquisitionCost":       ed.get("cgt_acquisition_cost"),
-          "cgtGainLoss":              ed.get("cgt_gain_loss"),
-        })
-      elif doc.category == "Q1 — Voluntary Disclosure (Prior Year Income)":
-        # Part K (16 Jul 2026 fix): captured separately from the generic
-        # reference_documents bucket below, since K needs its own
-        # income_type/disclosed_ya fields for the printed K1/K2 table —
-        # never summed into THIS year's B1/aggregate income (that's what
-        # document_role="summary_statement" already guarantees).
-        k_disclosures.append({
-          **entry,
-          "incomeType":   ed.get("income_type"),
-          "disclosedYa":  ed.get("disclosed_ya"),
-        })
-      elif document_role == "summary_statement":
-        reference_documents.append({**entry, "quadrant": quadrant, "lineItems": ed.get("line_items", [])})
-      elif quadrant == "Q1":
-        if aggregation_state == "resolved":
-          income_q1.append(entry)
-      elif quadrant == "Q2":
-        if aggregation_state == "resolved":
-          income_q2.append({**entry, "formEa": ed.get("form_ea"), "fsiSourceCountry": ed.get("fsi_source_country")})
-      elif quadrant == "Q3":
-        if tax_status == "capital":
-          # Handled via the CapitalAsset registry below, not per-document —
-          # an asset bought in a prior year still generates Annual Allowance
-          # this year even with no document in THIS year's query.
-          pass
-        elif aggregation_state == "resolved":
-          # Apportioned categories (entertainment/gifts/vehicle/HP) are only
-          # partially deductible: sum deductible_pct% of the amount, never the
-          # full value. Non-apportioned expenses deduct in full.
-          _ded_pct = ed.get("deductible_pct")
-          if _ded_pct is not None:
-            _deductible = money(_parse_amount(amount) * Decimal(_ded_pct) / Decimal(100))
-          else:
-            _deductible = _parse_amount(amount)
-          deductions_q3.append({**entry, "deductibleNumeric": _deductible, "deductiblePct": _ded_pct})
-      elif quadrant == "Q4":
-        if tax_status == "donation":
-          # Approved donations (Part G / B17) are deducted from aggregate
-          # income before chargeable income is derived — NOT a capped
-          # personal relief, so they never enter reliefs_q4 / _cap_reliefs.
-          # Their caps (10%-of-B11 pool for some G-lines, individual
-          # RM20,000 for others, uncapped for others) can only be applied
-          # once total income for the year is known (see the tiered-cap
-          # block below), not per-document.
-          gline = DONATION_CATEGORY_TO_GLINE.get(doc.category)
-          if gline and aggregation_state == "resolved":
-            donation_entries_by_gline[gline].append({**entry, "reliefCapMyr": ed.get("relief_cap_myr")})
-        elif tax_status == "relief":
-          relief_entry = {**entry, "reliefCapMyr": ed.get("relief_cap_myr"), "zakatAmount": ed.get("zakat_amount")}
-          # Zakat is a REBATE against tax payable (s.6A ITA), not a relief that
-          # reduces chargeable income — keep it out of the capped-relief pool.
-          if doc.category == "Q4 — Zakat":
-            if aggregation_state == "resolved":
-              zakat_entries.append(relief_entry)
-          elif doc.category == "Q4 — Section 110 Withholding (Others)":
-            if aggregation_state == "resolved":
-              section110_entries.append(relief_entry)
-          elif doc.category == "Q4 — Section 107D Withholding":
-            if aggregation_state == "resolved":
-              section107d_entries.append(relief_entry)
-          elif doc.category == "Q4 — SSPN Net Deposit":
-            # H13 only allows the NET amount deposited this basis year
-            # (deposits minus withdrawals) — never the gross deposit figure
-            # alone, and never a brought-forward balance. Recompute the
-            # entry's amount from the two extracted fields rather than
-            # trusting `amount`, since the LLM may have extracted a gross
-            # deposit figure into `amount` even when a withdrawal also
-            # appears on the same statement.
-            sspn_deposit    = _parse_amount(ed.get("sspn_deposit_myr"))
-            sspn_withdrawal = _parse_amount(ed.get("sspn_withdrawal_myr"))
-            sspn_net        = max(Decimal("0"), sspn_deposit - sspn_withdrawal)
-            if aggregation_state == "resolved":
-              reliefs_q4.append({
-                **relief_entry,
-                "amountNumeric": sspn_net,
-                "sspnDepositMyr": money(sspn_deposit),
-                "sspnWithdrawalMyr": money(sspn_withdrawal),
-              })
-          elif doc.category == "Q4 — Breastfeeding Equipment":
-            # Handled via the BreastfeedingEquipmentClaim registry below, not
-            # per-document — H11's "once every 2 years of assessment" rule
-            # needs claim history across YEARS (see breastfeeding_relief.py),
-            # which a plain per-document sum can't express. Same pattern as
-            # J1 used to be (now removed) and capital assets still are.
-            # Explicit no-op, not an oversight.
-            pass
-          elif doc.category == "Q4 — Departure Levy (Umrah/Religious Travel)":
-            # Handled via the OneTimeReliefClaim registry below, not
-            # per-document — the 2-trips-IN-A-LIFETIME cap needs the full
-            # claim history across every year ever filed (see
-            # compute_departure_levy_rebate_for_year in one_time_relief.py).
-            # Explicit no-op, not an oversight.
-            pass
-          elif doc.category == "Q4 — Medical Equipment Relief":
-            # Bug fix (15 Jul 2026): H3 previously had no special handling at
-            # all — it fell straight into the generic branch below with no
-            # review flag, despite LHDN's own rule being an absolute
-            # disqualifier ("NOT allowed if the disabled individual... is not
-            # registered with DSW") that no purchase receipt can prove either
-            # way. Every other multi-fact relief in this codebase (H11's
-            # mother/child-age facts, the gender-direction checks on H14/B21)
-            # gets an explicit review flag rather than silent trust — H3 is
-            # the one relief that had fallen through that pattern. It's
-            # included in the total either way (excluding it outright would
-            # be just as wrong as including it silently, since most claims
-            # ARE genuine), but always flagged so the fact gets confirmed
-            # before filing, same philosophy as H11.
-            dsw = (ed.get("dsw_registered") or "unclear").lower()
-            dsw_note = {
-              "yes":     "The document indicates DSW registration — confirm this matches your actual DSW/JKM registration before filing.",
-              "no":      "The document indicates the disabled person is NOT registered with DSW — this relief is not allowed unless DSW registration is confirmed. Excluded pending correction.",
-              "unclear": "This relief requires the disabled person (self/spouse/child/parent) to be registered with the Department of Social Welfare (DSW) — a purchase receipt alone can't confirm this. Confirm registration before filing.",
-            }.get(dsw, "Confirm DSW registration for the disabled person before filing.")
-            if dsw == "no":
-              # An explicit "not registered" is a hard disqualifier per LHDN's
-              # own wording — unlike the ambiguous "unclear" case, this isn't
-              # a fact to confirm, it's already known to fail the test.
-              non_deductible_q4.append({**entry, "reason": dsw_note})
-              mixed_pending.append({
-                **entry, "amount": str(entry["amountNumeric"]), "needsReview": True, "reason": dsw_note,
-                "question": "This claim is currently excluded — confirm DSW registration to include it.",
-              })
-            elif aggregation_state == "resolved":
-              reliefs_q4.append({**relief_entry, "needsReview": True, "reason": dsw_note})
-              mixed_pending.append({
-                **entry, "amount": str(entry["amountNumeric"]), "needsReview": True, "reason": dsw_note,
-                "question": "Confirm DSW/JKM registration for the disabled person before filing.",
-              })
-          elif doc.category == "Q4 — Childcare Fees":
-            # Bug fix (15 Jul 2026): the classification prompt already routes
-            # an EXPLICITLY unregistered provider to the non-deductible
-            # category, but left the ordinary "receipt just doesn't say
-            # either way" case silently trusted as a valid H12 claim. Flag
-            # that ambiguity instead of guessing.
-            #
-            # Also: Finance Act 2025 (Act 874) s.6(a)(iv), effective YA2026
-            # onward, adds a second age band (7-12, Care Centres Act 1993
-            # registration) sharing the SAME RM3,000 pool as the existing
-            # ≤6 band — before this fix, that band didn't exist in the code
-            # at all.
-            reg = (ed.get("provider_registration_status") or "unclear").lower()
-            age_band = (ed.get("child_age_band") or "unclear").lower()
-
-            if age_band == "over 12":
-              non_deductible_q4.append({**entry, "reason": "Child is over 12 — H12 does not apply at any age above 12, even from YA2026."})
-            elif age_band == "7 to 12" and target_year < H12_CARE_CENTRE_BAND_YA:
-              non_deductible_q4.append({
-                **entry,
-                "reason": f"The 7-12 age band for H12 only applies from YA{H12_CARE_CENTRE_BAND_YA} onward (Finance Act 2025) — not eligible for this filing year.",
-              })
-            elif aggregation_state == "resolved":
-              entry_out = {**relief_entry}
-              if reg == "unclear":
-                reason = (
-                  "Could not confirm from this receipt whether the provider is registered "
-                  "(DSW/MOE for a child 6 or under, or under the Care Centres Act 1993 for a "
-                  "child aged 7-12 from YA2026 onward), which H12 requires — confirm before filing."
-                )
-                entry_out["needsReview"] = True
-                entry_out["reason"] = reason
-                mixed_pending.append({
-                  **entry, "amount": str(entry["amountNumeric"]), "needsReview": True, "reason": reason,
-                  "question": "Confirm this childcare provider is registered.",
-                })
-              reliefs_q4.append(entry_out)
-          elif doc.category == "Q4 — Vaccination":
-            # Bug fix (15 Jul 2026): Finance Act 2025 (Act 874) s.6(a)(i)-(ii)
-            # expands this relief to ANY NPRA-registered vaccine from YA2026
-            # onward — before that, only the historical fixed list qualifies.
-            # Previously this category had no year-awareness at all.
-            vaccine_name = (ed.get("vaccine_name") or "").lower()
-            npra = (ed.get("npra_registered") or "unclear").lower()
-            if target_year >= H6_VACCINATION_NPRA_EXPANSION_YA:
-              # Any vaccine qualifies YA2026 onward, unless the document
-              # explicitly says it's NOT NPRA-registered — a known-ineligible
-              # fact, not just an unconfirmed one.
-              if npra == "no":
-                non_deductible_q4.append({
-                  **entry,
-                  "reason": "This vaccine is explicitly stated as not NPRA-registered — not eligible even under the expanded YA2026+ rule.",
-                })
-              elif aggregation_state == "resolved":
-                entry_out = {**relief_entry}
-                if npra == "unclear":
-                  reason = (
-                    "Could not confirm NPRA registration for this vaccine from the receipt — any "
-                    "NPRA-registered vaccine qualifies from YA2026 onward, but confirm before filing."
-                  )
-                  entry_out["needsReview"] = True
-                  entry_out["reason"] = reason
-                  mixed_pending.append({
-                    **entry, "amount": str(entry["amountNumeric"]), "needsReview": True, "reason": reason,
-                    "question": "Confirm this vaccine is NPRA-registered.",
-                  })
-                reliefs_q4.append(entry_out)
-            else:
-              # Before YA2026: only the historical fixed list qualifies. A
-              # missing vaccine_name isn't treated as a failure — that would
-              # be punishing an extraction gap, not enforcing the actual
-              # rule — so it passes through as the ordinary case, same as
-              # before this fix existed (no regression for existing data).
-              matches_old_list = any(v in vaccine_name for v in H6_VACCINATION_PRE_2026_FIXED_LIST)
-              if not vaccine_name or matches_old_list:
-                if aggregation_state == "resolved":
-                  reliefs_q4.append(relief_entry)
-              else:
-                reason = (
-                  f"'{ed.get('vaccine_name')}' is not on the pre-YA2026 eligible vaccination list "
-                  "(pneumococcal, HPV, influenza, rotavirus, varicella, meningococcal, Tdap, COVID-19) "
-                  "— the expansion to any NPRA-registered vaccine only applies from YA2026 onward."
-                )
-                non_deductible_q4.append({**entry, "reason": reason})
-                mixed_pending.append({
-                  **entry, "amount": str(entry["amountNumeric"]), "needsReview": True, "reason": reason,
-                  "question": "This vaccine isn't on the eligible list for this filing year — confirm or reclassify.",
-                })
-          elif doc.category == "Q4 — Life Insurance & Takaful Relief":
-            # Bug fix (15 Jul 2026): a policy on the taxpayer's CHILD's life
-            # was never actually excluded pre-2026 despite ITA 1967 saying so
-            # explicitly — this closes that pre-existing gap AND applies
-            # Finance Act 2025 (Act 874) s.7's YA2026 extension permitting it
-            # from that year onward.
-            life_insured = (ed.get("policy_life_insured") or "unclear").lower()
-            if life_insured == "child" and target_year < H17_CHILD_LIFE_INSURANCE_YA:
-              non_deductible_q4.append({
-                **entry,
-                "reason": f"A life insurance policy on a child's life only qualifies for H17 from YA{H17_CHILD_LIFE_INSURANCE_YA} onward (Finance Act 2025) — not eligible for this filing year.",
-              })
-            elif aggregation_state == "resolved":
-              reliefs_q4.append(relief_entry)
-          elif doc.category in _one_time_relief_results:
-            # Finance Act 2025 (Act 874) one-time reliefs (15 Jul 2026):
-            # eligibility was already decided once per category, above, from
-            # the FULL multi-year claim history — this branch just routes
-            # each document according to that pre-computed result rather
-            # than deciding anything itself.
-            #
-            # Bug fix, found in final pre-production review: these three
-            # categories have NO entry in RELIEF_CAPS_FALLBACK_MYR, because
-            # their only confirmed cap is the RM2,500 pool shared with EV
-            # charging — which only exists for YA2026-2027. Food waste
-            # compost machine's own eligible window starts a year earlier,
-            # YA2025, when it existed on its own with no pool and (from the
-            # sources available) no confirmed standalone cap either. Without
-            # this guard, such a claim would reach _cap_reliefs' simple
-            # per-category path, find no cap anywhere (cap stays None), and
-            # pass through completely UNCAPPED — a real leak, not a
-            # hypothetical one.
-            otr_result = _one_time_relief_results[doc.category]
-            is_standalone_unconfirmed_year = (
-              otr_result["isEligibleYear"]
-              and not (EV_HOME_IMPROVEMENT_POOL_FIRST_YA <= target_year <= EV_HOME_IMPROVEMENT_POOL_LAST_YA)
-            )
-            if is_standalone_unconfirmed_year:
-              reason = (
-                f"YA{target_year} is within this relief's own eligible window, but the shared RM2,500 "
-                f"pool with EV charging only applies from YA{EV_HOME_IMPROVEMENT_POOL_FIRST_YA} onward — "
-                "no confirmed standalone cap is available for this year from current sources. Excluded "
-                "pending confirmation rather than applied uncapped."
-              )
-              non_deductible_q4.append({**entry, "reason": reason})
-              mixed_pending.append({
-                **entry, "amount": str(entry["amountNumeric"]), "needsReview": True, "reason": reason,
-                "question": "Confirm the correct cap for this relief in this filing year before including it.",
-              })
-            elif otr_result["isEligibleYear"] and aggregation_state == "resolved":
-              reliefs_q4.append(relief_entry)
-            else:
-              non_deductible_q4.append({**entry, "reason": otr_result["note"] or "Not eligible for this filing year."})
-              if otr_result["needsReview"]:
-                mixed_pending.append({
-                  **entry, "amount": str(entry["amountNumeric"]), "needsReview": True,
-                  "reason": otr_result["note"],
-                  "question": "Confirm this one-time relief's eligible year before relying on this claim.",
-                })
-          elif aggregation_state == "resolved":
-            reliefs_q4.append(relief_entry)
-        else:
-          non_deductible_q4.append(entry)
-
-      if is_pending_review:
-        mixed_pending.append({**entry, "reason": ed.get("reason"), "question": ed.get("question"), "source": ed.get("source")})
+      # Everything else — routing to income_q1/q2, deductions_q3, reliefs_q4,
+      # non_deductible_q4, zakat/section110/section107d, donations, reference
+      # documents, bank statement review, mixed_pending, and (NEW) the
+      # registry_managed_documents / category_deprecated_documents lists —
+      # is now handled by ONE call, driven by CATEGORY_REGISTRY's
+      # bucket/tax_treatment/computation_source rather than the old
+      # quadrant/tax_status branching chain. See document_dispatch.py
+      # for the full rationale; every genuine tax-rule check that used to
+      # live inline here (DSW registration, H12 age bands, H6 vaccination
+      # NPRA scope, H6(ii) marital status, H17 child-life-policy scope, the
+      # one-time-relief eligibility window) is preserved unchanged inside
+      # dispatch_document — nothing about the STATUTORY logic changed here,
+      # only how a document gets routed to it.
+      dispatch_document(
+        doc, ed, entry, target_year, is_married,
+        income_q1, income_q2, deductions_q3, reliefs_q4, non_deductible_q4,
+        zakat_entries, section110_entries, section107d_entries,
+        donation_entries_by_gline, DONATION_CATEGORY_TO_GLINE,
+        reference_documents, bank_statement_reviews, k_disclosures, mixed_pending,
+        registry_managed_documents, category_deprecated_documents,
+        H12_CARE_CENTRE_BAND_YA, H6_VACCINATION_NPRA_EXPANSION_YA,
+        H6_VACCINATION_PRE_2026_FIXED_LIST, H17_CHILD_LIFE_INSURANCE_YA,
+        _one_time_relief_results,
+      )
 
     # ── Capital allowance (Schedule 3 ITA 1967) ─────────────────────────
     # Pulled from the persisted CapitalAsset registry, NOT from documents in
@@ -3185,7 +3344,8 @@ def get_tax_profile_summary(
     # amount can't be reused across this endpoint's current/prior/trend-year
     # calls. H4/H15 are static per person but harmless to recompute per call.
     h4_disabled_individual = Decimal("6000") if (person and person.is_disabled_self) else Decimal("0")
-    is_married = bool(person and person.marital_status == "married")
+    # is_married is now resolved near the top of this function (before the
+    # per-document loop) — see the comment there for why.
     is_divorced = bool(person and person.marital_status == "divorced-widowed")
 
     # Bug fix (15 Jul 2026): H6(ii) fertility treatment is restricted by
@@ -3602,9 +3762,28 @@ def get_tax_profile_summary(
       est_tax          = _parse_amount(form_b_record.tax_payable)
       fb_income        = _parse_amount(form_b_record.aggregate_income)
       fb_deductions    = _parse_amount(form_b_record.total_business_deductions)
+      if not fb_deductions:
+        # LHDN's printed Form B has no line literally called "total business
+        # deductions" — most filers never attach the Part N financial
+        # particulars page, so this field is legitimately null far more
+        # often than not. When Part N WAS included on the same document,
+        # derive an equivalent figure from it: N8 (gross profit) minus N26
+        # (net profit) = N25 (total expenditure) — the same quantity Part N
+        # itself would report as N25 directly. Previously this silently left
+        # the deductions trend chart empty for a Form-B-only year even when
+        # the uploaded document actually contained enough information to
+        # compute it (bug fix, 17 Jul 2026).
+        raw = form_b_record.raw_extracted or {}
+        n8_raw, n26_raw = raw.get("n8_gross_profit"), raw.get("n26_net_profit")
+        if n8_raw is not None and n26_raw is not None:
+          n8, n26 = _parse_amount(n8_raw), _parse_amount(n26_raw)
+          if n8 >= n26:
+            fb_deductions = money(n8 - n26)
       individual_relief_applied = None
       low_income_rebate_applied = None
       spouse_rebate_applied     = None
+      departure_levy_rebate_applied = None   # B27iii — not recomputed for a filed-Form-B year (bug fix, 17 Jul 2026)
+      section110_rebate_applied     = None   # B29 — same reasoning (bug fix, 17 Jul 2026)
       zakat_rebate_applied      = _parse_amount(form_b_record.zakat_rebate)
       departure_levy_rebate_applied = None
       section110_rebate_applied = None
@@ -3979,6 +4158,8 @@ def get_tax_profile_summary(
       "q4DonationsByLine": donation_entries_by_gline,
       "mixedPendingReview": mixed_pending,
       "referenceDocuments": reference_documents,
+      "registryManagedDocuments": registry_managed_documents,        # NEW
+      "categoryDeprecatedDocuments": category_deprecated_documents,  # NEW
       "kDisclosures": k_disclosures,
       "bankStatementReviews": bank_statement_reviews,
       "reconciliation":     reconciliation,
@@ -4328,6 +4509,29 @@ the upload-history finding. A finding phrased as "appears to be the SAME
 document... though it may be a different scan or copy" should be relayed
 with that same caveat, not flattened into a flat "yes".
 
+If the CONTEXT contains a deterministic spending summary (a line starting
+with "The following is a deterministic spending summary..."), treat its
+total/biggest-expense/top-N/category figures as authoritative for any part
+of the question asking about the user's own spending totals, largest
+expense, top expenses, or spending by category — it comes from a direct
+Postgres aggregation over the user's documents, not from the document-
+search citations elsewhere in this CONTEXT, and document-search citations
+must never be summed or compared against each other to answer that kind of
+question instead. When the question also asks something the spending
+summary doesn't cover (e.g. whether the largest expense is deductible),
+combine the spending summary's figures with the document/reference search
+results for the rest of the answer.
+
+If the CONTEXT contains a deterministic tax computation (a line starting
+with "The following is a deterministic tax computation..."), treat its
+chargeable income/tax payable/relief/balance-due figures as authoritative
+for any part of the question asking about the user's estimated tax
+position — it comes from the same computation the Generate Forms panel
+uses, not from document-search citations, which can only ever show
+individual receipts, never the computed total. Combine it with document/
+reference search results when the question also needs something the tax
+computation doesn't cover.
+
 Rules:
 - Be concise and specific. Reference concrete figures/dates from the context when relevant.
 - Always mention the general Malaysian tax rule/section if it's present in the context.
@@ -4448,6 +4652,351 @@ def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -
   # lines always has at least the header — that alone isn't useful context,
   # so require at least one real fact before returning a block.
   return "\n".join(lines) if len(lines) > 1 else None
+
+
+# Cap on how many of a user's documents _get_spending_context() will pull
+# into memory to compute totals/rankings. Generous for how many receipts a
+# single person or small business realistically uploads in the app's
+# lifetime; exists as a guardrail against an unbounded table scan, not
+# because normal usage would ever approach it. If a real user's document
+# count grows past this, the aggregation below should move to SQL-side
+# SUM/MAX/GROUP BY instead of summing in Python — see the function
+# docstring for why it's done in Python for now.
+_SPENDING_CONTEXT_DOC_LIMIT = 5000
+
+
+def _get_spending_context(
+  db: Session, user_id: str, entity_id: Optional[int], year_of_assessment: Optional[int] = None,
+) -> Optional[str]:
+  """
+  Deterministic Postgres aggregation over the user's own Document rows —
+  biggest expense, total spending, top-N, per-category subtotals — folded
+  into person_context exactly like _person_context_block, so
+  _classify_and_maybe_answer can answer "what's my biggest expense?" /
+  "how much did I spend in total?" directly from CONTEXT instead of setting
+  needs_document_search true.
+
+  This exists for the same reason _check_upload_history exists: Mongo's
+  $vectorSearch is semantic similarity over document text, not a
+  calculator. It can retrieve the k chunks that most resemble the
+  QUESTION's wording, but it cannot sum, rank, or take a max over the
+  user's documents — "biggest spending" and "total spent" are aggregation
+  questions, not retrieval questions, so they need a real SQL/Python
+  aggregation over Postgres, not a similarity search over Mongo.
+
+  Reuses the exact same "is this document's amount safe to count right
+  now" gate _business_totals_for_year() already uses for the tax-summary
+  totals, rather than treating every non-null extracted_data.amount as
+  real spending:
+    - document_role == "summary_statement" is skipped — a bank statement's
+      own top-level amount is a statement-period total, not a transaction
+      (its lines are reconciled against the user's OTHER documents, see
+      _match_bank_statement_lines; counting it too would double-count every
+      transaction it lists). Likewise a Form B / CP500 summary document's
+      amount is a filed-return or notice total, not new spending.
+    - aggregation_state != "resolved" is skipped — "needs_apportionment"
+      (e.g. a Q3 entertainment receipt awaiting its business-use %) and
+      "needs_user_confirmation" (e.g. an unreviewed bank statement) haven't
+      had a final, safe-to-count amount established yet; "reference_only"
+      is a period/registry total, not this year's spending;
+      "excluded_by_rule" (not_applicable/non_deductible) was determined not
+      to count at all.
+  Falling back to derive_document_role()/derive_aggregation_state() when a
+  document's own extracted_data doesn't have these fields stored (older
+  rows, or a row whose fields were never backfilled) mirrors
+  _business_totals_for_year()'s exact fallback, so this function can never
+  silently disagree with the numbers the rest of the app already shows the
+  user on the tax-summary screen.
+
+  Scoped the same way _scoped_document_or_404 scopes a single document:
+  always by user_id, additionally by entity_id only when one is supplied
+  (so a personal-only conversation doesn't pull in a business's spending,
+  and vice versa) — matching how the rest of chat's context (person_context,
+  upload-history) is scoped. year_of_assessment, when given, narrows further
+  to a single filing year (e.g. "what did I spend in 2024?"); when omitted,
+  spending is summarized across all years the user has documents for, and
+  each finding names the year(s) involved so the model doesn't present a
+  multi-year total as if it were one year's figure.
+
+  Returns None (not an empty string) when the user has no documents with a
+  resolved, countable amount at all, so the caller can tell "nothing to
+  add" apart from "checked, found nothing" — same contract as
+  _person_context_block and _check_upload_history.
+  """
+  q = db.query(Document).filter(Document.user_id == user_id, Document.extracted_data.isnot(None))
+  if entity_id is not None:
+    q = q.filter(Document.entity_id == entity_id)
+  if year_of_assessment is not None:
+    q = q.filter(Document.year_of_assessment == year_of_assessment)
+  docs = q.limit(_SPENDING_CONTEXT_DOC_LIMIT).all()
+  if not docs:
+    return None
+
+  # (amount, doc) pairs for every document whose amount is safe to count —
+  # kept alongside the source doc so findings below can cite vendor/
+  # category/file_name/date without a second pass over the query results.
+  countable: list[tuple[Decimal, "Document"]] = []
+  category_totals: dict[str, Decimal] = {}
+  years_seen: set[int] = set()
+
+  for doc in docs:
+    ed = doc.extracted_data or {}
+    category = doc.category or ""
+    tax_status = doc.tax_status or ""
+    document_role = ed.get("document_role") or derive_document_role(category)
+    aggregation_state = ed.get("aggregation_state") or derive_aggregation_state(category, tax_status)
+
+    if document_role == "summary_statement" or aggregation_state != "resolved":
+      continue
+
+    amt = parse_amount(ed.get("amount"))
+    if amt <= 0:
+      # Zero/missing/unparsed amount — nothing to rank or sum. Not an
+      # error (parse_amount never raises), just not spending data.
+      continue
+
+    countable.append((amt, doc))
+    if category:
+      category_totals[category] = category_totals.get(category, Decimal("0")) + amt
+    if doc.year_of_assessment:
+      years_seen.add(doc.year_of_assessment)
+
+  if not countable:
+    return None
+
+  year_label = (
+    f"YA{year_of_assessment}" if year_of_assessment is not None
+    else (f"YA{min(years_seen)}-{max(years_seen)}" if len(years_seen) > 1
+          else (f"YA{next(iter(years_seen))}" if years_seen else "unspecified year(s)"))
+  )
+
+  total = sum((amt for amt, _ in countable), Decimal("0"))
+  countable.sort(key=lambda pair: pair[0], reverse=True)
+  biggest_amt, biggest_doc = countable[0]
+  biggest_ed = biggest_doc.extracted_data or {}
+
+  lines = [
+    "The following is a deterministic spending summary computed directly from the "
+    "user's own stored documents (Postgres aggregation, not a document search) — "
+    f"covering {len(countable)} document(s) with a resolved amount, {year_label}:",
+    f"- Total recorded spending: RM {total:,.2f}.",
+    (
+      f"- Largest single recorded expense: RM {biggest_amt:,.2f} "
+      f"('{biggest_ed.get('vendor') or 'Unknown vendor'}', category: "
+      f"{biggest_doc.category or 'uncategorised'}, document '{biggest_doc.file_name}', "
+      f"dated {biggest_ed.get('date') or 'unknown date'})."
+    ),
+  ]
+
+  if len(countable) > 1:
+    top_n = countable[:5]
+    lines.append("- Top expenses, largest first:")
+    for amt, doc in top_n:
+      ed_i = doc.extracted_data or {}
+      lines.append(
+        f"  - RM {amt:,.2f} — {ed_i.get('vendor') or 'Unknown vendor'} "
+        f"(category: {doc.category or 'uncategorised'}, document '{doc.file_name}', "
+        f"dated {ed_i.get('date') or 'unknown date'})"
+      )
+
+  if len(category_totals) > 1:
+    lines.append("- Spending by category:")
+    for cat, cat_total in sorted(category_totals.items(), key=lambda kv: kv[1], reverse=True):
+      lines.append(f"  - {cat}: RM {cat_total:,.2f}")
+
+  lines.append(
+    "(This summary excludes documents that are bank-statement/summary totals, "
+    "still pending review or apportionment, or marked not-applicable/non-deductible "
+    "— the same rule the app's own tax-summary totals use.)"
+  )
+
+  return "\n".join(lines)
+
+
+def _get_tax_summary_context(
+  db: Session, user_id: str, entity_id: Optional[int], year_of_assessment: Optional[int] = None,
+) -> Optional[str]:
+  """
+  Deterministic tax-computation summary (estimated chargeable income, tax
+  payable, total relief, business income/deductions) for the CURRENT filing
+  year — folded into person_context exactly like _get_spending_context, so
+  the chat LLM can answer "what's my estimated tax payable?" / "what's my
+  chargeable income?" / "how much relief have I claimed?" directly from
+  CONTEXT instead of trying (and failing) to answer it from Mongo document
+  search.
+
+  This deliberately calls get_tax_profile_summary() — the SAME function
+  backing GET /api/profile/summary, which the Manage Account "Generate
+  Forms" panel (ManageProfile.jsx) reads its numbers from — rather than
+  re-deriving brackets/reliefs/chargeable-income here. get_tax_profile_summary
+  is a plain Python function; FastAPI's Query(...)/Depends(get_db) are only
+  interpreted specially when a request is routed through the framework, so
+  calling it directly here (db=db, the SAME session this chat turn already
+  has open) is an ordinary function call that reuses 100% of the real
+  computation, not a parallel copy of it.
+
+  This is a deliberate departure from _get_spending_context's approach (a
+  fresh, self-contained Postgres aggregation): chargeable income and tax
+  payable aren't a straightforward sum over Document rows — they run
+  through tax brackets, capped reliefs (per-category caps, donation tiers),
+  business-loss/capital-allowance carryforward, joint-assessment handling,
+  zakat/CP500/MTD offsets, and more, all of which ALREADY exist inside
+  get_tax_profile_summary()'s ~1400-line _build_year_summary() closure. A
+  second implementation of that here would either be a shallow approximation
+  (wrong numbers) or a full duplicate (a second copy that WILL drift the
+  next time a relief cap or bracket changes only one of the two copies —
+  see the "Bug fix (14 Jul 2026)" comment on get_tax_profile_summary itself
+  for a real prior incident of exactly this kind of drift, which is why
+  that endpoint became the single source of truth for these reliefs in the
+  first place). Calling the existing function keeps this a single source of
+  truth with zero invalidation logic to maintain — the same reasoning
+  _get_spending_context uses for reading Document rows directly instead of
+  a cached total.
+
+  year_of_assessment: when omitted, defaults to the latest year the user
+  (optionally scoped to entity_id) has any document on record for — NOT a
+  30-June-cutoff "current filing year" calculation, since that logic lives
+  only in the frontend today (formB.js's currentFilingYear()) and duplicating
+  a date-cutoff rule here risks the exact same two-copies-drift problem this
+  function exists to avoid for the tax math itself. If the user has no
+  documents at all yet, there is no sensible year to compute, and this
+  returns None.
+
+  Returns None (not an empty string) when there's nothing to summarize —
+  no year could be determined, entity ownership doesn't check out, or the
+  underlying call raises — so a failure here only means one fewer fact in
+  person_context for this turn, never a broken turn. Errors are swallowed
+  here rather than left to the caller because get_tax_profile_summary()
+  raises HTTPException on bad entity ownership, which is meaningful for an
+  HTTP route but not for a best-effort chat context lookup — this is
+  exactly the JSON:API-shaped exception that a plain internal call has to
+  translate into "just skip this lookup", same as any other best-effort
+  helper in this file.
+  """
+  try:
+    person_id = int(user_id)
+  except (TypeError, ValueError):
+    return None
+
+  if year_of_assessment is None:
+    q = db.query(func.max(Document.year_of_assessment)).filter(
+      Document.user_id == user_id, Document.year_of_assessment.isnot(None)
+    )
+    if entity_id is not None:
+      q = q.filter(Document.entity_id == entity_id)
+    row = q.first()
+    year_of_assessment = row[0] if row and row[0] is not None else None
+    if year_of_assessment is None:
+      return None
+
+  try:
+    summary = get_tax_profile_summary(
+      year=year_of_assessment, user_id=str(person_id), entity_id=entity_id, db=db,
+    )
+  except HTTPException:
+    # Entity ownership mismatch or similar — a chat turn should just skip
+    # this context, not surface an HTTP error to the LLM prompt.
+    return None
+  except Exception as e:
+    logger.warning(f"[Chat] Tax summary computation failed for user {user_id}, YA{year_of_assessment}: {e}")
+    return None
+
+  cy = summary.get("currentYear")
+  if not cy:
+    return None
+  totals = cy.get("totals") or {}
+
+  def _fmt_amt(v) -> str:
+    """RM amount with no decimals, grouped thousands — mirrors formB.js's
+    fmtAmt() ('amount without sen', used on the actual Form B cells), so a
+    figure quoted in chat reads identically to the same figure on the
+    generated form instead of showing cents nobody asked for."""
+    try:
+      n = float(v) if v is not None else 0.0
+    except (TypeError, ValueError):
+      n = 0.0
+    return f"{round(n):,}"
+
+  lines = [
+    f"The following is a deterministic tax computation for YA{year_of_assessment}, computed the "
+    "SAME way as the user's own Generate Forms / Form B draft (Postgres calculation, not a "
+    "document search) — treat these figures as authoritative for questions about the user's "
+    "estimated tax position:",
+    f"- Estimated chargeable income (B24): RM {_fmt_amt(totals.get('estimatedChargeableIncome'))}.",
+    f"- Estimated tax charged (B25): RM {_fmt_amt(totals.get('taxChargedMyr'))}.",
+    f"- Estimated tax payable (B31): RM {_fmt_amt(totals.get('estimatedTaxPayable'))}.",
+    (
+      f"- Balance payable/refundable (B33): RM {_fmt_amt(totals.get('balancePayableMyr'))} "
+      "(negative means a refund is due)."
+    ),
+    f"- Total income before deductions (B18/B22): RM {_fmt_amt(totals.get('totalIncome'))}.",
+    f"- Total business deductions (Q3): RM {_fmt_amt(totals.get('q3TotalDeductions'))}.",
+    f"- Total personal reliefs (B23): RM {_fmt_amt((totals.get('profileReliefs') or {}).get('totalMyr'))}.",
+    f"- Approved donations claimed (Part G): RM {_fmt_amt(totals.get('approvedDonationsMyr'))}.",
+  ]
+  if cy.get("documentCount") is not None:
+    lines.append(
+      f"(Based on {cy['documentCount']} document(s) on file for this year; this is an ESTIMATE "
+      "for planning purposes, not a filed return, and should be verified with a licensed tax "
+      "agent or LHDN before relying on it.)"
+    )
+
+  return "\n".join(lines)
+
+
+def _insight_context_block(db: Session, user_id: str, insight_id: int) -> Optional[str]:
+  """
+  Fetch one AI Insight (scoped to user_id, same ownership check as
+  insights.router._scoped_insight_or_404) and format it as a context block
+  for the chat LLM.
+
+  This exists for InsightsInbox's "Ask CukaiBot about this" card action
+  (frontend passes insightId via a URL param — see CukaiBot.jsx's mount
+  effect and api.js's sendChatMessage — which lands here as insight_id on
+  the first message of the resulting conversation). Without it, that button
+  dropped the user into a blank chat with no memory of which card they came
+  from, forcing them to re-describe the whole situation by hand.
+
+  Folded into person_context by the caller (post_chat_message) rather than
+  threaded as its own parameter into _classify_and_maybe_answer /
+  _generate_chat_answer_with_retrieval — person_context is already a single
+  free-text CONTEXT block both of those fold in verbatim, so concatenating
+  onto it gets this into both prompts for free, the same way
+  upload_history_context already does for attachment provenance.
+
+  Returns None (not raising) when the id doesn't resolve — wrong user,
+  deleted, bad id — since a stale insightId shouldn't break the chat turn,
+  only mean it proceeds without this extra grounding.
+  """
+  try:
+    person_id = int(user_id)
+  except (TypeError, ValueError):
+    return None
+
+  insight = db.query(Insight).filter(
+    Insight.id == insight_id, Insight.user_id == person_id,
+  ).first()
+  if not insight:
+    return None
+
+  lines = [
+    "The user tapped \"Ask CukaiBot about this\" on the following AI Insight "
+    "card. Ground your answer in it, and answer whatever they ask next about it:",
+    f"- Title: {insight.title}",
+    f"- Details: {insight.body}",
+  ]
+  if insight.rm_impact:
+    lines.append(f"- RM impact: {money(insight.rm_impact)}")
+  if insight.deadline_date:
+    lines.append(f"- Deadline: {insight.deadline_date.isoformat()}")
+  if insight.citation:
+    lines.append(f"- Legal citation: {insight.citation}")
+  for s in (insight.signals or []):
+    label, value = s.get("label"), s.get("value")
+    if label and value:
+      lines.append(f"- {label}: {value}")
+
+  return "\n".join(lines)
 
 
 # Tolerance for a Tier 2 "same document, different scan" match. Amounts are
@@ -4663,6 +5212,10 @@ A single message can need BOTH document and reference lookups at once (e.g. "is 
 If the user has attached a file to this message, it appears below the question as an image/PDF/etc. you can see directly. A question that's fully answerable from the attachment itself (e.g. "what does this say?", "summarize this", "is this a valid invoice?") needs NEITHER document nor reference search — treat it like any other self-contained question. Only set needs_document_search/needs_reference_search true if answering also genuinely requires the user's OTHER stored documents or the tax law corpus, not just the attached file.
 
 If the question is specifically "did I upload this before?" / "is this already in my account?" / "have I filed this?" about an attached file, and the CONTEXT below already contains an upload-history finding for it (a line starting with "The attached file..." or "No matching or previously-uploaded document was found..."), that question needs NEITHER document nor reference search — the CONTEXT already has the direct, authoritative answer. Write it as a direct_answer instead of setting either search flag true; do not trigger a document search just to double-check a finding that's already been looked up.
+
+If the question asks about the user's own spending totals, biggest/largest/most expensive purchase, top expenses, or spending broken down by category, and the CONTEXT below already contains a line starting with "The following is a deterministic spending summary...", answer directly from those figures — do NOT set needs_document_search true just to double-check a number that CONTEXT already computed. Mongo's document search finds text that resembles the question, it cannot sum, rank, or take a max over the user's documents, so it is never the right tool for this kind of question even if needs_document_search would otherwise seem plausible. If the question also asks something the spending summary doesn't cover — e.g. "is my biggest expense deductible under the law?" — still answer the spending-figures part directly from CONTEXT, but DO set needs_reference_search (or needs_document_search, if it needs a specific receipt's other details) true for the remaining part; the two are not mutually exclusive.
+
+If the question asks about the user's estimated chargeable income, tax charged/payable, total relief, or refund/balance due, and the CONTEXT below already contains a line starting with "The following is a deterministic tax computation...", answer directly from those figures — do NOT set needs_document_search true to try to re-derive them from citations. These figures already went through the full bracket/relief/carryforward computation; document search can only surface individual receipts, never the computed result. As with the spending summary, if part of the question needs something else too (e.g. "why is my relief lower than last year?" needing specific documents), set the relevant search flag true for that part while still answering the figures directly.
 
 When uncertain, prefer setting a flag to true rather than false — a citation the user didn't strictly need is a much smaller problem than answering a real tax question with no grounding at all.
 
@@ -5652,7 +6205,7 @@ def post_chat_message(
 
   Request body:
     { "message": str, "user_id": str, "entity_id": int|null, "session_id": str|null,
-      "attachment_ids": [int]|null }
+      "attachment_ids": [int]|null, "insight_id": int|null }
   session_id is optional — a new session is created automatically on first
   message, exactly like starting a new WhatsApp thread.
   attachment_ids are ChatAttachment ids returned by a prior
@@ -5662,6 +6215,9 @@ def post_chat_message(
   user ChatMessage and their bytes are sent to Gemini alongside the
   question (see _attachments_to_media_blocks) — max
   MAX_CHAT_ATTACHMENTS_PER_MESSAGE per call.
+  insight_id is optional — set by InsightsInbox's "Ask CukaiBot about this"
+  card action (see CukaiBot.jsx's mount effect) on the first message of the
+  resulting conversation only. See _insight_context_block()'s docstring.
 
   Response:
     { "session_id", "message": {id, role, text, citations, attachments} }
@@ -5671,6 +6227,7 @@ def post_chat_message(
   entity_id = payload.get("entity_id")
   session_id = payload.get("session_id")
   attachment_ids = payload.get("attachment_ids") or []
+  insight_id = payload.get("insight_id")
 
   # A message can be attachment-only (e.g. just drop a file with no typed
   # question) — only require SOME content, not specifically typed text.
@@ -5754,40 +6311,70 @@ def post_chat_message(
     if attachments:
       db.commit()
 
-  # ── Step 2: fetch the user's own Postgres profile (name, TIN, active
-  #    entity, etc.) before classification, since the combined
-  #    classify-and-maybe-answer call below needs it immediately if it turns
-  #    out no retrieval is needed — see _person_context_block()'s docstring
-  #    for the "what is my name?" case this fixes. Best-effort: a lookup
-  #    failure here shouldn't break the rest of the turn.
+  # ── Step 2: fold every best-effort Postgres context lookup for this turn
+  #    into a single person_context string, in order. Each lookup answers a
+  #    different kind of question the chat LLM can't get from Mongo's
+  #    $vectorSearch (see each function's own docstring for why it exists as
+  #    its own query rather than a similarity search):
+  #      - _person_context_block:  identity/profile facts ("what's my TIN?")
+  #      - _get_spending_context:  deterministic totals/rankings over the
+  #                                user's documents ("what's my biggest expense?")
+  #      - _get_tax_summary_context: the actual tax computation (chargeable
+  #                                income, tax payable, reliefs) — reuses
+  #                                get_tax_profile_summary()'s own logic, the
+  #                                SAME function the Generate Forms panel
+  #                                calls, rather than a second copy of it
+  #      - _check_upload_history:  provenance for THIS turn's attachment(s)
+  #                                ("did I upload this before?") — only
+  #                                meaningful when an attachment was sent,
+  #                                so it's the one lookup here that's
+  #                                conditional rather than unconditional
+  #    All three fold into the SAME person_context string (rather than each
+  #    becoming its own parameter threaded through _classify_and_maybe_answer
+  #    and _generate_chat_answer_with_retrieval) so both call sites see every
+  #    lookup automatically, with no signature change needed the next time a
+  #    new lookup is added here.
+  #
+  #    Each entry is (log_label, callable). The callable takes no arguments —
+  #    wrapped in a lambda so a lookup that doesn't apply this turn (e.g. no
+  #    attachments) can be skipped WITHOUT running its try/except at all,
+  #    rather than every lookup unconditionally querying and then discarding
+  #    its own result.
   person_context: Optional[str] = None
-  try:
-    person_context = _person_context_block(db, user_id, entity_id)
-  except Exception as e:
-    logger.warning(f"[Chat] Person profile lookup failed for session {session.session_id}: {e}")
 
-  # ── Step 2b: provenance check for THIS turn's attachment(s), if any ─────
-  #    Only runs when an attachment was actually sent (cheap no-op otherwise
-  #    — no extra Gemini call, no extra Postgres query, for ordinary
-  #    text-only turns). Answers "did I upload this before?" from Postgres
-  #    identity checks (exact hash, then extracted-field match), NOT from
-  #    Mongo semantic similarity — see _check_upload_history()'s docstring
-  #    for why a vector search is the wrong tool for this specific question.
-  #    Folded into person_context (rather than added as a new parameter to
-  #    both _classify_and_maybe_answer and _generate_chat_answer_with_
-  #    retrieval) so both call sites automatically see it without a
-  #    signature change, the same way person_context itself is threaded
-  #    through today.
-  if attachments:
+  def _fold_in_context(label: str, lookup) -> None:
+    """Run one best-effort Postgres context lookup and fold its result into
+    person_context if it returned anything. A lookup failing (bad data,
+    a transient DB error) only loses THAT lookup's contribution to
+    person_context for this turn — it never breaks the rest of the turn,
+    matching how each of these lookups already behaved individually."""
+    nonlocal person_context
     try:
-      upload_history_context = _check_upload_history(db, user_id, attachments)
-      if upload_history_context:
+      block = lookup()
+    except Exception as e:
+      logger.warning(f"[Chat] {label} lookup failed for session {session.session_id}: {e}")
+      return
+    if block:
+      person_context = f"{person_context}\n\n{block}" if person_context else block
+
+  _fold_in_context("Person profile", lambda: _person_context_block(db, user_id, entity_id))
+  _fold_in_context("Spending aggregation", lambda: _get_spending_context(db, user_id, entity_id))
+  _fold_in_context("Tax summary", lambda: _get_tax_summary_context(db, user_id, entity_id))
+  if attachments:
+    _fold_in_context("Upload-history", lambda: _check_upload_history(db, user_id, attachments))
+
+  # ── Step 2c: fold in the insight the user clicked "Ask CukaiBot about
+  #    this" from, if any (see _insight_context_block()'s docstring) ──────
+  if insight_id:
+    try:
+      insight_context = _insight_context_block(db, user_id, insight_id)
+      if insight_context:
         person_context = (
-          f"{person_context}\n\n{upload_history_context}" if person_context
-          else upload_history_context
+          f"{person_context}\n\n{insight_context}" if person_context
+          else insight_context
         )
     except Exception as e:
-      logger.warning(f"[Chat] Upload-history check failed for session {session.session_id}: {e}")
+      logger.warning(f"[Chat] Insight-context lookup failed for session {session.session_id}: {e}")
 
   # An attachment-only message (no typed text) still needs a non-empty
   # question string to hand the LLM calls below — the attachment itself

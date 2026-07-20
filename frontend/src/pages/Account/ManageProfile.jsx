@@ -4,7 +4,7 @@ import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import cukaiLogo from '../../assets/cukai-logo.png';
 import { currentFilingYear, buildFormData, fmtAmt } from '../../data/formB';
-import { getOpeningBalanceSuggestion } from '../../services/api';
+import { getOpeningBalanceSuggestion, runInsightEngine } from '../../services/api';
 
 // A4 page geometry used by renderNodeToPdfBlob below.
 const PDF_PAGE_WIDTH_MM = 210;
@@ -502,6 +502,62 @@ const BLANK_PERSONAL_PROFILE = {
   hasSspnEvOther: false,
 };
 
+/* =========================================================================
+   PERSONAL INFORMATION COMPLETENESS
+   Mirrors backend/profile_completeness.py — KEEP THE TWO IN SYNC. The backend
+   copy drives the `profile_incomplete` AI insight; this copy drives the Edit
+   Profile modal's gaps-only mode, so the modal can filter itself without
+   depending on the insight feed being loaded.
+
+   buildFormData() reads these fields for Form B's header/refund lines and
+   renders "—" for each blank one, which is why an incomplete profile silently
+   produces an unfilable form. Several are only required in context — see the
+   conditionals below.
+   ========================================================================= */
+
+const isBlank = (v) => v === null || v === undefined || (typeof v === 'string' && v.trim() === '');
+
+const ALWAYS_REQUIRED_KEYS = [
+  'fullName', 'personalTin', 'citizenship', 'gender', 'dateOfBirth',
+  'maritalStatus', 'phone', 'correspondenceAddress', 'correspondencePostcode',
+  'correspondenceCity', 'correspondenceState', 'refundMethod',
+];
+
+/** Required-but-blank profile field keys. Empty ⇒ Form B has everything it
+ *  needs from the personal profile. */
+function missingProfileFields(p) {
+  const profile = p || {};
+  const missing = [];
+  const need = (key) => { if (isBlank(profile[key])) missing.push(key); };
+
+  ALWAYS_REQUIRED_KEYS.forEach(need);
+  // Identity — either ID satisfies it (there is no id_type field any more).
+  if (isBlank(profile.identificationNo) && isBlank(profile.passportNo)) missing.push('identificationNo');
+  // Bank details only matter for a bank refund; DuitNow needs none.
+  if (profile.refundMethod === 'bank') { need('bankName'); need('bankAccountNo'); }
+  // Spouse block only when married.
+  if (profile.maritalStatus === 'married') {
+    need('spouseName');
+    if (isBlank(profile.spouseIdNo) && isBlank(profile.spousePassportNo)) missing.push('spouseIdNo');
+    need('spouseDob');
+    need('assessmentType');
+  }
+  // E-commerce model only once the user says they trade online.
+  if (profile.carriesOnEcommerce && isBlank(profile.ecommerceModel)) missing.push('ecommerceModel');
+
+  return missing;
+}
+
+// Which fields sit under each section heading of the Edit Profile modal, so
+// gaps-only mode can hide a heading whose fields are all filled.
+const SECTION_FIELD_KEYS = {
+  identity: ['fullName', 'identificationNo', 'passportNo', 'personalTin', 'citizenship', 'gender', 'dateOfBirth'],
+  marital:  ['maritalStatus', 'spouseName', 'spouseIdNo', 'spousePassportNo', 'spouseDob', 'assessmentType'],
+  contact:  ['phone', 'correspondenceAddress', 'correspondencePostcode', 'correspondenceCity', 'correspondenceState'],
+  other:    ['ecommerceModel'],
+  refund:   ['refundMethod', 'bankName', 'bankAccountNo'],
+};
+
 /* ---------- Small UI primitives ---------- */
 
 const Field = ({ label, required, hint, children, span = 1 }) => (
@@ -755,7 +811,7 @@ function ChildrenEditor({ children, onAdd, onUpdate, onDelete }) {
   );
 }
 
-const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, onUpdateChild, onDeleteChild, taxSummary }) => {
+const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, onUpdateChild, onDeleteChild, taxSummary, gapsOnly = false }) => {
   const [draft, setDraft] = useState(profile);
   const childrenList = children || [];
   const legacyChildCount = parseInt(draft.numberOfChildren || '0', 10) || 0;
@@ -782,6 +838,31 @@ const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, 
 
   const isMarried = draft.maritalStatus === 'married';
 
+  // ── Gaps-only mode ────────────────────────────────────────────────────────
+  // Opened from the `profile_incomplete` AI insight, this renders only the
+  // required fields that are still empty, so the user completes them without
+  // scrolling the whole form. The full form (the "Edit profile" button's
+  // behaviour) is completely unchanged — every field below is the same JSX,
+  // just gated, so the two modes can never render a field differently.
+  const [showAll, setShowAll] = useState(false);
+  // Union of the saved profile's gaps and the current draft's: the saved side
+  // keeps a field on screen while you type into it (computing purely from the
+  // draft would make it vanish mid-keystroke); the draft side reveals newly
+  // required conditionals (e.g. choosing "Married" shows the spouse block).
+  const savedMissing = missingProfileFields(profile);
+  const draftMissing = missingProfileFields(draft);
+  const visibleSet = new Set([...savedMissing, ...draftMissing]);
+  // Either/or identity pairs: surface BOTH so the requirement can be satisfied
+  // with whichever ID the filer actually holds.
+  if (visibleSet.has('identificationNo')) visibleSet.add('passportNo');
+  if (visibleSet.has('spouseIdNo')) visibleSet.add('spousePassportNo');
+  // Fall back to the full form when nothing is missing (stale deep-link, or the
+  // gaps were filled elsewhere) — an empty filtered modal would be a dead end.
+  const filtering = gapsOnly && !showAll && visibleSet.size > 0;
+  const show = (key) => !filtering || visibleSet.has(key);
+  const showSection = (id) => !filtering || SECTION_FIELD_KEYS[id].some((k) => visibleSet.has(k));
+  const gapCount = draftMissing.length;
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} />
@@ -795,7 +876,13 @@ const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, 
             </div>
             <div className="min-w-0">
               <h3 className="text-sm font-bold text-headings truncate">Personal Profile</h3>
-              <p className="text-[11px] text-muted">Used across all entities you file for</p>
+              {filtering ? (
+                <p className="text-[11px] font-semibold text-[#D85A30]">
+                  {gapCount} field{gapCount === 1 ? '' : 's'} needed for Form B
+                </p>
+              ) : (
+                <p className="text-[11px] text-muted">Used across all entities you file for</p>
+              )}
             </div>
           </div>
           <button onClick={onClose} className="text-[#94A3B8] hover:text-headings transition-colors duration-150 shrink-0" aria-label="Close panel">
@@ -805,32 +892,88 @@ const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, 
 
         <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 flex flex-col gap-2.5">
 
-          <SectionLabel>Identity & Residency</SectionLabel>
-          <Field label="Full name (as per IC/passport)" required>
-            <TextInput value={draft.fullName} onChange={set('fullName')} placeholder="Full legal name" />
-          </Field>
-          <div className="grid grid-cols-2 gap-2.5">
-            <Field label="IC no.">
-              <TextInput value={draft.identificationNo} onChange={set('identificationNo')} placeholder="YYMMDD-PB-XXXX" />
+          {showSection('identity') && <SectionLabel>Identity & Residency</SectionLabel>}
+          {show('fullName') && (
+            <Field label="Full name (as per IC/passport)" required>
+              <TextInput value={draft.fullName} onChange={set('fullName')} placeholder="Full legal name" />
             </Field>
-            <Field label="Passport no.">
-              <TextInput value={draft.passportNo} onChange={set('passportNo')} placeholder="A12345678" />
-            </Field>
-          </div>
-          <div className="grid grid-cols-2 gap-2.5">
-            <Field label="Tax Identification No. (TIN)" required>
-              <TextInput value={draft.personalTin} onChange={set('personalTin')} placeholder="IG 1234567890" />
-            </Field>
-            <Field label="Citizenship" hint="Country code, MYS if Malaysian">
-              <TextInput value={draft.citizenship} onChange={set('citizenship')} placeholder="MYS" />
-            </Field>
-          </div>
-          <div className="grid grid-cols-2 gap-2.5">
-            <Field label="Gender">
-              <SelectInput value={draft.gender} onChange={set('gender')}>
-                <option value="" disabled>Select…</option>
-                <option value="male">Male</option>
-                <option value="female">Female</option>
+          )}
+          {(show('identificationNo') || show('passportNo')) && (
+            <div className="grid grid-cols-2 gap-2.5">
+              {show('identificationNo') && (
+                <Field label="IC no." hint={filtering ? 'Fill either this or the passport no.' : undefined}>
+                  <TextInput value={draft.identificationNo} onChange={set('identificationNo')} placeholder="YYMMDD-PB-XXXX" />
+                </Field>
+              )}
+              {show('passportNo') && (
+                <Field label="Passport no.">
+                  <TextInput value={draft.passportNo} onChange={set('passportNo')} placeholder="A12345678" />
+                </Field>
+              )}
+            </div>
+          )}
+          {(show('personalTin') || show('citizenship')) && (
+            <div className="grid grid-cols-2 gap-2.5">
+              {show('personalTin') && (
+                <Field label="Tax Identification No. (TIN)" required>
+                  <TextInput value={draft.personalTin} onChange={set('personalTin')} placeholder="IG 1234567890" />
+                </Field>
+              )}
+              {show('citizenship') && (
+                <Field label="Citizenship" hint="Country code, MYS if Malaysian">
+                  <TextInput value={draft.citizenship} onChange={set('citizenship')} placeholder="MYS" />
+                </Field>
+              )}
+            </div>
+          )}
+          {(show('gender') || show('dateOfBirth')) && (
+            <div className="grid grid-cols-2 gap-2.5">
+              {show('gender') && (
+                <Field label="Gender">
+                  <SelectInput value={draft.gender} onChange={set('gender')}>
+                    <option value="" disabled>Select</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                  </SelectInput>
+                </Field>
+              )}
+              {show('dateOfBirth') && (
+                <Field label="Date of birth">
+                  <input type="date" className={inputClass} value={draft.dateOfBirth} onChange={set('dateOfBirth')} />
+                </Field>
+              )}
+            </div>
+          )}
+
+          {showSection('marital') && <SectionLabel><span className="mt-2 block">Marital Status & Dependents</span></SectionLabel>}
+          {show('maritalStatus') && (
+            <Field label="Marital status as at 31 Dec">
+              <SelectInput
+                value={draft.maritalStatus}
+                onChange={(e) => {
+                  const newStatus = e.target.value;
+                  // Root-cause fix (Phase 4 review, 14 Jul 2026): the joint-
+                  // assessment dropdown only renders while married — moving
+                  // away from married hides it, but without this reset its
+                  // last-selected value ('joint-husband'/'joint-wife') would
+                  // otherwise persist invisibly and could resurface if the
+                  // person remarries later. The backend independently guards
+                  // against this too (assessment_type is only honoured while
+                  // marital_status === 'married'), but resetting it here means
+                  // the UI's own state stays honest rather than relying on
+                  // that downstream defense alone.
+                  if (newStatus !== 'married' && (draft.assessmentType === 'joint-husband' || draft.assessmentType === 'joint-wife')) {
+                    setDraft({ ...draft, maritalStatus: newStatus, assessmentType: '', spouseTotalIncomeMyr: '', spouseForeignIncomeMyr: '' });
+                  } else {
+                    setDraft({ ...draft, maritalStatus: newStatus });
+                  }
+                }}
+              >
+                <option value="" disabled>Select</option>
+                <option value="single">Single</option>
+                <option value="married">Married</option>
+                <option value="divorced-widowed">Divorcee / Widow / Widower</option>
+                <option value="deceased">Deceased</option>
               </SelectInput>
               {!draft.gender && (isMarried && (draft.assessmentType === 'joint-husband' || draft.assessmentType === 'joint-wife')) && (
                 <p className="mt-1 text-[10px] text-warning">
@@ -838,64 +981,43 @@ const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, 
                 </p>
               )}
             </Field>
-            <Field label="Date of birth">
-              <input type="date" className={inputClass} value={draft.dateOfBirth} onChange={set('dateOfBirth')} />
-            </Field>
-          </div>
-
-          <SectionLabel><span className="mt-2 block">Marital Status & Dependents</span></SectionLabel>
-          <Field label="Marital status as at 31 Dec">
-            <SelectInput
-              value={draft.maritalStatus}
-              onChange={(e) => {
-                const newStatus = e.target.value;
-                // Root-cause fix (Phase 4 review, 14 Jul 2026): the joint-
-                // assessment dropdown only renders while married — moving
-                // away from married hides it, but without this reset its
-                // last-selected value ('joint-husband'/'joint-wife') would
-                // otherwise persist invisibly and could resurface if the
-                // person remarries later. The backend independently guards
-                // against this too (assessment_type is only honoured while
-                // marital_status === 'married'), but resetting it here means
-                // the UI's own state stays honest rather than relying on
-                // that downstream defense alone.
-                if (newStatus !== 'married' && (draft.assessmentType === 'joint-husband' || draft.assessmentType === 'joint-wife')) {
-                  setDraft({ ...draft, maritalStatus: newStatus, assessmentType: '', spouseTotalIncomeMyr: '', spouseForeignIncomeMyr: '' });
-                } else {
-                  setDraft({ ...draft, maritalStatus: newStatus });
-                }
-              }}
-            >
-              <option value="single">Single</option>
-              <option value="married">Married</option>
-              <option value="divorced-widowed">Divorcee / Widow / Widower</option>
-              <option value="deceased">Deceased</option>
-            </SelectInput>
-          </Field>
-          {(draft.maritalStatus === 'divorced-widowed' || draft.maritalStatus === 'deceased') && (
+          )}
+          {!filtering && (draft.maritalStatus === 'divorced-widowed' || draft.maritalStatus === 'deceased') && (
             <Field label="Date of divorce / demise">
               <input type="date" className={inputClass} value={draft.maritalEventDate} onChange={set('maritalEventDate')} />
             </Field>
           )}
           {isMarried && (
             <>
-              <Field label="Date of marriage">
-                <input type="date" className={inputClass} value={draft.maritalEventDate} onChange={set('maritalEventDate')} />
-              </Field>
-              <Field label="Spouse's name">
-                <TextInput value={draft.spouseName} onChange={set('spouseName')} placeholder="Full name" />
-              </Field>
-              <div className="grid grid-cols-2 gap-2.5">
-                <Field label="Spouse's IC no.">
-                  <TextInput value={draft.spouseIdNo} onChange={set('spouseIdNo')} placeholder="YYMMDD-PB-XXXX" />
+              {!filtering && (
+                <Field label="Date of marriage">
+                  <input type="date" className={inputClass} value={draft.maritalEventDate} onChange={set('maritalEventDate')} />
                 </Field>
-                <Field label="Spouse's passport no.">
-                  <TextInput value={draft.spousePassportNo} onChange={set('spousePassportNo')} placeholder="A12345678" />
+              )}
+              {show('spouseName') && (
+                <Field label="Spouse's name">
+                  <TextInput value={draft.spouseName} onChange={set('spouseName')} placeholder="Full name" />
                 </Field>
-              </div>
-              <Field label="Spouse's date of birth">
-                <input type="date" className={inputClass} value={draft.spouseDob} onChange={set('spouseDob')} />
-              </Field>
+              )}
+              {(show('spouseIdNo') || show('spousePassportNo')) && (
+                <div className="grid grid-cols-2 gap-2.5">
+                  {show('spouseIdNo') && (
+                    <Field label="Spouse's IC no." hint={filtering ? 'Fill either this or the passport no.' : undefined}>
+                      <TextInput value={draft.spouseIdNo} onChange={set('spouseIdNo')} placeholder="YYMMDD-PB-XXXX" />
+                    </Field>
+                  )}
+                  {show('spousePassportNo') && (
+                    <Field label="Spouse's passport no.">
+                      <TextInput value={draft.spousePassportNo} onChange={set('spousePassportNo')} placeholder="A12345678" />
+                    </Field>
+                  )}
+                </div>
+              )}
+              {show('spouseDob') && (
+                <Field label="Spouse's date of birth">
+                  <input type="date" className={inputClass} value={draft.spouseDob} onChange={set('spouseDob')} />
+                </Field>
+              )}
             </>
           )}
           {/* Type of assessment (Form B item A7) always applies to every filer,
@@ -903,157 +1025,208 @@ const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, 
               widow/widower/deceased. Election only makes sense when married
               (codes 1-4); otherwise it's automatic, shown read-only. */}
           {isMarried ? (
-            <Field label="Type of assessment election">
-              <SelectInput value={draft.assessmentType} onChange={set('assessmentType')}>
-                <option value="joint-husband">Joint — in the name of husband</option>
-                <option value="joint-wife">Joint — in the name of wife</option>
-                <option value="separate">Separate</option>
-                <option value="self-spouse-no-income">Self whose spouse has no income, no source of income or has tax exempt income</option>
-              </SelectInput>
-              {/* Joint assessment aggregates the spouse's income into B21/B22
-                  (Phase 4, 14 Jul 2026) — but only on the return in whose
-                  name the assessment is actually raised, per LHDN's own
-                  rule. Which return that is depends on THIS filer's own
-                  gender matching the election direction (joint-husband +
-                  male, or joint-wife + female) — if gender doesn't match,
-                  this return correctly does NOT aggregate (the spouse's own
-                  return does instead); if gender isn't set at all, the
-                  generated draft will flag it as needing review rather than
-                  guessing. See totals.jointAssessment on the generated
-                  draft for the resolved outcome for this specific filer. */}
-              {(draft.assessmentType === 'joint-husband' || draft.assessmentType === 'joint-wife') && (
-                <>
-                  <p className="mt-1.5 flex items-start gap-1.5 rounded-lg bg-primary-tint px-2.5 py-2 text-[10px] leading-relaxed text-primary">
-                    <span aria-hidden="true">ℹ</span>
-                    <span>
-                      Whether this specific return aggregates the household's income depends on
-                      your own gender matching the election above — set gender in Basic
-                      Particulars if you haven't already. The generated Form B draft will show
-                      exactly which way it resolved.
-                    </span>
-                  </p>
-                  <div className="mt-2">
-                    <Field label="Spouse's total income (RM)" hint="Aggregated into B21/B22 automatically when this return is the one raising the joint assessment">
-                      <TextInput value={draft.spouseTotalIncomeMyr} onChange={set('spouseTotalIncomeMyr')} inputMode="decimal" placeholder="0.00" />
-                    </Field>
-                  </div>
-                </>
-              )}
-            </Field>
+            show('assessmentType') && (
+              <Field label="Type of assessment election">
+                <SelectInput value={draft.assessmentType} onChange={set('assessmentType')}>
+                  <option value="" disabled>Select</option>
+                  <option value="joint-husband">Joint — in the name of husband</option>
+                  <option value="joint-wife">Joint — in the name of wife</option>
+                  <option value="separate">Separate</option>
+                  <option value="self-spouse-no-income">Self whose spouse has no income, no source of income or has tax exempt income</option>
+                </SelectInput>
+                {/* Joint assessment aggregates the spouse's income into B21/B22
+                    (Phase 4, 14 Jul 2026) — but only on the return in whose
+                    name the assessment is actually raised, per LHDN's own
+                    rule. Which return that is depends on THIS filer's own
+                    gender matching the election direction (joint-husband +
+                    male, or joint-wife + female) — if gender doesn't match,
+                    this return correctly does NOT aggregate (the spouse's own
+                    return does instead); if gender isn't set at all, the
+                    generated draft will flag it as needing review rather than
+                    guessing. See totals.jointAssessment on the generated
+                    draft for the resolved outcome for this specific filer. */}
+                {(draft.assessmentType === 'joint-husband' || draft.assessmentType === 'joint-wife') && (
+                  <>
+                    <p className="mt-1.5 flex items-start gap-1.5 rounded-lg bg-primary-tint px-2.5 py-2 text-[10px] leading-relaxed text-primary">
+                      <span aria-hidden="true">ℹ</span>
+                      <span>
+                        Whether this specific return aggregates the household's income depends on
+                        your own gender matching the election above — set gender in Basic
+                        Particulars if you haven't already. The generated Form B draft will show
+                        exactly which way it resolved.
+                      </span>
+                    </p>
+                    <div className="mt-2">
+                      <Field label="Spouse's total income (RM)" hint="Aggregated into B21/B22 automatically when this return is the one raising the joint assessment">
+                        <TextInput value={draft.spouseTotalIncomeMyr} onChange={set('spouseTotalIncomeMyr')} inputMode="decimal" placeholder="0.00" />
+                      </Field>
+                    </div>
+                  </>
+                )}
+              </Field>
+            )
           ) : (
-            <Field label="Type of assessment" hint="Automatic — no election needed when not married">
-              <div className={inputClass + ' bg-slate-50 text-muted cursor-not-allowed'}>
-                Self (Single / divorcee / widow / widower / deceased)
-              </div>
-            </Field>
+            !filtering && (
+              <Field label="Type of assessment" hint="Automatic — no election needed when not married">
+                <div className={inputClass + ' bg-slate-50 text-muted cursor-not-allowed'}>
+                  Self (Single / divorcee / widow / widower / deceased)
+                </div>
+              </Field>
+            )
           )}
-          {isMarried && (draft.assessmentType === 'joint-husband' || draft.assessmentType === 'joint-wife' || draft.assessmentType === 'self-spouse-no-income') && (
-            <Field
-              label="Spouse's foreign-sourced income (RM)"
-              hint="H14's RM4,000 spouse relief is disallowed if your spouse (unless disabled) has more than RM4,000 in income from sources OUTSIDE Malaysia — leave blank or 0 if none"
-            >
-              <TextInput value={draft.spouseForeignIncomeMyr} onChange={set('spouseForeignIncomeMyr')} inputMode="decimal" placeholder="0.00" />
-            </Field>
-          )}
-          {draft.maritalStatus === 'divorced-widowed' && (
-            <Field label="Alimony paid to former wife (RM)" hint="H14 — combined with any spouse relief under the same RM4,000 cap">
-              <TextInput value={draft.alimonyPaidMyr} onChange={set('alimonyPaidMyr')} inputMode="decimal" placeholder="0.00" />
-            </Field>
-          )}
-          <div className="grid grid-cols-2 gap-2.5">
-            <div className="flex items-end pb-2">
-              <ToggleRow
-                label="I am a disabled person (H4)"
-                checked={draft.isDisabledSelf}
-                onChange={setVal('isDisabledSelf')}
-              />
-            </div>
-            {isMarried && (
+          {!filtering && (
+            <div className="grid grid-cols-2 gap-2.5">
+              <Field label="Number of children">
+                <TextInput value={draft.numberOfChildren} onChange={set('numberOfChildren')} inputMode="numeric" placeholder="0" />
+              </Field>
               <div className="flex items-end pb-2">
                 <ToggleRow
-                  label="My spouse is a disabled person (H15)"
-                  checked={draft.spouseIsDisabled}
-                  onChange={setVal('spouseIsDisabled')}
+                  label="Disabled dependents"
+                  checked={draft.hasDisabledDependents}
+                  onChange={setVal('hasDisabledDependents')}
                 />
               </div>
-            )}
-          </div>
-
-          <SectionLabel><span className="mt-2 block">Children (H16 relief)</span></SectionLabel>
-          <ChildrenEditor
-            children={childrenList}
-            onAdd={onAddChild}
-            onUpdate={onUpdateChild}
-            onDelete={onDeleteChild}
-          />
-          {legacyChildCount > 0 && childrenList.length === 0 && (
-            <p className="text-[10px] text-muted -mt-1.5">
-              This profile still has a legacy child count ({legacyChildCount}) with no per-child records —
-              a flat RM2,000/child estimate is used until you add real records above.
-            </p>
-          )}
-
-          <SectionLabel><span className="mt-2 block">Contact & Correspondence</span></SectionLabel>
-          <div className="grid grid-cols-2 gap-2.5">
-            <Field label="Phone / handphone">
-              <TextInput value={draft.phone} onChange={set('phone')} placeholder="012-345 6789" />
-            </Field>
-            <Field label="Email">
-              <TextInput value={draft.email} onChange={set('email')} placeholder="name@email.com" />
-            </Field>
-          </div>
-          <Field label="Correspondence address">
-            <TextInput value={draft.correspondenceAddress} onChange={set('correspondenceAddress')} placeholder="Street address" />
-          </Field>
-          <div className="grid grid-cols-3 gap-2.5">
-            <Field label="Postcode">
-              <TextInput value={draft.correspondencePostcode} onChange={set('correspondencePostcode')} placeholder="47500" />
-            </Field>
-            <Field label="City">
-              <TextInput value={draft.correspondenceCity} onChange={set('correspondenceCity')} placeholder="Subang Jaya" />
-            </Field>
-            <Field label="State">
-              <SelectInput value={draft.correspondenceState} onChange={set('correspondenceState')}>
-                <option value="" disabled>Select</option>
-                {MALAYSIAN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
-              </SelectInput>
-            </Field>
-          </div>
-
-          <SectionLabel><span className="mt-2 block">Other Particulars</span></SectionLabel>
-          <Field label="Employer's TIN" hint="Auto-filled on your generated Form B from a Form EA upload if left blank here — enter manually to override">
-            <TextInput value={draft.employerTin} onChange={set('employerTin')} placeholder="E 12345678090" />
-          </Field>
-          {showTinSuggestion && (
-            <div className="-mt-2 flex items-center justify-between gap-2 rounded-lg bg-primary-tint/50 px-3 py-2 text-xs text-body-text">
-              <span>
-                Found <span className="font-semibold text-headings">{d3Suggestion.value}</span> on your uploaded Form EA
-                {d3Suggestion.hasMultipleEmployers && ' (you had more than one employer this year — verify this is the right one)'}.
-              </span>
-              <button
-                type="button"
-                onClick={() => setVal('employerTin')(d3Suggestion.value)}
-                className="shrink-0 rounded-md bg-primary px-2.5 py-1 font-semibold text-white hover:bg-primary-hover"
-              >
-                Use this
-              </button>
             </div>
           )}
-          {draft.employerTin && (
-            <ToggleRow
-              label="Tax borne by employer"
-              hint="Your employer pays your income tax on your behalf"
-              checked={draft.taxBorneByEmployer}
-              onChange={setVal('taxBorneByEmployer')}
-            />
+          {!filtering && (
+            <>
+              {isMarried && (draft.assessmentType === 'joint-husband' || draft.assessmentType === 'joint-wife' || draft.assessmentType === 'self-spouse-no-income') && (
+                <Field
+                  label="Spouse's foreign-sourced income (RM)"
+                  hint="H14's RM4,000 spouse relief is disallowed if your spouse (unless disabled) has more than RM4,000 in income from sources OUTSIDE Malaysia — leave blank or 0 if none"
+                >
+                  <TextInput value={draft.spouseForeignIncomeMyr} onChange={set('spouseForeignIncomeMyr')} inputMode="decimal" placeholder="0.00" />
+                </Field>
+              )}
+              {draft.maritalStatus === 'divorced-widowed' && (
+                <Field label="Alimony paid to former wife (RM)" hint="H14 — combined with any spouse relief under the same RM4,000 cap">
+                  <TextInput value={draft.alimonyPaidMyr} onChange={set('alimonyPaidMyr')} inputMode="decimal" placeholder="0.00" />
+                </Field>
+              )}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="flex items-end pb-2">
+                  <ToggleRow
+                    label="I am a disabled person (H4)"
+                    checked={draft.isDisabledSelf}
+                    onChange={setVal('isDisabledSelf')}
+                  />
+                </div>
+                {isMarried && (
+                  <div className="flex items-end pb-2">
+                    <ToggleRow
+                      label="My spouse is a disabled person (H15)"
+                      checked={draft.spouseIsDisabled}
+                      onChange={setVal('spouseIsDisabled')}
+                    />
+                  </div>
+                )}
+              </div>
+
+              <SectionLabel><span className="mt-2 block">Children (H16 relief)</span></SectionLabel>
+              <ChildrenEditor
+                children={childrenList}
+                onAdd={onAddChild}
+                onUpdate={onUpdateChild}
+                onDelete={onDeleteChild}
+              />
+              {legacyChildCount > 0 && childrenList.length === 0 && (
+                <p className="text-[10px] text-muted -mt-1.5">
+                  This profile still has a legacy child count ({legacyChildCount}) with no per-child records —
+                  a flat RM2,000/child estimate is used until you add real records above.
+                </p>
+              )}
+            </>
           )}
-          <ToggleRow
-            label="Carries on e-Commerce"
-            hint="You run an online / e-commerce business"
-            checked={draft.carriesOnEcommerce}
-            onChange={setVal('carriesOnEcommerce')}
-          />
-          {draft.carriesOnEcommerce && (
+
+          {showSection('contact') && <SectionLabel><span className="mt-2 block">Contact & Correspondence</span></SectionLabel>}
+          {(show('phone') || !filtering) && (
+            <div className="grid grid-cols-2 gap-2.5">
+              {show('phone') && (
+                <Field label="Phone / handphone">
+                  <TextInput value={draft.phone} onChange={set('phone')} placeholder="012-345 6789" />
+                </Field>
+              )}
+              {!filtering && (
+                <Field label="Email">
+                  <TextInput value={draft.email} onChange={set('email')} placeholder="name@email.com" />
+                </Field>
+              )}
+            </div>
+          )}
+          {show('correspondenceAddress') && (
+            <Field label="Correspondence address">
+              <TextInput value={draft.correspondenceAddress} onChange={set('correspondenceAddress')} placeholder="Street address" />
+            </Field>
+          )}
+          {(show('correspondencePostcode') || show('correspondenceCity') || show('correspondenceState')) && (
+            <div className="grid grid-cols-3 gap-2.5">
+              {show('correspondencePostcode') && (
+                <Field label="Postcode">
+                  <TextInput value={draft.correspondencePostcode} onChange={set('correspondencePostcode')} placeholder="47500" />
+                </Field>
+              )}
+              {show('correspondenceCity') && (
+                <Field label="City">
+                  <TextInput value={draft.correspondenceCity} onChange={set('correspondenceCity')} placeholder="Subang Jaya" />
+                </Field>
+              )}
+              {show('correspondenceState') && (
+                <Field label="State">
+                  <SelectInput value={draft.correspondenceState} onChange={set('correspondenceState')}>
+                    <option value="" disabled>Select</option>
+                    {MALAYSIAN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </SelectInput>
+                </Field>
+              )}
+            </div>
+          )}
+
+          {(showSection('other') || !filtering) && (
+            <SectionLabel><span className="mt-2 block">Other Particulars</span></SectionLabel>
+          )}
+          {!filtering && (
+            <>
+              <Field label="Employer's TIN" hint="Auto-filled on your generated Form B from a Form EA upload if left blank here — enter manually to override">
+                <TextInput value={draft.employerTin} onChange={set('employerTin')} placeholder="E 12345678090" />
+              </Field>
+              {showTinSuggestion && (
+                <div className="-mt-2 flex items-center justify-between gap-2 rounded-lg bg-primary-tint/50 px-3 py-2 text-xs text-body-text">
+                  <span>
+                    Found <span className="font-semibold text-headings">{d3Suggestion.value}</span> on your uploaded Form EA
+                    {d3Suggestion.hasMultipleEmployers && ' (you had more than one employer this year — verify this is the right one)'}.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setVal('employerTin')(d3Suggestion.value)}
+                    className="shrink-0 rounded-md bg-primary px-2.5 py-1 font-semibold text-white hover:bg-primary-hover"
+                  >
+                    Use this
+                  </button>
+                </div>
+              )}
+              {draft.employerTin && (
+                <ToggleRow
+                  label="Tax borne by employer"
+                  hint="Your employer pays your income tax on your behalf"
+                  checked={draft.taxBorneByEmployer}
+                  onChange={setVal('taxBorneByEmployer')}
+                />
+              )}
+              <ToggleRow
+                label="Foreign financial accounts"
+                hint="You hold account(s) at financial institutions outside Malaysia"
+                checked={draft.hasForeignAccounts}
+                onChange={setVal('hasForeignAccounts')}
+              />
+              <ToggleRow
+                label="Carries on e-Commerce"
+                hint="You run an online / e-commerce business"
+                checked={draft.carriesOnEcommerce}
+                onChange={setVal('carriesOnEcommerce')}
+              />
+            </>
+          )}
+          {draft.carriesOnEcommerce && show('ecommerceModel') && (
             <Field label="e-Commerce business model">
               <SelectInput value={draft.ecommerceModel} onChange={set('ecommerceModel')}>
                 <option value="" disabled>Select</option>
@@ -1067,23 +1240,33 @@ const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, 
               </SelectInput>
             </Field>
           )}
-          <Field label="Method of payment for tax refund">
-            <SelectInput value={draft.refundMethod} onChange={set('refundMethod')}>
-              <option value="bank">Payment via bank account</option>
-              <option value="duitnow">Payment via DuitNow</option>
-            </SelectInput>
-          </Field>
-          {draft.refundMethod === 'bank' && (
+          {filtering && showSection('refund') && (
+            <SectionLabel><span className="mt-2 block">Refund Details</span></SectionLabel>
+          )}
+          {show('refundMethod') && (
+            <Field label="Method of payment for tax refund">
+              <SelectInput value={draft.refundMethod} onChange={set('refundMethod')}>
+                <option value="" disabled>Select</option>
+                <option value="bank">Payment via bank account</option>
+                <option value="duitnow">Payment via DuitNow</option>
+              </SelectInput>
+            </Field>
+          )}
+          {draft.refundMethod === 'bank' && (show('bankName') || show('bankAccountNo')) && (
             <div className="grid grid-cols-2 gap-2.5">
-              <Field label="Bank name">
-                <TextInput value={draft.bankName} onChange={set('bankName')} placeholder="e.g. Maybank" />
-              </Field>
-              <Field label="Account no.">
-                <TextInput value={draft.bankAccountNo} onChange={set('bankAccountNo')} placeholder="1234567890" />
-              </Field>
+              {show('bankName') && (
+                <Field label="Bank name">
+                  <TextInput value={draft.bankName} onChange={set('bankName')} placeholder="e.g. Maybank" />
+                </Field>
+              )}
+              {show('bankAccountNo') && (
+                <Field label="Account no.">
+                  <TextInput value={draft.bankAccountNo} onChange={set('bankAccountNo')} placeholder="1234567890" />
+                </Field>
+              )}
             </div>
           )}
-          {draft.refundMethod === 'duitnow' && (
+          {!filtering && draft.refundMethod === 'duitnow' && (
             <Field label="DuitNow identification type (self)">
               <SelectInput value={draft.duitnowIdType} onChange={set('duitnowIdType')}>
                 <option value="ic">Identification card</option>
@@ -1091,13 +1274,15 @@ const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, 
               </SelectInput>
             </Field>
           )}
-          <ToggleRow
-            label="Asset disposal under RPGT 1976"
-            hint="You disposed of an asset under the Real Property Gains Tax Act this year"
-            checked={draft.rpgtDisposal}
-            onChange={setVal('rpgtDisposal')}
-          />
-          {draft.rpgtDisposal && (
+          {!filtering && (
+            <ToggleRow
+              label="Asset disposal under RPGT 1976"
+              hint="You disposed of an asset under the Real Property Gains Tax Act this year"
+              checked={draft.rpgtDisposal}
+              onChange={setVal('rpgtDisposal')}
+            />
+          )}
+          {!filtering && draft.rpgtDisposal && (
             <ToggleRow
               label="Disposal declared to LHDNM"
               hint="You've already declared this disposal to LHDN"
@@ -1106,6 +1291,20 @@ const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, 
             />
           )}
 
+          {/* Gaps-only mode stops here: everything below is optional context,
+              not something Form B blocks on. An escape hatch drops the filter
+              so the user can still reach the full form without leaving. */}
+          {filtering && (
+            <button
+              onClick={() => setShowAll(true)}
+              className="mt-1 self-start text-[11px] font-semibold text-primary hover:underline"
+            >
+              Show all profile fields
+            </button>
+          )}
+
+          {!filtering && (
+          <>
           <SectionLabel><span className="mt-2 block">Record Keeping</span></SectionLabel>
           <div className="divide-y divide-slate-50">
             <ToggleRow
@@ -1152,6 +1351,8 @@ const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, 
               onChange={setVal('hasSspnEvOther')}
             />
           </div>
+          </>
+          )}
         </div>
 
         <div className="shrink-0 flex gap-2 px-5 py-4 border-t border-slate-100">
@@ -3009,11 +3210,39 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
   };
   const [activeIndex, setActiveIndex] = useState(() => resolveActiveIndex(initialEntities, activeEntityId));
   const [previewIndex, setPreviewIndex] = useState(null);
-  const [showPersonalPanel, setShowPersonalPanel] = useState(false);
+  // /manageaccount?editProfile=gaps deep-links here from the `profile_incomplete`
+  // AI insight ("Edit your profile"). It opens the SAME Edit Profile panel the
+  // summary card's "Edit profile" button opens — no special-cased UI — but in
+  // gaps-only mode, so the user sees just the fields Form B is missing.
+  // ?editProfile=1 opens the same panel with the full form.
+  const editProfileParam = new URLSearchParams(window.location.search).get('editProfile');
+  const [showPersonalPanel, setShowPersonalPanel] = useState(
+    () => editProfileParam === '1' || editProfileParam === 'gaps'
+  );
+  // Latched at mount so dismissing and reopening the panel from the summary
+  // card gives the normal full form, not the filtered one.
+  const [personalPanelGapsOnly, setPersonalPanelGapsOnly] = useState(
+    () => editProfileParam === 'gaps'
+  );
   const [newEntityDraft, setNewEntityDraft] = useState(null);
- const [searchParams] = useSearchParams();
+const [searchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab');
   const [tab, setTab] = useState(requestedTab === 'forms' ? 'forms' : 'entities');
+
+  // When the user opens the Generate Forms tab, kick a fresh insight-engine
+  // run for the active entity so any "Form B incomplete" card reflects the
+  // current document state at exactly the moment they're generating the form.
+  // Fire-and-forget (202); the refreshed feed lands on the next inbox fetch.
+  const activeEntityForForms = entities[activeIndex]?.id ?? activeEntityId ?? null;
+
+  React.useEffect(() => {
+    if (tab !== 'forms') return;
+    const userId = localStorage.getItem('userId');
+    if (!userId) return;
+    runInsightEngine(userId, activeEntityForForms).catch(() => {
+      // Non-fatal: generating the form must never depend on insight refresh.
+    });
+  }, [tab, activeEntityForForms]);
   // Add these two states right below them to track network status:
   const [error, setError] = useState(null);
 
@@ -3164,6 +3393,16 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
     if (success) {
       setPersonalProfile(updatedData);
       setShowPersonalPanel(false);
+      // Personal Information feeds Form B's identity/contact/refund lines, so
+      // completing it is what resolves the `profile_incomplete` insight. Kick a
+      // fresh engine run (fire-and-forget) so the card clears now instead of
+      // lingering until the next document upload.
+      const userId = localStorage.getItem('userId');
+      if (userId) {
+        runInsightEngine(userId, activeEntityForForms).catch(() => {
+          // Non-fatal: saving the profile must never depend on insight refresh.
+        });
+      }
     } else {
       alert('Something went wrong saving your changes. Please try again.');
     }
@@ -3247,7 +3486,8 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
       {showPersonalPanel && (
         <PersonalProfilePanel
           profile={personalProfile}
-          onClose={() => setShowPersonalPanel(false)}
+          gapsOnly={personalPanelGapsOnly}
+          onClose={() => { setShowPersonalPanel(false); setPersonalPanelGapsOnly(false); }}
           onSave={handleSavePersonal}
           children={children}
           onAddChild={handleAddChild}

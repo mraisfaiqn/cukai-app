@@ -953,6 +953,13 @@ export default function Overview() {
       setLiveTotals(totals);
       const docCount = cy?.documentCount ?? 0;
       const pendingReview = cy?.pendingReviewCount ?? 0;
+      // The actual items behind pendingReview — some are real documents,
+      // some are account-level reconciliation notes (CP500, Breastfeeding,
+      // Departure Levy, One-Time Relief) or even a profile-setting issue
+      // (Joint Assessment) with no document at all. Previously only the
+      // bare count was ever used; the banner had no way to show WHAT was
+      // actually pending or let the user act on it directly.
+      const pendingItems = cy?.mixedPendingReview ?? [];
       const daysLeft = daysToFormBDeadline();
 
    
@@ -1131,7 +1138,7 @@ export default function Overview() {
           ? {
               title: 'Action Required',
               message: `${pendingReview} of ${docCount} document${docCount === 1 ? '' : 's'} for YA ${assessmentYear} need${pendingReview === 1 ? 's' : ''} your review before filing.`,
-              actionLabel: 'Review',
+              items: pendingItems,
             }
           : null
       );
@@ -1176,14 +1183,28 @@ export default function Overview() {
           onDeadlineClick={() => navigate(FORMS_TAB_ROUTE)}
         />
       </div>
-      {/* ── Action banner reflects pending-review documents in the Upload tab;
-            hidden entirely once nothing needs the user's attention ── */}
+
+      {/* ── Action banner: now expands inline to show the ACTUAL pending
+            items (not just a count) — some are real documents, some are
+            account-level reconciliation notes or a profile-setting issue
+            with no document at all, so each item routes to the right
+            place rather than one generic "Review" destination. ── */}
       {liveAlert && (
         <ActionBanner
           title={liveAlert.title}
           message={liveAlert.message}
-          actionLabel={liveAlert.actionLabel}
-          onAction={() => navigate(`${UPLOAD_TAB_ROUTE}&filter=needs_review`)}
+          items={liveAlert.items}
+          onOpenDocument={(docId) => navigate(`${UPLOAD_TAB_ROUTE}&filter=needs_review&docId=${docId}`)}
+          // No &filter=needs_review here — this button is for account-level
+          // notes with NO document at all (CP500, Breastfeeding, Departure
+          // Levy, One-Time Relief). Applying the document-level filter would
+          // show OTHER, unrelated needs-review documents, misleading the
+          // user into thinking those are what this specific note is about.
+          // The plain upload tab (add a new document to resolve this) is
+          // the correct destination — onOpenDocument (above) already
+          // handles the genuinely document-tied case with a direct deep link.
+          onGoToUpload={() => navigate(UPLOAD_TAB_ROUTE)}
+          onGoToProfile={() => navigate('/manageaccount')}
           compact
         />
       )}
