@@ -92,6 +92,23 @@ export const getAllEntities = async (personId) => {
 };
 
 /**
+ * Fetch the canonical document category taxonomy, grouped by bucket.
+ * This is the SINGLE SOURCE the reclassify dropdown (CukaiAccount.jsx)
+ * builds itself from — replacing the old hand-copied category arrays that
+ * drifted out of sync with the backend across several taxonomy refactors
+ * (the CP500 split, the H6/H7/H8 granularity split, and — most concretely —
+ * Bank Statement never being added as a selectable option at all, which
+ * caused a confirmed bug where the reclassify dropdown showed the wrong
+ * category for a bank statement document). Static taxonomy data, identical
+ * for every user — no personId/auth needed.
+ * Returns { groups: [{ bucket, groupLabel, categories: [{ value, label, status }] }] }.
+ */
+export const getCategories = async () => {
+  const { data } = await api.get('/api/categories');
+  return data;
+};
+
+/**
  * Create a new entity under a person.
  * `payload` should use camelCase keys matching the backend's expected shape.
  * Returns the newly created Entity record.
@@ -257,6 +274,22 @@ export const unarchiveDocument = async (docId, userId = null, entityId = null) =
   if (userId)   params.user_id   = userId;
   if (entityId) params.entity_id = entityId;
   const { data } = await api.patch(`/api/documents/${docId}/unarchive`, {}, { params });
+  return data;
+};
+
+/**
+ * Toggle a bank statement's review flag — this is what lets a bank
+ * statement actually resolve out of "needs review" once the user has
+ * looked at its unmatched lines and confirmed there's nothing missing.
+ * Only valid for documents whose category is a bank statement (422
+ * otherwise). `reviewed` is a toggle, not one-directional — pass false to
+ * re-open review later if needed.
+ */
+export const markDocumentReviewed = async (docId, reviewed = true, userId = null, entityId = null) => {
+  const params = {};
+  if (userId)   params.user_id   = userId;
+  if (entityId) params.entity_id = entityId;
+  const { data } = await api.patch(`/api/documents/${docId}/mark-reviewed`, { reviewed }, { params });
   return data;
 };
 

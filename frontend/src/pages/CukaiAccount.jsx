@@ -3,128 +3,68 @@ import * as API from '../services/api';
 // ─── Design tokens (matches ManageAccount + UserNavigation) ───────────────────
 // Design tokens: use text-primary/bg-primary (#0D9488), text-headings, text-muted, border-border — see design-system.md §4
 
-// ─── Backend category taxonomy (mirrors pipeline.py exactly) ─────────────────
-const Q1_CATEGORIES = [
-  'Q1 — Sales & Service Revenue',
-  'Q1 — Business Bank Interest',
-  'Q1 — Capital Gains (s.4aa)',
-  'Q1 — SST-02 Sales Tax Return',
-  'Q1 — Financial Statements (P&L)',
-  'Q1 — Financial Statements (BS)',
-  'Q1 — e-Invoice / LHDN Validated',
-  'Q1 — Filed Form B (Prior Year)',
-];
-const Q2_CATEGORIES = [
-  'Q2 — Employment Income (s.4b)',
-  'Q2 — Passive Rental Income (s.4d)',
-  'Q2 — Royalty Income (s.4d)',
-  'Q2 — Dividend Income (s.4c)',
-  'Q2 — Investment Interest (s.4c)',
-  'Q2 — Pension & Annuity (s.4e)',
-  'Q2 — Casual & Other Income (s.4f)',
-  'Q2 — Foreign-Source Income (FSI)',
-];
-const Q3_CATEGORIES = [
-  'Q3 — Cost of Goods Sold',
-  'Q3 — Payroll & Statutory Contributions',
-  'Q3 — Business Premises Rent',
-  'Q3 — Business Utilities',
-  'Q3 — Marketing & Advertising',
-  'Q3 — Professional & Legal Fees',
-  'Q3 — Transport & Logistics',
-  'Q3 — Office & Admin Supplies',
-  'Q3 — Business Insurance',
-  'Q3 — Staff Welfare & Benefits',
-  'Q3 — Business Loan Interest',
-  'Q3 — Revenue Repairs & Maintenance',
-  'Q3 — CP58 Agent Commission',
-  'Q3 — CP500 / Tax Installment',
-  'Q3 — Client Entertainment (50% cap)',
-  'Q3 — Client & Corporate Gifts',
-  'Q3 — Mixed-Use Vehicle Expenses',
-  'Q3 — Capital Assets & Equipment',
-  'Q3 — Capital Renovation & Fit-Out',
-  'Q3 — Hire Purchase & Leased Assets',
-];
-const Q4_RELIEF_CATEGORIES = [
-  'Q4 — Life Insurance & Takaful Relief',
-  'Q4 — EPF Personal Contribution',
-  'Q4 — Parent Medical Care',
-  'Q4 — Self/Spouse/Child Medical',
-  'Q4 — Lifestyle Relief',
-  'Q4 — Education Relief',
-  'Q4 — Upskilling / Self-Enhancement Course',
-  'Q4 — Childcare Fees',
-  'Q4 — SSPN Net Deposit',
-  'Q4 — Medical Equipment Relief',
-  'Q4 — Private Retirement Scheme (PRS)',
-  'Q4 — SOCSO Personal Contribution',
-  'Q4 — Domestic Tourism Relief',
-  'Q4 — EV Charging Equipment',
-  'Q4 — Education & Medical Insurance',
-  'Q4 — Sports & Fitness Relief',
-  'Q4 — Breastfeeding Equipment',
-  'Q4 — Zakat',
-];
-// Donations (Part G) — kept SEPARATE from Q4_RELIEF_CATEGORIES (Phase 5, 14
-// Jul 2026 fix): a donation is not a personal relief (status 'relief') at
-// all, it's deducted from aggregate income before chargeable income is
-// derived — folding these into the relief list would have misclassified
-// every reclassify-to-donation action with the wrong status. Split into the
-// 10 real G-line categories since they're subject to different caps: G1/
-// G2a-d share a combined 10%-of-B11 pool; G4/G6 each have their own
-// RM20,000 cap; G3/G5/G7 are uncapped. See pipeline.py / main.py.
-const Q4_DONATION_CATEGORIES = [
-  'Q4 — Donation: Government/Local Authority',
-  'Q4 — Donation: Approved Institution',
-  'Q4 — Donation: Approved Sports Activity',
-  'Q4 — Donation: National Interest Project',
-  'Q4 — Donation: Wakaf/Endowment',
-  'Q4 — Donation: Artefacts to Government',
-  'Q4 — Donation: Library Facilities',
-  'Q4 — Donation: Disabled Facilities',
-  'Q4 — Donation: Medical Equipment',
-  'Q4 — Donation: Paintings to Art Gallery',
-];
-const Q4_NON_DED_CATEGORIES = [
-  'Q4 — Personal Living Expenses',
-  'Q4 — Personal Travel & Leisure',
-  'Q4 — Personal Dining & Entertainment',
-  'Q4 — Personal Shopping',
-  'Q4 — Personal Medical Expenses',
-  'Q4 — Family & Childcare Expenses',
-];
+// ─── Backend category taxonomy ────────────────────────────────────────────
+// Previously hand-copied here as static arrays (Q1_CATEGORIES,
+// RECLASSIFY_GROUPS, etc.) — that copy drifted out of sync with the
+// backend across several taxonomy refactors (the CP500 split, the H6/H7/H8
+// granularity split, and concretely, Bank Statement never being added as a
+// selectable option at all, which caused a confirmed bug where the
+// reclassify dropdown showed the wrong category for a bank statement
+// document). Removed entirely — every component that needs the category
+// list now receives it as a `categoryGroups` prop, fetched ONCE from
+// GET /api/categories (see the CukaiAccount component below and api.js),
+// so there is only one place the taxonomy is defined, ever.
+//
+// Two small lookup maps (category value -> bucket, category value ->
+// backend status) are derived from that SAME fetched data and cached here
+// at module level — this is genuinely static, identical-for-every-user
+// reference data (not per-user state), so a plain module-level cache is a
+// safe, simple way to make it available to the handful of standalone
+// helper functions below (badgeStatusFor, the category filter) without
+// threading a new prop through every intermediate component. Populated
+// once by CukaiAccount's initial fetch effect; every reader has a sensible
+// fallback for the brief window before that fetch completes.
+let _categoryBucketCache = {};
+let _categoryStatusCache = {};
+let _categoryRoleCache = {};
+function setCategoryLookupCache(categoryGroups) {
+  const bucketMap = {};
+  const statusMap = {};
+  const roleMap = {};
+  for (const group of categoryGroups || []) {
+    for (const c of group.categories) {
+      bucketMap[c.value] = group.bucket;
+      statusMap[c.value] = c.status;
+      roleMap[c.value] = c.role;
+    }
+  }
+  _categoryBucketCache = bucketMap;
+  _categoryStatusCache = statusMap;
+  _categoryRoleCache = roleMap;
+}
+function getCategoryBucket(category) { return _categoryBucketCache[category] || null; }
+function getCategoryStatus(category) { return _categoryStatusCache[category] || null; }
+function getCategoryRole(category) { return _categoryRoleCache[category] || null; }
 
-// Summary / reference documents that describe or reconcile the return rather
-// than contributing a line-item amount to any quadrant total (P&L, balance
-// sheet, prior Form B, CP500 installment tracking). Their values are unchanged
-// — this only regroups them for display so they don't read as "Business Income".
-const REFERENCE_CATEGORIES = [
-  'Q1 — Financial Statements (P&L)',
-  'Q1 — Financial Statements (BS)',
-  'Q1 — Filed Form B (Prior Year)',
-  'Q3 — CP500 / Tax Installment',
-];
-const Q1_INCOME_CATEGORIES = Q1_CATEGORIES.filter(c => !REFERENCE_CATEGORIES.includes(c));
-const Q3_EXPENSE_CATEGORIES = Q3_CATEGORIES.filter(c => !REFERENCE_CATEGORIES.includes(c));
-
-// Part J (127(3)(b) incentive claims) was removed by product decision (14
-// Jul 2026) — out of scope going forward. The two categories that used to
-// live here ("J1 — Secretarial & Tax Filing Fee", "J1 — Franchise Fee
-// (Pre-Commencement)") no longer exist on the backend; a company-secretary/
-// tax-agent invoice now reclassifies to the ordinary
-// "Q3 — Professional & Legal Fees" category instead. See form-b-roadmap.md.
-
-// For the reclassify modal — grouped for the dropdown (friendly labels, no Q-prefix)
-const RECLASSIFY_GROUPS = [
-  { label: 'Business Income',                 cats: Q1_INCOME_CATEGORIES },
-  { label: 'Personal Income',                 cats: Q2_CATEGORIES },
-  { label: 'Business Expense',                cats: Q3_EXPENSE_CATEGORIES },
-  { label: 'Personal Relief',                 cats: Q4_RELIEF_CATEGORIES },
-  { label: 'Donations (Part G)',              cats: Q4_DONATION_CATEGORIES },
-  { label: 'Personal Expense (Non-deductible)', cats: Q4_NON_DED_CATEGORIES },
-  { label: 'Reference & Reconciliation',      cats: REFERENCE_CATEGORIES },
-];
+// Whether amount/date should be editable for a given document ROLE — used
+// by ReclassifyModal, recomputed against whichever category is CURRENTLY
+// SELECTED in the dropdown, not the document's original (possibly wrong)
+// classification. Bug found in testing: a document originally
+// misclassified as "Mixed / Pending Review" (role 'transaction', amount
+// editable/required) that a user then reclassifies to "Bank Statement —
+// Transaction Ledger" (role 'ledger_source', which is many lines, never a
+// single amount) still demanded an amount before allowing the
+// reclassification to be confirmed — because editability was frozen to the
+// document's ORIGINAL role at the moment the modal opened, never
+// recalculated as the user changed the category dropdown.
+function editabilityForRole(role) {
+  if (role === 'ledger_source')      return { amount: false, date: false };
+  if (role === 'reference_document') return { amount: false, date: true };
+  // 'registry_managed' (capital assets, CP500, H11, etc.), 'transaction',
+  // and any unknown/null role (older docs, or still-loading taxonomy) all
+  // behave like an ordinary single-amount/single-date document.
+  return { amount: true, date: true };
+}
 
 // Apportioned Q3 categories are only PARTIALLY deductible. Each carries a
 // deductible % that the backend uses to sum only that portion into the
@@ -167,6 +107,13 @@ const STATUS_META = {
   income:         { label: 'Income',          color: '#0369A1', bg: '#EFF6FF', dot: '#0369A1' },
   deductible:     { label: 'Deductible',      color: '#0D9488', bg: '#ECFDF5', dot: '#0D9488' },
   mixed:          { label: 'Needs Review',    color: '#B45309', bg: '#FFFBEB', dot: '#F59E0B' },
+  category_deprecated: { label: 'Category Removed', color: '#9F1239', bg: '#FFF1F2', dot: '#E11D48' },
+  // A "mixed" category's status is the PERMANENT statutory nature of that
+  // expense type (only ever partially deductible) — not a workflow state.
+  // Once a human has confirmed the split, the document is done and should
+  // never keep showing the same amber "Needs Review" treatment forever,
+  // as if nothing happened. See badgeStatusFor's rationale below.
+  deductible_partial: { label: 'Partially Deductible', color: '#0D9488', bg: '#ECFDF5', dot: '#0D9488' },
   relief:         { label: 'Relief',          color: '#7C3AED', bg: '#F5F3FF', dot: '#7C3AED' },
   donation:       { label: 'Donation',        color: '#0F6E56', bg: '#E1F5EE', dot: '#0F6E56' },
   non_deductible: { label: 'Personal',        color: '#DC2626', bg: '#FEF2F2', dot: '#DC2626' },
@@ -259,6 +206,17 @@ function mapApiDoc(apiDoc) {
     category:     apiDoc.category || 'Unclassified',
     documentRole,
     aggregationState,
+    // Bug fix (found in review): computed live per-document by the backend
+    // (_serialize_doc) — never year-scoped, so no risk of the same
+    // scoping mismatch already found twice (Part G/H, the Overview
+    // banner). categoryDeprecated means this document's stored category no
+    // longer exists in the taxonomy at all; registryNote explains where a
+    // registry-managed document's REAL figure actually lives (e.g. "feeds
+    // your Capital Allowance schedule"), since it's correctly excluded from
+    // this document's own totals and would otherwise just look like it
+    // vanished with no explanation.
+    categoryDeprecated: !!apiDoc.categoryDeprecated,
+    registryNote: apiDoc.registryNote || null,
     deductiblePct: ed.deductible_pct ?? null,   // apportioned Q3 categories only
     llmAmountCaptured,
     llmDateCaptured,
@@ -270,11 +228,16 @@ function mapApiDoc(apiDoc) {
     // longer forces review: an apportioned category the user has confirmed is
     // 'resolved' and must leave the queue. Only fall back to the mixed-status
     // signal for legacy docs that predate aggregation_state.
-    needsReview:  aggregationState
-      ? (aggregationState === 'needs_apportionment' || aggregationState === 'needs_user_confirmation')
-      : (apiDoc.taxStatus === 'mixed'),
+    // categoryDeprecated ALWAYS forces review regardless of the stored
+    // aggregationState — a document's stored state can predate its category
+    // being removed from the taxonomy, so this live-computed fact overrides it.
+    needsReview:  apiDoc.categoryDeprecated
+      ? true
+      : (aggregationState
+          ? (aggregationState === 'needs_apportionment' || aggregationState === 'needs_user_confirmation')
+          : (apiDoc.taxStatus === 'mixed')),
     manual:       !!ed.manual_entry,
-    accent:       STATUS_META[badgeStatusFor(apiDoc.category, apiDoc.taxStatus, apiDoc.status)]?.color || '#64748B',
+    accent:       STATUS_META[badgeStatusFor(apiDoc.category, apiDoc.taxStatus, apiDoc.status, aggregationState, ed.deductible_pct ?? null, apiDoc.categoryDeprecated)]?.color || '#64748B',
     quadrant:     ed.quadrant,
     ita_section:  ed.ita_section,
     vendor:       ed.vendor,
@@ -401,20 +364,41 @@ function UploadProgressEntry({ entry }) {
 // Reference / reconciliation documents (P&L, balance sheet, prior Form B,
 // CP500) don't contribute to any total, so they shouldn't wear an Income /
 // Not-Applicable badge — they get their own neutral "Reference" tag instead.
-function badgeStatusFor(category, taxStatus, pipelineStatus) {
-  if (category && REFERENCE_CATEGORIES.includes(category)) return 'reference';
+function badgeStatusFor(category, taxStatus, pipelineStatus, aggregationState, deductiblePct, categoryDeprecated) {
+  // Takes priority over everything else — a document whose category no
+  // longer exists needs reclassifying regardless of whatever status/
+  // aggregationState happen to still be stored from before it was removed.
+  if (categoryDeprecated) return 'category_deprecated';
+  if (category && getCategoryBucket(category) === 'REFERENCE') return 'reference';
+  // Bug fix: "mixed" describes a CATEGORY's permanent statutory nature
+  // (only ever partially deductible under law) — it is NOT a workflow
+  // state. Previously this badge showed "Needs Review" for a "mixed"
+  // document FOREVER, even after a human confirmed its apportionment
+  // split and the backend correctly resolved it (aggregationState ===
+  // "resolved") — the document had genuinely left the review queue, but
+  // the badge kept implying it hadn't, since it only ever looked at the
+  // category's static taxStatus, never the actual resolution state.
+  if (taxStatus === 'mixed' && aggregationState === 'resolved' && deductiblePct != null) {
+    return 'deductible_partial';
+  }
   return taxStatus || pipelineStatus;
 }
 
-function StatusBadge({ status }) {
+function StatusBadge({ status, deductiblePct }) {
   // For completed docs show the tax_status; for in-flight show pipeline status
   const key = status || 'mixed';
   const m = STATUS_META[key] || STATUS_META.mixed;
+  // Show the actual confirmed percentage ("50% Deductible") rather than the
+  // generic fallback label, whenever we have it — more informative than a
+  // one-size-fits-all "Partially Deductible" for every apportioned category.
+  const label = (key === 'deductible_partial' && deductiblePct != null)
+    ? `${deductiblePct}% Deductible`
+    : m.label;
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider whitespace-nowrap"
       style={{ background: m.bg, color: m.color }}>
       <span className="h-1.5 w-1.5 rounded-full" style={{ background: m.dot }} />
-      {m.label}
+      {label}
     </span>
   );
 }
@@ -519,7 +503,7 @@ function FilePreviewRenderer({ doc, fileUrl }) {
 }
 
 // ─── Document Preview slide-over ──────────────────────────────────────────────
-function DocumentPreview({ doc, onClose, onReclassify, onArchive, onUnarchive, onDelete }) {
+function DocumentPreview({ doc, onClose, onReclassify, onArchive, onUnarchive, onMarkReviewed, onDelete }) {
   const [visible, setVisible] = useState(false);
   const [fileUrl, setFileUrl] = useState(null);
 
@@ -547,7 +531,17 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onUnarchive, o
 
   const handleClose = () => { setVisible(false); setTimeout(onClose, 300); };
 
-  const isMixed = doc.taxStatus === 'mixed' || doc.status === 'mixed';
+  // Bug fix: "mixed" taxStatus is the PERMANENT statutory nature of an
+  // apportioned category (e.g. Client & Corporate Gifts is only ever
+  // partially deductible) — not a workflow state, so it never stops being
+  // "mixed" even after a human confirms the split and the document is
+  // fully resolved. Using the raw taxStatus here meant the action button
+  // stayed stuck on "Review & Classify" (amber) forever, even for an
+  // already-resolved document — never switching to "Re-classify" the way
+  // an ordinary reclassified document does. doc.needsReview (driven by
+  // aggregationState, already fixed for the Archive button below) is the
+  // actual "does this still need the user's input" signal.
+  const isMixed = doc.needsReview;
   const isPipeline = doc.status === 'pending' || doc.status === 'processing';
 
   return (
@@ -600,7 +594,7 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onUnarchive, o
             <span className="text-xs text-muted">Classification</span>
             <div className="flex items-center gap-2">
               <ConfidenceBadge value={doc.confidence} />
-              <StatusBadge status={badgeStatusFor(doc.category, doc.taxStatus, doc.status)} />
+              <StatusBadge status={badgeStatusFor(doc.category, doc.taxStatus, doc.status, doc.aggregationState, doc.deductiblePct, doc.categoryDeprecated)} deductiblePct={doc.deductiblePct} />
             </div>
           </div>
 
@@ -650,6 +644,18 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onUnarchive, o
                 Re-classify
               </button>
             )}
+            {/* Bank statements never resolve out of "needs review" on their
+                own — their lines are matched once, at classification time,
+                against whatever else existed then. This is the explicit
+                human action that actually clears it (see PATCH
+                /api/documents/{id}/mark-reviewed) — without it, a bank
+                statement sits in the review queue forever with no way out. */}
+            {doc.documentRole === 'ledger_source' && !isPipeline && doc.status !== 'archived' && doc.needsReview && (
+              <button onClick={() => { handleClose(); onMarkReviewed(doc.id, true); }}
+                className="flex-1 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-white hover:bg-primary-hover transition-colors duration-150">
+                Mark as Reviewed
+              </button>
+            )}
             {/* Archive is unavailable while a document still needs review —
                 use doc.needsReview (the aggregation-gate signal), not the
                 narrower isMixed/taxStatus check, so this always matches the
@@ -692,29 +698,46 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onUnarchive, o
 // ─── Reclassify Modal ─────────────────────────────────────────────────────────
 // Shows AI reasoning (note, reason, question, source) with a category picker.
 // Handles both "mixed" (undecided) and "re-classify" (override confirmed) modes.
-function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
-  const isMixed = doc.taxStatus === 'mixed' || doc.status === 'mixed';
+function ReclassifyModal({ doc, categoryGroups, onConfirm, onReset, onCancel }) {
+  // Same fix as DocumentPreview above: "mixed" taxStatus is permanent for
+  // an apportioned category, not a workflow state — use needsReview (the
+  // real resolution signal) so the modal's heading/AI-reasoning block
+  // correctly switches to "already classified" copy once a document is
+  // actually resolved, instead of perpetually showing "AI couldn't decide"
+  // for a document that's been confirmed and left the review queue.
+  const isMixed = doc.needsReview;
   const amountMissing = !doc.amount || doc.amount === '—';
   const dateMissing = !doc.dateDisplay || doc.dateDisplay === '—';
 
+  const [category, setCategory] = useState(
+    doc.category && doc.category !== 'Unclassified' ? doc.category : 'Mixed / Pending Review'
+  );
+
   // Amount/date are only meaningful for transaction-like documents. A balance
-  // sheet / P&L / prior Form B (summary_statement) or a bank statement
-  // (ledger_source) is an aggregate, not one dated line item — the backend
-  // rejects amount/date edits on those, so we hide the inputs here too. When
-  // the role is unknown (older or manual docs) we default to editable.
-  // Amount and date editability differ by document role.
-  //   transaction / schedule_source → both amount and date are editable.
-  //   summary_statement (P&L, balance sheet, prior Form B — the REFERENCE_ONLY
-  //     categories) → carries no single transaction amount, but DOES have a
-  //     meaningful document date (e.g. the year a prior Form B relates to), so
-  //     the date is editable while the amount stays locked.
+  // sheet / P&L / prior Form B (reference_document) or a bank statement
+  // (ledger_source) is an aggregate, not one dated line item.
+  //
+  // Bug fix (found in testing): this now derives from whichever category is
+  // CURRENTLY SELECTED in the dropdown (getCategoryRole(category), from the
+  // taxonomy fetched via GET /api/categories), not the document's ORIGINAL
+  // role. Previously, a document misclassified as "Mixed / Pending Review"
+  // (role 'transaction') that a user reclassified to "Bank Statement —
+  // Transaction Ledger" (role 'ledger_source' — many lines, never a single
+  // amount) still demanded an amount before allowing confirmation, because
+  // editability was frozen to the document's original role and never
+  // recalculated as the category selection changed. Falls back to the
+  // document's own stored role only while the taxonomy is still loading
+  // (getCategoryRole returns null) or for the document's OWN unedited
+  // category before any selection changes it.
+  //   transaction / registry_managed → both amount and date are editable.
+  //   reference_document (P&L, balance sheet, prior Form B, etc.) → carries
+  //     no single transaction amount, but DOES have a meaningful document
+  //     date, so the date is editable while the amount stays locked.
   //   ledger_source (bank statement) → neither; it's many lines, not one.
-  //   unknown role (older/manual docs) → editable for both, as before.
-  const amountRoleEditable = !doc.documentRole
-    || doc.documentRole === 'transaction'
-    || doc.documentRole === 'schedule_source';
-  const dateRoleEditable = amountRoleEditable
-    || doc.documentRole === 'summary_statement';
+  //   unknown role (older/manual docs, or taxonomy still loading) → editable
+  //     for both, as before.
+  const selectedCategoryRole = getCategoryRole(category) || doc.documentRole || null;
+  const { amount: amountRoleEditable, date: dateRoleEditable } = editabilityForRole(selectedCategoryRole);
 
   // Only the data points the LLM COULDN'T capture are editable — a field the AI
   // read correctly stays locked so the user can't accidentally corrupt it. The
@@ -725,9 +748,6 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
   const canEditCategory = override ? true : !doc.llmCategoryDecided;
   const nothingEditable = !canEditAmount && !canEditDate && !canEditCategory;
 
-  const [category, setCategory] = useState(
-    doc.category && doc.category !== 'Unclassified' ? doc.category : 'Mixed / Pending Review'
-  );
   // Prefill with current values so a mistaken first entry can be re-edited,
   // instead of the fields disappearing once any value exists.
   const [amountInput, setAmountInput] = useState(doc.amountNumber != null ? String(doc.amountNumber) : '');
@@ -746,23 +766,15 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
     }
   };
 
-  // Derive status from selected category. Apportioned Q3 categories (client
-  // entertainment, gifts, mixed-use vehicle, hire purchase) resolve to
-  // 'deductible' — they ARE business deductions, just partial ones; the
-  // deductible portion is captured separately via the % field below, so they
-  // no longer sit permanently in 'mixed'/Needs-Review.
-  const deriveStatus = (cat) => {
-    if (Q1_CATEGORIES.includes(cat) || Q2_CATEGORIES.includes(cat)) return 'income';
-    if (['Q3 — Capital Assets & Equipment', 'Q3 — Capital Renovation & Fit-Out'].includes(cat)) return 'capital';
-    if (cat === 'Q3 — CP500 / Tax Installment') return 'not_applicable';
-    if (Q4_DONATION_CATEGORIES.includes(cat)) return 'donation';
-    if (Q4_RELIEF_CATEGORIES.includes(cat)) return 'relief';
-    if (Q4_NON_DED_CATEGORIES.includes(cat)) return 'non_deductible';
-    if (Q3_CATEGORIES.includes(cat)) return 'deductible'; // incl. apportioned — % handled via deductible_pct
-    return 'mixed';
-  };
-
-  const derivedStatus = deriveStatus(category);
+  // Derive status from selected category — now a direct lookup of the
+  // backend's OWN persisted-status value for this category (via
+  // GET /api/categories' `status` field, cached by getCategoryStatus),
+  // never independently re-derived or guessed. This matters because
+  // derivedStatus is sent straight to PATCH /api/documents/{id}/reclassify
+  // as the actual `status` value (see handleConfirm below) — it must match
+  // exactly what auto-classification would have produced for the same
+  // category, not just approximate it.
+  const derivedStatus = getCategoryStatus(category) || 'mixed';
 
   // Apportionment: when the selected category is only partially deductible,
   // collect the deductible %. Prefill from the doc's stored value, else the
@@ -887,7 +899,16 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
         </div>
 
         {/* AI Reasoning block */}
-        {isMixed ? (
+        {doc.categoryDeprecated ? (
+          <div className="rounded-lg border border-critical/30 bg-critical-bg px-3 py-2.5 mb-4">
+            <p className="text-xs font-semibold text-critical mb-1">This category no longer exists</p>
+            <p className="text-xs text-critical leading-relaxed">
+              This document was classified as "{categoryLabel(doc.category)}", which is no longer part
+              of the current category list — it may have been renamed or split during a taxonomy update.
+              Please select a new category below.
+            </p>
+          </div>
+        ) : isMixed ? (
           <>
             {/* Why the AI couldn't decide */}
             <div className="rounded-lg border border-warning/30 bg-warning-bg px-3 py-2.5 mb-3">
@@ -919,6 +940,18 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
                 Currently: <span className="font-semibold text-headings">{STATUS_META[doc.taxStatus]?.label || doc.taxStatus}</span> · <span className="font-semibold text-headings">{categoryLabel(doc.category)}</span>
               </p>
             </div>
+            {/* Registry-managed documents (capital assets, CP500, breastfeeding,
+                food waste/CCTV, departure levy) are correctly EXCLUDED from
+                their own direct total — without this note, that exclusion
+                just looks like the document vanished with no explanation.
+                Bug fix: this was computed by the backend all along but never
+                shown anywhere in the frontend. */}
+            {doc.registryNote && (
+              <div className="rounded-lg border border-[#BAE6FD] bg-[#F0F9FF] px-3 py-2.5 mb-4">
+                <p className="text-xs font-semibold text-[#075985] mb-1">This document isn't summed directly</p>
+                <p className="text-xs text-[#0C4A6E] leading-relaxed">{doc.registryNote}</p>
+              </div>
+            )}
             <div className="rounded-lg border border-[#BAE6FD] bg-[#F0F9FF] px-3 py-2.5 mb-4">
               <p className="text-xs font-semibold text-[#075985] mb-1">Does this still look right?</p>
               <p className="text-xs text-[#0C4A6E] leading-relaxed">
@@ -1016,19 +1049,32 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
           {canEditCategory ? 'Select the correct category' : 'Category (classified by AI)'}
         </label>
         {canEditCategory ? (
-          <select
-            value={category}
-            onChange={e => setCategory(e.target.value)}
-            className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-headings mb-2 focus:outline-none focus:border-primary cursor-pointer"
-          >
-            {RECLASSIFY_GROUPS.map(group => (
-              <optgroup key={group.label} label={group.label}>
-                {group.cats.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
-              </optgroup>
-            ))}
-            <option value="Mixed / Pending Review">Pending Review</option>
-            <option value="Non-Tax Document">Non-Tax Document</option>
-          </select>
+          categoryGroups === null ? (
+            // Still fetching GET /api/categories — a plain, honest loading
+            // state rather than a select with no options at all.
+            <div className="w-full rounded-lg border border-border bg-[#F8FAFC] px-3 py-2 text-sm text-muted mb-2">
+              Loading categories…
+            </div>
+          ) : categoryGroups.length === 0 ? (
+            // Fetch failed — don't silently show a broken/empty dropdown;
+            // fall back to read-only with a clear reason, same as the
+            // "not editable" branch below.
+            <div className="w-full rounded-lg border border-border bg-[#FCEBEB] px-3 py-2 text-sm text-critical mb-2">
+              Couldn't load the category list — please refresh and try again.
+            </div>
+          ) : (
+            <select
+              value={category}
+              onChange={e => setCategory(e.target.value)}
+              className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-headings mb-2 focus:outline-none focus:border-primary cursor-pointer"
+            >
+              {categoryGroups.map(group => (
+                <optgroup key={group.bucket} label={group.groupLabel}>
+                  {group.categories.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </optgroup>
+              ))}
+            </select>
+          )
         ) : (
           <div className="w-full rounded-lg border border-border bg-[#F8FAFC] px-3 py-2 text-sm text-muted mb-2">
             {categoryLabel(category)}
@@ -1093,7 +1139,7 @@ function ReclassifyModal({ doc, onConfirm, onReset, onCancel }) {
         {/* Derived status preview */}
         <div className="flex items-center gap-2 mb-5 px-1">
           <span className="text-xs text-muted">Will be classified as:</span>
-          <StatusBadge status={REFERENCE_CATEGORIES.includes(category) ? 'reference' : derivedStatus} />
+          <StatusBadge status={getCategoryBucket(category) === 'REFERENCE' ? 'reference' : derivedStatus} />
           {apportionMeta && pctInput !== '' && (
             <span className="text-xs font-semibold text-primary">· {pctInput}% deductible</span>
           )}
@@ -1193,14 +1239,14 @@ function SpreadsheetTable({ rows }) {
 }
 
 // ─── Manual Upload Modal ──────────────────────────────────────────────────────
-function ManualUploadModal({ onConfirm, onCancel }) {
+function ManualUploadModal({ categoryGroups, onConfirm, onCancel }) {
   const [docType, setDocType] = useState('Invoice');
   const [vendor, setVendor] = useState('');
   const [vendorAddr, setVendorAddr] = useState('');
   const [docNo, setDocNo] = useState('');
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [lineItems, setLineItems] = useState([{ desc: '', amt: '' }]);
-  const [category, setCategory] = useState(Q3_CATEGORIES[0]);
+  const [category, setCategory] = useState('Q3 — Cost of Goods Sold');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -1307,14 +1353,20 @@ function ManualUploadModal({ onConfirm, onCancel }) {
           {/* Category */}
           <div>
             <label className="block text-[10px] font-medium text-muted mb-1.5">Category</label>
-            <select value={category} onChange={e => setCategory(e.target.value)}
-              className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-headings focus:outline-none focus:border-primary cursor-pointer">
-              {RECLASSIFY_GROUPS.map(group => (
-                <optgroup key={group.label} label={group.label}>
-                  {group.cats.map(c => <option key={c} value={c}>{categoryLabel(c)}</option>)}
-                </optgroup>
-              ))}
-            </select>
+            {categoryGroups === null ? (
+              <div className="w-full rounded-lg border border-border bg-[#F8FAFC] px-3 py-2 text-xs text-muted">Loading categories…</div>
+            ) : categoryGroups.length === 0 ? (
+              <div className="w-full rounded-lg border border-border bg-[#FCEBEB] px-3 py-2 text-xs text-critical">Couldn't load categories — refresh and try again.</div>
+            ) : (
+              <select value={category} onChange={e => setCategory(e.target.value)}
+                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-headings focus:outline-none focus:border-primary cursor-pointer">
+                {categoryGroups.map(group => (
+                  <optgroup key={group.bucket} label={group.groupLabel}>
+                    {group.categories.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+            )}
           </div>
           {/* Notes */}
           <div>
@@ -1336,7 +1388,7 @@ function ManualUploadModal({ onConfirm, onCancel }) {
   );
 }
 
-function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive, onRetry, onUpdateStatus, onReset, onManualAdd, initialStateFilter }) {
+function UploadTab({ docs, uploads, categoryGroups, onFileDrop, onRemove, onArchive, onUnarchive, onMarkReviewed, onRetry, onUpdateStatus, onReset, onManualAdd, initialStateFilter }) {
   const inputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
   // Two orthogonal filter axes that compose:
@@ -1356,6 +1408,25 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
   const [previewDoc, setPreviewDoc] = useState(null);
   const [manualUploadOpen, setManualUploadOpen] = useState(false);
   const [limitToast, setLimitToast] = useState('');
+
+  // Deep-link support: if the URL has ?docId=N (from the Overview action
+  // banner's "View Document" button for a specific pending item — see the
+  // banner rework fixing the gap where clicking "Review" only ever landed
+  // on a generic filtered list, never the actual flagged document), open
+  // that document's preview automatically once it's loaded, instead of
+  // making the user hunt for it in the list themselves. Guarded by a ref so
+  // it only auto-opens ONCE per docId — closing the modal shouldn't make it
+  // pop back open on some later, unrelated re-render.
+  const autoOpenedDocIdRef = useRef(null);
+  useEffect(() => {
+    const docId = new URLSearchParams(window.location.search).get('docId');
+    if (!docId || docs.length === 0 || autoOpenedDocIdRef.current === docId) return;
+    const match = docs.find(d => String(d.id) === docId);
+    if (match) {
+      setPreviewDoc(match);
+      autoOpenedDocIdRef.current = docId;
+    }
+  }, [docs]);
 
   const viewingArchived = stateFilter === 'archived';
 
@@ -1404,17 +1475,34 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
   // prefix). Reference & Reconciliation is its own option so summary docs
   // (P&L, balance sheet, prior Form B, CP500) don't sit under Business Income.
   const CATEGORY_FILTER_OPTIONS = [
-    { value: 'all',  label: 'All categories' },
-    { value: 'Q1',   label: 'Business Income' },
-    { value: 'Q2',   label: 'Personal Income' },
-    { value: 'Q3',   label: 'Business Expense' },
-    { value: 'Q4R',  label: 'Personal Relief' },
-    { value: 'Q4D',  label: 'Donations (Part G)' },
-    { value: 'Q4P',  label: 'Personal Expense (Non-deductible)' },
-    { value: 'REF',  label: 'Reference & Reconciliation' },
+    { value: 'all',     label: 'All categories' },
+    { value: 'Q1',      label: 'Business Income' },
+    { value: 'Q2',      label: 'Personal Income' },
+    { value: 'Q3',      label: 'Business Expense' },
+    { value: 'Q4R',     label: 'Personal Relief' },
+    { value: 'Q4D',     label: 'Donations (Part G)' },
+    { value: 'Q4P',     label: 'Personal Expense (Non-deductible)' },
+    { value: 'TAXPAID', label: 'Tax Instalments Already Paid' },
+    { value: 'REBATE',  label: 'Tax Rebates' },
+    { value: 'REF',     label: 'Reference & Reconciliation' },
   ];
 
   const availableYears = [...new Set(completedDocs.map(d => d.date ? d.date.slice(0, 4) : null).filter(Boolean))].sort((a, b) => b - a);
+
+  // Bug fix (17 Jul 2026): if every document in the currently-selected
+  // yearFilter gets deleted, availableYears recomputes without that year,
+  // but yearFilter itself was never reset — the <select> then silently
+  // falls back to displaying its first option ("All Years") since its
+  // bound value no longer matches any real <option>, while yearFilter's
+  // actual STATE stays pinned to the now-nonexistent year. The filter
+  // logic below still runs against that stale value, so every document —
+  // including ones from other years — gets excluded, even though the
+  // dropdown visually claims "All Years" is selected.
+  useEffect(() => {
+    if (yearFilter !== 'all' && !availableYears.includes(yearFilter)) {
+      setYearFilter('all');
+    }
+  }, [availableYears, yearFilter]);
 
   let filtered = completedDocs.filter(d => {
     // ── State axis (cross-cutting) ──
@@ -1423,17 +1511,19 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
     if (stateFilter === 'failed' && d.status !== 'failed') return false;
     if (stateFilter === 'needs_review' && !d.needsReview) return false;
 
-    // ── Category axis (quadrant) — composes with the state axis ──
+    // ── Category axis (bucket) — composes with the state axis ──
     if (categoryFilter !== 'all') {
       const cat = d.category || '';
-      const isReference = REFERENCE_CATEGORIES.includes(cat);
-      if (categoryFilter === 'Q1'  && (!cat.startsWith('Q1') || isReference)) return false;
-      if (categoryFilter === 'Q2'  && !cat.startsWith('Q2'))  return false;
-      if (categoryFilter === 'Q3'  && (!cat.startsWith('Q3') || isReference)) return false;
-      if (categoryFilter === 'Q4R' && !(cat.startsWith('Q4') && Q4_RELIEF_CATEGORIES.includes(cat))) return false;
-      if (categoryFilter === 'Q4D' && !(cat.startsWith('Q4') && Q4_DONATION_CATEGORIES.includes(cat))) return false;
-      if (categoryFilter === 'Q4P' && !(cat.startsWith('Q4') && Q4_NON_DED_CATEGORIES.includes(cat))) return false;
-      if (categoryFilter === 'REF' && !isReference) return false;
+      const bucket = getCategoryBucket(cat);
+      if (categoryFilter === 'Q1'  && bucket !== 'Q1') return false;
+      if (categoryFilter === 'Q2'  && bucket !== 'Q2') return false;
+      if (categoryFilter === 'Q3'  && bucket !== 'Q3') return false;
+      if (categoryFilter === 'Q4R' && !(bucket === 'Q4' && getCategoryStatus(cat) === 'relief')) return false;
+      if (categoryFilter === 'Q4D' && bucket !== 'DONATIONS') return false;
+      if (categoryFilter === 'Q4P' && !(bucket === 'Q4' && getCategoryStatus(cat) === 'non_deductible')) return false;
+      if (categoryFilter === 'TAXPAID' && bucket !== 'TAX_INSTALMENTS') return false;
+      if (categoryFilter === 'REBATE'  && bucket !== 'REBATES') return false;
+      if (categoryFilter === 'REF' && bucket !== 'REFERENCE') return false;
     }
     if (yearFilter !== 'all') {
       if (!d.date || d.date.slice(0, 4) !== yearFilter) return false;
@@ -1481,7 +1571,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
   const handleFiles = useCallback((files) => {
     const list = Array.from(files);
     if (list.length > MAX_FILES) {
-      setLimitToast('You can add at most 10 attachments to a message. Please select fewer attachments.');
+      setLimitToast('You can upload at most 10 files at once. Please select 10 or fewer.');
       setTimeout(() => setLimitToast(''), 5000);
       return;
     }
@@ -1510,7 +1600,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
         </div>
       )}
       {reclassDoc && (
-        <ReclassifyModal doc={reclassDoc} onConfirm={handleReclassifyConfirm} onReset={handleResetConfirm} onCancel={() => setReclassDoc(null)} />
+        <ReclassifyModal doc={reclassDoc} categoryGroups={categoryGroups} onConfirm={handleReclassifyConfirm} onReset={handleResetConfirm} onCancel={() => setReclassDoc(null)} />
       )}
       {previewDoc && (
         <DocumentPreview
@@ -1519,11 +1609,13 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
           onReclassify={(d) => { setPreviewDoc(null); setReclassDoc(d); }}
           onArchive={(id) => { setPreviewDoc(null); onArchive(id); }}
           onUnarchive={(id) => { setPreviewDoc(null); onUnarchive(id); }}
+          onMarkReviewed={(id, reviewed) => { setPreviewDoc(null); onMarkReviewed(id, reviewed); }}
           onDelete={(id) => { setPreviewDoc(null); onRemove(id); }}
         />
       )}
       {manualUploadOpen && (
         <ManualUploadModal
+          categoryGroups={categoryGroups}
           onConfirm={async (payload) => { await onManualAdd(payload); setManualUploadOpen(false); }}
           onCancel={() => setManualUploadOpen(false)}
         />
@@ -1667,7 +1759,7 @@ function UploadTab({ docs, uploads, onFileDrop, onRemove, onArchive, onUnarchive
                       <span className="block truncate">{categoryLabel(doc.category)}</span>
                     </td>
                     <td className="px-3 py-2.5">
-                      <StatusBadge status={badgeStatusFor(doc.category, doc.taxStatus, doc.status)} />
+                      <StatusBadge status={badgeStatusFor(doc.category, doc.taxStatus, doc.status, doc.aggregationState, doc.deductiblePct, doc.categoryDeprecated)} deductiblePct={doc.deductiblePct} />
                     </td>
                     <td className="px-3 py-2.5 text-xs text-muted whitespace-nowrap">{doc.dateDisplay}</td>
                     <td className="py-2.5 pr-4">
@@ -1749,9 +1841,33 @@ function CukaiAccount() {
   const [uploads, setUploads] = useState([]);     // in-flight upload entries
   const [docsLoading, setDocsLoading] = useState(true);
   const [activeEntity, setActiveEntity] = useState(null);
+  // Canonical category taxonomy, fetched ONCE from the backend
+  // (GET /api/categories — see api.js) rather than hand-copied here. This
+  // is the fix for the taxonomy-drift bugs found in review: the old
+  // hardcoded Q1_CATEGORIES/RECLASSIFY_GROUPS arrays fell out of sync with
+  // the backend across several refactors (the CP500 split, the H6/H7/H8
+  // granularity split, and — concretely — Bank Statement never being added
+  // as a selectable reclassify option at all). Now there's only one place
+  // the taxonomy is defined; this component can't drift from it again.
+  const [categoryGroups, setCategoryGroups] = useState(null); // null = still loading
   // Doc IDs currently being polled, so the resume-poller never double-polls a
   // doc that a fresh upload / retry is already tracking.
   const pollingRef = useRef(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+    API.getCategories()
+      .then((data) => {
+        const groups = data.groups || [];
+        setCategoryLookupCache(groups);
+        if (!cancelled) setCategoryGroups(groups);
+      })
+      .catch((err) => {
+        console.error('Failed to load category taxonomy:', err);
+        if (!cancelled) setCategoryGroups([]); // empty, not null — stop showing "loading" forever
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   // Load the active entity name and listen for switches from ManageProfile
   useEffect(() => {
@@ -1843,6 +1959,17 @@ function CukaiAccount() {
   const [dupToast, setDupToast] = useState(null); // { fileName, existingId, retryHint }
 
   // ── File drop handler ───────────────────────────────────────────────────────
+  // UploadTab's own MAX_FILES=10 guard (see handleFiles above) rejects
+  // anything over 10 files before this function is ever called, showing
+  // limitToast instead — so this function can never receive more than
+  // MAX_BATCH_FILES (10) files, which a single batch-upload call already
+  // handles in one request. That's why there's no chunking or pausing here:
+  // a lone file goes through the single-upload endpoint (10/minute), and
+  // anything from 2-10 files goes through one batchUploadDocuments() call
+  // (rate-limited to 1/minute server-side, but since one call always covers
+  // the full worst case of 10 files, that's still an effective 10 files/
+  // minute ceiling — the same as the single-upload path, just reached via a
+  // single request instead of one request per file.
   const handleFileDrop = useCallback(async (files) => {
     const userId = localStorage.getItem('userId');
     const entityId = activeEntity?.id || null;
@@ -1858,8 +1985,20 @@ function CukaiAccount() {
     }));
     setUploads(prev => [...prev, ...entries]);
 
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
+    const handleDuplicateOrError = (entry, errorMessage, status) => {
+      if (status === 409 && errorMessage.startsWith('DUPLICATE:')) {
+        const [, existingId] = errorMessage.split(':');
+        setDupToast({ fileName: entry.fileName, existingId });
+        setTimeout(() => setDupToast(null), 6000);
+      } else {
+        console.error('[Upload] Failed:', entry.fileName, errorMessage);
+      }
+      URL.revokeObjectURL(entry.objectUrl);
+      setUploads(prev => prev.filter(e => e.localId !== entry.localId));
+    };
+
+    if (entries.length === 1) {
+      const entry = entries[0];
       try {
         const result = await API.uploadDocument(entry.file, userId, entityId);
         setUploads(prev => prev.map(e => e.localId === entry.localId
@@ -1868,17 +2007,52 @@ function CukaiAccount() {
         ));
         pollUntilResolved(entry.localId, result.document_id, entry.objectUrl);
       } catch (err) {
-        const detail = err?.response?.data?.detail || '';
-        if (err?.response?.status === 409 && detail.startsWith('DUPLICATE:')) {
-          const [, existingId] = detail.split(':');
-          setDupToast({ fileName: entry.fileName, existingId });
-          setTimeout(() => setDupToast(null), 6000);
-        } else {
-          console.error('[Upload] Failed:', entry.fileName, err);
-        }
-        URL.revokeObjectURL(entry.objectUrl);
-        setUploads(prev => prev.filter(e => e.localId !== entry.localId));
+        const detail = err?.response?.data?.detail || 'Upload failed.';
+        handleDuplicateOrError(entry, detail, err?.response?.status);
       }
+      return;
+    }
+
+    try {
+      const result = await API.batchUploadDocuments(entries.map(e => e.file), userId, entityId);
+
+      // The backend processes file_contents in the exact order submitted and
+      // never reorders successes ahead of failures within that order, but a
+      // batch can contain a MIX of queued and errored files — walk both
+      // arrays back against entries by matching on fileName (unique per
+      // entry via localId already; fileName is what the backend echoes back
+      // in both `queued` and `errors`).
+      const queuedByName = new Map((result.queued || []).map(q => [q.file_name, q]));
+      const errorsByName = new Map((result.errors || []).map(e => [e.file_name, e]));
+
+      entries.forEach(entry => {
+        const queued = queuedByName.get(entry.fileName);
+        const errored = errorsByName.get(entry.fileName);
+        if (queued) {
+          setUploads(prev => prev.map(e => e.localId === entry.localId
+            ? { ...e, docId: queued.document_id }
+            : e
+          ));
+          pollUntilResolved(entry.localId, queued.document_id, entry.objectUrl);
+        } else if (errored) {
+          // Batch errors carry the same "DUPLICATE:{id}:{name}" convention as
+          // the single-file endpoint's 409 detail, just without an HTTP
+          // status attached (the batch call itself succeeded as a request;
+          // individual files failed inside it) — treat a DUPLICATE-prefixed
+          // error the same way regardless.
+          handleDuplicateOrError(entry, errored.error || 'Upload failed.', errored.error?.startsWith('DUPLICATE:') ? 409 : undefined);
+        } else {
+          // Shouldn't happen (every submitted file should land in one array
+          // or the other), but don't leave an orphaned "uploading" card.
+          handleDuplicateOrError(entry, 'No result returned for this file.', undefined);
+        }
+      });
+    } catch (err) {
+      // The whole batch request failed (e.g. a network error) — every file
+      // gets the same treatment, since none were individually queued or
+      // rejected by the server in this case.
+      const detail = err?.response?.data?.detail || 'Upload failed.';
+      entries.forEach(entry => handleDuplicateOrError(entry, detail, err?.response?.status));
     }
   }, [activeEntity?.id]);
 
@@ -1971,6 +2145,23 @@ function CukaiAccount() {
         const full = await API.getDocument(id, userId, entityId);
         setDocs(prev => prev.map(d => d.id === id ? mapApiDoc(full) : d));
       } catch (_) {}
+    }
+  }, [activeEntity?.id]);
+
+  // ── Mark bank statement reviewed ────────────────────────────────────────
+  // Unlike archive/unarchive (a simple status flip we can optimistically
+  // guess), the resulting aggregation_state here is backend-computed (via
+  // derive_aggregation_state's bank_statement_reviewed parameter) — so this
+  // just uses the full, updated document the endpoint already returns,
+  // rather than guessing the new state client-side.
+  const markReviewedDoc = useCallback(async (id, reviewed = true) => {
+    const userId = localStorage.getItem('userId');
+    const entityId = activeEntity?.id || null;
+    try {
+      const full = await API.markDocumentReviewed(id, reviewed, userId, entityId);
+      setDocs(prev => prev.map(d => d.id === id ? mapApiDoc(full) : d));
+    } catch (e) {
+      console.error('[MarkReviewed]', e);
     }
   }, [activeEntity?.id]);
 
@@ -2130,10 +2321,12 @@ function CukaiAccount() {
               <UploadTab
                 docs={docs}
                 uploads={uploads}
+                categoryGroups={categoryGroups}
                 onFileDrop={handleFileDrop}
                 onRemove={removeDoc}
                 onArchive={archiveDoc}
                 onUnarchive={unarchiveDoc}
+                onMarkReviewed={markReviewedDoc}
                 onRetry={retryDoc}
                 onUpdateStatus={updateDocStatus}
                 onReset={resetDoc}
