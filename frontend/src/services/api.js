@@ -381,42 +381,6 @@ export const getFormBProfile = async (year, userId = null, entityId = null) => {
   return data;
 };
 
-// ── Insights ──────────────────────────────────────────────────────────────────
-// The AI insight feed is scoped to a user and (optionally) a single business
-// entity, exactly like documents and the tax profile summary. Pass the same
-// entityId used elsewhere (typically localStorage('activeEntityId')) so
-// switching entities returns that entity's own insights.
-
-/**
- * Fetch the insight feed for a user, optionally scoped to one entity.
- * Omit entityId to aggregate across all of the user's entities. `state`
- * optionally filters by lifecycle (new | read | dismissed | actioned).
- * Returns an array of insight rows (already shaped like the InsightsInbox card).
- */
-export const getInsights = async (userId = null, entityId = null, state = null) => {
-  const params = {};
-  if (userId)   params.user_id   = userId;
-  if (entityId) params.entity_id = entityId;
-  if (state)    params.state     = state;
-  const { data } = await api.get('/api/insights', { params });
-  return data;
-};
-
-/**
- * Transition a single insight's lifecycle state (read | dismissed | actioned).
- * `reason` carries the dismiss reason for "dismiss with memory" so a later
- * regeneration won't resurrect the card. Returns the updated insight row.
- */
-export const updateInsightState = async (insightId, state, reason = null, userId = null, entityId = null) => {
-  const params = {};
-  if (userId)   params.user_id   = userId;
-  if (entityId) params.entity_id = entityId;
-  const body = { state };
-  if (reason !== null && reason !== undefined && reason !== '') body.reason = reason;
-  const { data } = await api.patch(`/api/insights/${insightId}/state`, body, { params });
-  return data;
-};
-
 // ── CukaiBot chat ────────────────────────────────────────────────────────────
 // Backs the retrieval-chat loop: PostgreSQL session history + MongoDB vector
 // search + Gemini generation. session_id is optional on the first message —
@@ -477,16 +441,22 @@ export const getChatHistory = async (sessionId, userId) => {
  * to Gemini alongside the message text (see main.py's post_chat_message).
  * `message` may be an empty string when attachmentIds is non-empty
  * (attachment-only message).
+ * Pass `insightId` on the first message of a conversation started from an
+ * AI Insight card's "Ask CukaiBot about this" action (see InsightsInbox.jsx's
+ * runAction and CukaiBot.jsx's mount effect) — the backend grounds its
+ * answer in that insight's title/body/signals (see main.py's
+ * _insight_context_block). Not needed on later turns in the same session.
  * Returns { sessionId, userMessage: {id, role, text, attachments}, message: {id, role, text, citations, followups} }.
  * followups is an array of up to 3 AI-suggested next questions for THIS
  * reply (may be empty, e.g. on a generation error) — drives the chip tray
  * under the conversation instead of a fixed static prompt list.
  */
-export const sendChatMessage = async (message, userId, entityId = null, sessionId = null, attachmentIds = []) => {
+export const sendChatMessage = async (message, userId, entityId = null, sessionId = null, attachmentIds = [], insightId = null) => {
   const body = { message, user_id: userId };
   if (entityId)  body.entity_id  = entityId;
   if (sessionId) body.session_id = sessionId;
   if (attachmentIds && attachmentIds.length) body.attachment_ids = attachmentIds;
+  if (insightId) body.insight_id = insightId;
   const { data } = await api.post('/api/chat', body);
   return data;
 };
