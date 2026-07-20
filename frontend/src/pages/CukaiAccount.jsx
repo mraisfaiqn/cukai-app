@@ -46,6 +46,17 @@ function getCategoryBucket(category) { return _categoryBucketCache[category] || 
 function getCategoryStatus(category) { return _categoryStatusCache[category] || null; }
 function getCategoryRole(category) { return _categoryRoleCache[category] || null; }
 
+// Broadcast that the document set changed on the backend (upload classified,
+// manual entry, delete, reclassify, reset, archive, retry) so other pages —
+// chiefly the AI Insights inbox — know to refresh. Same window-event pattern
+// as ManageAccount's 'entitySwitch'. The sessionStorage timestamp covers the
+// cross-page case: InsightsInbox may MOUNT after the event already fired
+// (upload here → navigate there), so it checks the timestamp on mount too.
+const notifyDocumentsChanged = () => {
+  sessionStorage.setItem('documentsChangedAt', String(Date.now()));
+  window.dispatchEvent(new Event('documentsChanged'));
+};
+
 // Whether amount/date should be editable for a given document ROLE — used
 // by ReclassifyModal, recomputed against whichever category is CURRENTLY
 // SELECTED in the dropdown, not the document's original (possibly wrong)
@@ -1837,6 +1848,17 @@ function CukaiAccount() {
     const p = new URLSearchParams(window.location.search).get('filter');
     return ['needs_review', 'failed', 'archived'].includes(p) ? p : null;
   })();
+  // Insight deep-link: /account?doc=<id>&action=reclassify|classify opens that
+  // document's modal directly (see UploadTab's deep-link effect).
+  const deepLink = (() => {
+    const p = new URLSearchParams(window.location.search);
+    const docId = parseInt(p.get('doc') || '', 10);
+    const action = p.get('action');
+    return {
+      docId: Number.isFinite(docId) ? docId : null,
+      action: ['reclassify', 'classify'].includes(action) ? action : null,
+    };
+  })();
   const [docs, setDocs]     = useState([]);       // resolved backend docs (mapped)
   const [uploads, setUploads] = useState([]);     // in-flight upload entries
   const [docsLoading, setDocsLoading] = useState(true);
@@ -1850,6 +1872,10 @@ function CukaiAccount() {
   // as a selectable reclassify option at all). Now there's only one place
   // the taxonomy is defined; this component can't drift from it again.
   const [categoryGroups, setCategoryGroups] = useState(null); // null = still loading
+  // Uploads are gated until the first entity resolution completes: a file
+  // dropped before then would be stored with entity_id=null and its insights
+  // would never appear in an entity-filtered inbox fetch.
+  const [entityResolved, setEntityResolved] = useState(false);
   // Doc IDs currently being polled, so the resume-poller never double-polls a
   // doc that a fresh upload / retry is already tracking.
   const pollingRef = useRef(new Set());
@@ -1887,6 +1913,9 @@ function CukaiAccount() {
         }
         setActiveEntity(entity || null);
       } catch (_) {}
+      // Resolution finished (even if it yielded no entity — a user with zero
+      // entities legitimately uploads with entity_id=null). Unblock uploads.
+      setEntityResolved(true);
     };
     loadEntity();
     window.addEventListener('entitySwitch', loadEntity);
@@ -1941,6 +1970,9 @@ function CukaiAccount() {
             setDocs(prev => prev.map(d => d.id === docId ? { ...d, status: statusData.status } : d));
           }
           pollingRef.current.delete(docId);
+          // A resumed document finished classifying — the insight engine ran
+          // at the pipeline tail, so tell the inbox to pick up the new feed.
+          if (statusData.status === 'completed') notifyDocumentsChanged();
           return;
         }
       } catch (_) {}
@@ -1972,8 +2004,14 @@ function CukaiAccount() {
   // single request instead of one request per file.
   const handleFileDrop = useCallback(async (files) => {
     const userId = localStorage.getItem('userId');
-    const entityId = activeEntity?.id || null;
     if (!files.length) return;
+    if (!entityResolved) {
+      // See entityResolved above — uploading now would mis-scope the document.
+      setDupToast({ message: 'Still loading your account — drop the file again in a moment.' });
+      setTimeout(() => setDupToast(null), 4000);
+      return;
+    }
+    const entityId = activeEntity?.id || null;
 
     const entries = files.map(f => ({
       localId: `${Date.now()}-${Math.random()}`,
@@ -2054,7 +2092,7 @@ function CukaiAccount() {
       const detail = err?.response?.data?.detail || 'Upload failed.';
       entries.forEach(entry => handleDuplicateOrError(entry, detail, err?.response?.status));
     }
-  }, [activeEntity?.id]);
+  }, [activeEntity?.id, entityResolved]);
 
   // ── Manual document entry ────────────────────────────────────────────────────
   // No file, no OCR — persisted directly via a dedicated backend endpoint so
@@ -2062,10 +2100,17 @@ function CukaiAccount() {
   // failure so ManualUploadModal can surface the error and keep itself open.
   const manualAddDoc = useCallback(async (payload) => {
     const userId = localStorage.getItem('userId');
+    if (!entityResolved) {
+      // Entity still resolving (fresh login / hard reload) — creating the
+      // document now would scope it (and its insights) to entity NULL, which
+      // an entity-filtered insights fetch would then never show.
+      throw new Error('Still loading your account — try again in a moment.');
+    }
     const entityId = activeEntity?.id || null;
     const created = await API.createManualDocument(payload, userId, entityId);
     setDocs(prev => [mapApiDoc(created), ...prev]);
-  }, [activeEntity?.id]);
+    notifyDocumentsChanged();
+  }, [activeEntity?.id, entityResolved]);
 
   const pollUntilResolved = useCallback((localId, docId, objectUrl) => {
     const userId = localStorage.getItem('userId');
@@ -2086,6 +2131,9 @@ function CukaiAccount() {
           setUploads(prev => prev.map(e =>
             e.localId === localId ? { ...e, phase: statusData.status === 'completed' ? 'done' : 'failed' } : e
           ));
+          // Classification done → the engine ran at the pipeline tail; let
+          // the AI Insights inbox know there's a fresh run to pick up.
+          if (statusData.status === 'completed') notifyDocumentsChanged();
           setTimeout(async () => {
             try {
               const full = await API.getDocument(docId, userId, entityId);
@@ -2114,7 +2162,10 @@ function CukaiAccount() {
     const userId = localStorage.getItem('userId');
     const entityId = activeEntity?.id || null;
     setDocs(prev => prev.filter(d => d.id !== id));
-    try { await API.deleteDocument(id, userId, entityId); } catch (e) { console.error('[Delete]', e); }
+    try {
+      await API.deleteDocument(id, userId, entityId);
+      notifyDocumentsChanged();
+    } catch (e) { console.error('[Delete]', e); }
   }, [activeEntity?.id]);
 
   // ── Archive ─────────────────────────────────────────────────────────────────
@@ -2122,7 +2173,10 @@ function CukaiAccount() {
     const userId = localStorage.getItem('userId');
     const entityId = activeEntity?.id || null;
     setDocs(prev => prev.map(d => d.id === id ? { ...d, status: 'archived' } : d));
-    try { await API.archiveDocument(id, userId, entityId); } catch (e) {
+    try {
+      await API.archiveDocument(id, userId, entityId);
+      notifyDocumentsChanged();
+    } catch (e) {
       console.error('[Archive]', e);
       try {
         const full = await API.getDocument(id, userId, entityId);
@@ -2180,6 +2234,7 @@ function CukaiAccount() {
     ));
     try {
       await API.reclassifyDocument(id, status, category, userId, entityId, amount, date, deductiblePct);
+      notifyDocumentsChanged();
       // Re-fetch so the row reflects recomputed role/aggregation AND the new
       // edited/original flags (which drive the Reset button and field locks).
       const full = await API.getDocument(id, userId, entityId);
@@ -2200,6 +2255,7 @@ function CukaiAccount() {
     try {
       const full = await API.resetDocument(id, userId, entityId);
       setDocs(prev => prev.map(d => d.id === id ? { ...mapApiDoc(full), _localObjectUrl: d._localObjectUrl } : d));
+      notifyDocumentsChanged();
     } catch (e) {
       console.error('[Reset]', e);
     }
@@ -2271,6 +2327,7 @@ function CukaiAccount() {
             setDocs(prev => prev.map(d => d.id === doc.id ? { ...d, status: statusData.status } : d));
           }
           setUploads(prev => prev.filter(u => u.localId !== localId));
+          if (statusData.status === 'completed') notifyDocumentsChanged();
           return;
         }
       } catch (_) {}
@@ -2289,9 +2346,11 @@ function CukaiAccount() {
             <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
           </svg>
           <p className="text-[11px] font-semibold text-warning">
-            {dupToast.retryHint
-              ? `Failed record cleared — drop "${dupToast.fileName}" again to retry.`
-              : `"${dupToast.fileName}" was uploaded recently. Drop again to force re-upload.`}
+            {dupToast.message
+              ? dupToast.message
+              : dupToast.retryHint
+                ? `Failed record cleared — drop "${dupToast.fileName}" again to retry.`
+                : `"${dupToast.fileName}" was uploaded recently. Drop again to force re-upload.`}
           </p>
           <button onClick={() => setDupToast(null)} className="text-warning/60 hover:text-warning ml-1">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -2332,6 +2391,8 @@ function CukaiAccount() {
                 onReset={resetDoc}
                 onManualAdd={manualAddDoc}
                 initialStateFilter={initialStateFilter}
+                initialDocTarget={deepLink.docId}
+                initialDocAction={deepLink.action}
               />
             )}
           </div>

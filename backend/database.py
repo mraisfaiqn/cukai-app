@@ -29,4 +29,9 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
+  # Importing the router from main.py has registered the insight models on the
+  # shared Base before startup reaches here. create_all handles new tables;
+  # the explicit compatibility migration handles columns on existing tables.
   Base.metadata.create_all(bind=engine)
+  from insights.migrations import apply_analysis_run_migration
+  apply_analysis_run_migration(engine)

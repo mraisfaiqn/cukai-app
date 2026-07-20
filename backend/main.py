@@ -27,6 +27,7 @@ from sqlalchemy import or_, func
 from database import init_db, SessionLocal
 import models
 from models import Document, FormBProfile, CapitalAsset, BreastfeedingEquipmentClaim, FinancialStatementProfile, Child, CP500Record, OneTimeReliefClaim, ChatSession, ChatMessage, ChatAttachment
+from insights.models import Insight
 from capital_allowance import compute_capital_allowance_for_year
 from carryforward import compute_multi_year_carryforward, MAX_LOSS_CARRYFORWARD_YEARS
 from child_relief import compute_h16_for_children
@@ -58,6 +59,10 @@ from taxonomy_classification import (
   derive_aggregation_state as _new_derive_aggregation_state,
 )
 from document_dispatch import dispatch_document
+# Registers the Insight/InsightRun tables on the shared Base (so init_db's
+# create_all picks them up) and provides the /api/insights endpoints.
+from insights.router import router as insights_router
+from insights.models import Insight
 from breastfeeding_relief import compute_breastfeeding_relief_for_year, H11_CAP_MYR
 import mongo
 from embeddings import embed_text
@@ -84,6 +89,40 @@ MAX_CHAT_ATTACHMENT_MB = 20
 # Files API upload step), so a handful of large files per turn adds up fast --
 # cap the count too, not just per-file size.
 MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5
+
+
+def _queue_insight_refresh(user_id, entity_id, trigger: str, *assessment_years) -> None:
+  """Queue insight-engine run(s) after a document mutation, off the request
+  thread. The engine is otherwise only triggered from the classification
+  pipeline's tail (pipeline.run_document_pipeline), so endpoints that mutate
+  documents WITHOUT re-running the pipeline (manual entry, delete, reclassify,
+  reset, archive) must call this — otherwise the AI Insights feed goes stale
+  until an unrelated upload happens to land in the same assessment year.
+
+  Accepts multiple candidate years (varargs) and deduplicates: reclassify/reset
+  pass (previous_ya, new_ya) so a date edit that MOVED the document across
+  years refreshes both feeds, while a same-year edit fires exactly one run.
+  Null years are dropped — a document with no year_of_assessment is invisible
+  to every year summary, so a run would learn nothing from it."""
+  if not user_id:
+    return
+  years = sorted({int(y) for y in assessment_years if y is not None})
+  if not years:
+    logger.info(f"[Insights] Skipping insight refresh ({trigger}): no year_of_assessment.")
+    return
+  # Deferred import — main.py imports pipeline.py, pipeline.py invokes the
+  # engine, and the engine imports main at call time; a top-level import here
+  # would be circular. Same pattern as pipeline.py's tail trigger.
+  from insights.engine import queue_insight_run, run_insight_engine
+  for ya in years:
+    run_id, created = queue_insight_run(
+      user_id, entity_id, trigger, SessionLocal, assessment_year=ya,
+    )
+    if created:
+      _pipeline_executor.submit(
+        run_insight_engine, user_id, entity_id, trigger, SessionLocal,
+        assessment_year=ya, run_id=run_id,
+      )
 
 
 def _requeue_interrupted_documents() -> None:
@@ -119,6 +158,41 @@ def _requeue_interrupted_documents() -> None:
     db.close()
 
 
+def _requeue_interrupted_insight_runs() -> None:
+  """Resume durable queued/running insight jobs after a process restart."""
+  from insights.engine import run_insight_engine
+  from insights.models import InsightRun
+
+  db = SessionLocal()
+  try:
+    pending = db.query(InsightRun).filter(
+      InsightRun.status.in_(["queued", "running"]),
+      InsightRun.assessment_year.isnot(None),
+    ).order_by(InsightRun.id.asc()).all()
+    for run in pending:
+      if run.status == "running":
+        run.status = "queued"
+        run.started_at = None
+        run.logs = list(run.logs or []) + [
+          "Previous process stopped while this run was active; queued again at startup."
+        ]
+    db.commit()
+
+    for run in pending:
+      _pipeline_executor.submit(
+        run_insight_engine,
+        run.user_id, run.entity_id, run.trigger, SessionLocal,
+        assessment_year=run.assessment_year, run_id=run.id,
+      )
+    if pending:
+      logger.info(f"[Startup] Re-queued {len(pending)} interrupted insight run(s).")
+  except Exception as e:
+    logger.error(f"[Startup] Failed to re-queue interrupted insight runs: {e}")
+    db.rollback()
+  finally:
+    db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
   # ── Startup ──
@@ -126,6 +200,7 @@ async def lifespan(app: FastAPI):
   os.makedirs(STORAGE_DIR, exist_ok=True)
   app.mount("/files", StaticFiles(directory=STORAGE_DIR), name="stored_documents")
   _requeue_interrupted_documents()
+  _requeue_interrupted_insight_runs()
   # Best-effort: verify/create the MongoDB Atlas vector search index used by
   # CukaiBot's RAG retrieval (one index on the one document_chunks
   # collection, which holds user receipts and external_resource PDF chunks
@@ -141,7 +216,6 @@ async def lifespan(app: FastAPI):
   finally:
     # ── Shutdown ── stop accepting new pipeline work and wind the pool down.
     _pipeline_executor.shutdown(wait=False, cancel_futures=True)
-
 
 # slowapi = a rate limiting library
 limiter = Limiter(key_func=get_remote_address)
@@ -163,6 +237,8 @@ app.add_middleware(
   allow_methods=["*"],
   allow_headers=["*"],
 )
+
+app.include_router(insights_router)
 
 
 def get_db():
@@ -1431,6 +1507,10 @@ def create_manual_document(
   sync_cp500_registry(db, db_doc, category, db_doc.year_of_assessment, extracted_data, db_doc.id)
   sync_one_time_relief_registry(db, db_doc, category, db_doc.year_of_assessment, extracted_data, db_doc.id)
 
+  # Manual entries never pass through the classification pipeline, so the
+  # engine's pipeline-tail trigger never fires for them — refresh explicitly.
+  _queue_insight_refresh(db_doc.user_id, db_doc.entity_id, "document_manual_entry", db_doc.year_of_assessment)
+
   return _serialize_doc(db_doc)
 
 
@@ -1597,6 +1677,9 @@ def delete_document(
 ):
   doc = _scoped_document_or_404(db, doc_id, user_id, entity_id)
   file_path = doc.file_path
+  # Captured BEFORE deletion — needed to refresh the right insight feed after
+  # the row (and its year_of_assessment) is gone.
+  doc_ya, doc_user, doc_entity = doc.year_of_assessment, doc.user_id, doc.entity_id
 
   # A filed Form B document also created a FormBProfile row, linked back to this
   # document via source_document_id. That column is a plain integer, not a
@@ -1706,8 +1789,21 @@ def delete_document(
       db.delete(_row)
       logger.info(f"[Delete] Removed empty FinancialStatementProfile row (id={_row.id}) — both halves cleared.")
 
+  # Wipe out any Insight where the source_document_ids JSONB array contains this doc_id.
+  # Using .contains([doc_id]) ensures we match the PostgreSQL JSONB array logic correctly.
+  ins_deleted = (
+    db.query(Insight)
+    .filter(Insight.source_document_ids.contains([doc_id]))
+    .delete(synchronize_session=False)
+  )
+  if ins_deleted:
+    logger.info(f"[Delete] Removed {ins_deleted} Insight row(s) whose source was document ID {doc_id}.")
+
   db.delete(doc)
   db.commit()
+  # Removing a document can invalidate insights built from it (doc_gap,
+  # provision, audit-risk ratios…) — re-run so stale cards auto-resolve.
+  _queue_insight_refresh(doc_user, doc_entity, "document_deleted", doc_ya)
   try:
     if file_path and os.path.isfile(file_path):
       os.remove(file_path)
@@ -1786,6 +1882,9 @@ def archive_document(
 
   doc.status = "archived"
   db.commit()
+  # Archiving removes the doc from the year summary (status filter is
+  # 'completed'), so its insights must recompute just like a deletion.
+  _queue_insight_refresh(doc.user_id, doc.entity_id, "document_archived", doc.year_of_assessment)
   return {"message": f"Document ID {doc_id} archived.", "document_id": doc_id, "status": "archived"}
 
 
@@ -1955,6 +2054,11 @@ def reclassify_document(
     "quadrant":           _pre_edit_ed.get("quadrant"),
   }
 
+  # Captured fresh on EVERY edit (unlike _original, written once): a date edit
+  # below may move the document to another assessment year, and both the old
+  # and new years' insight feeds must then recompute.
+  prev_ya = doc.year_of_assessment
+
   if new_status:
     doc.tax_status = new_status
   if new_category:
@@ -2049,6 +2153,9 @@ def reclassify_document(
   except Exception as e:
     logger.warning(f"[Reclassify] Could not re-embed document ID {doc.id} for RAG: {e}")
 
+  # One run normally; two when the date edit moved the document across years
+  # (the varargs set-dedupe collapses same-year edits to a single run).
+  _queue_insight_refresh(doc.user_id, doc.entity_id, "document_reclassified", prev_ya, doc.year_of_assessment)
   return _serialize_doc(doc)
 
 
@@ -2069,6 +2176,9 @@ def reset_document_classification(
   orig = ed.get("_original")
   if not orig:
     raise HTTPException(status_code=400, detail="This document hasn't been edited — there's nothing to reset.")
+  # Reverting may move the document back to its original assessment year —
+  # refresh both the year it's leaving and the year it returns to.
+  prev_ya = doc.year_of_assessment
 
   doc.category   = orig.get("category")
   doc.tax_status = orig.get("tax_status")
@@ -2127,6 +2237,7 @@ def reset_document_classification(
   except Exception as e:
     logger.warning(f"[Reset] Could not re-embed document ID {doc.id} for RAG: {e}")
 
+  _queue_insight_refresh(doc.user_id, doc.entity_id, "document_reset", prev_ya, doc.year_of_assessment)
   return _serialize_doc(doc)
 
 
@@ -4831,6 +4942,61 @@ def _get_tax_summary_context(
   return "\n".join(lines)
 
 
+def _insight_context_block(db: Session, user_id: str, insight_id: int) -> Optional[str]:
+  """
+  Fetch one AI Insight (scoped to user_id, same ownership check as
+  insights.router._scoped_insight_or_404) and format it as a context block
+  for the chat LLM.
+
+  This exists for InsightsInbox's "Ask CukaiBot about this" card action
+  (frontend passes insightId via a URL param — see CukaiBot.jsx's mount
+  effect and api.js's sendChatMessage — which lands here as insight_id on
+  the first message of the resulting conversation). Without it, that button
+  dropped the user into a blank chat with no memory of which card they came
+  from, forcing them to re-describe the whole situation by hand.
+
+  Folded into person_context by the caller (post_chat_message) rather than
+  threaded as its own parameter into _classify_and_maybe_answer /
+  _generate_chat_answer_with_retrieval — person_context is already a single
+  free-text CONTEXT block both of those fold in verbatim, so concatenating
+  onto it gets this into both prompts for free, the same way
+  upload_history_context already does for attachment provenance.
+
+  Returns None (not raising) when the id doesn't resolve — wrong user,
+  deleted, bad id — since a stale insightId shouldn't break the chat turn,
+  only mean it proceeds without this extra grounding.
+  """
+  try:
+    person_id = int(user_id)
+  except (TypeError, ValueError):
+    return None
+
+  insight = db.query(Insight).filter(
+    Insight.id == insight_id, Insight.user_id == person_id,
+  ).first()
+  if not insight:
+    return None
+
+  lines = [
+    "The user tapped \"Ask CukaiBot about this\" on the following AI Insight "
+    "card. Ground your answer in it, and answer whatever they ask next about it:",
+    f"- Title: {insight.title}",
+    f"- Details: {insight.body}",
+  ]
+  if insight.rm_impact:
+    lines.append(f"- RM impact: {money(insight.rm_impact)}")
+  if insight.deadline_date:
+    lines.append(f"- Deadline: {insight.deadline_date.isoformat()}")
+  if insight.citation:
+    lines.append(f"- Legal citation: {insight.citation}")
+  for s in (insight.signals or []):
+    label, value = s.get("label"), s.get("value")
+    if label and value:
+      lines.append(f"- {label}: {value}")
+
+  return "\n".join(lines)
+
+
 # Tolerance for a Tier 2 "same document, different scan" match. Amounts are
 # compared after rounding to cents; dates must match exactly (a re-scanned
 # receipt doesn't change its own transaction date). No tolerance on
@@ -6037,7 +6203,7 @@ def post_chat_message(
 
   Request body:
     { "message": str, "user_id": str, "entity_id": int|null, "session_id": str|null,
-      "attachment_ids": [int]|null }
+      "attachment_ids": [int]|null, "insight_id": int|null }
   session_id is optional — a new session is created automatically on first
   message, exactly like starting a new WhatsApp thread.
   attachment_ids are ChatAttachment ids returned by a prior
@@ -6047,6 +6213,9 @@ def post_chat_message(
   user ChatMessage and their bytes are sent to Gemini alongside the
   question (see _attachments_to_media_blocks) — max
   MAX_CHAT_ATTACHMENTS_PER_MESSAGE per call.
+  insight_id is optional — set by InsightsInbox's "Ask CukaiBot about this"
+  card action (see CukaiBot.jsx's mount effect) on the first message of the
+  resulting conversation only. See _insight_context_block()'s docstring.
 
   Response:
     { "session_id", "message": {id, role, text, citations, attachments} }
@@ -6056,6 +6225,7 @@ def post_chat_message(
   entity_id = payload.get("entity_id")
   session_id = payload.get("session_id")
   attachment_ids = payload.get("attachment_ids") or []
+  insight_id = payload.get("insight_id")
 
   # A message can be attachment-only (e.g. just drop a file with no typed
   # question) — only require SOME content, not specifically typed text.
@@ -6190,6 +6360,19 @@ def post_chat_message(
   _fold_in_context("Tax summary", lambda: _get_tax_summary_context(db, user_id, entity_id))
   if attachments:
     _fold_in_context("Upload-history", lambda: _check_upload_history(db, user_id, attachments))
+
+  # ── Step 2c: fold in the insight the user clicked "Ask CukaiBot about
+  #    this" from, if any (see _insight_context_block()'s docstring) ──────
+  if insight_id:
+    try:
+      insight_context = _insight_context_block(db, user_id, insight_id)
+      if insight_context:
+        person_context = (
+          f"{person_context}\n\n{insight_context}" if person_context
+          else insight_context
+        )
+    except Exception as e:
+      logger.warning(f"[Chat] Insight-context lookup failed for session {session.session_id}: {e}")
 
   # An attachment-only message (no typed text) still needs a non-empty
   # question string to hand the LLM calls below — the attachment itself
