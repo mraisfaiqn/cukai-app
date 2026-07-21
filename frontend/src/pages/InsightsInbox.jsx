@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { getAllEntities, getInsights, updateInsightState, runInsightEngine } from '../services/api';
 
 // ═══════════════════════════════════════════════════════════════════════════════

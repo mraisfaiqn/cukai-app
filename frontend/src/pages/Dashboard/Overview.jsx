@@ -10,17 +10,17 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getPersonalDetails, getAllEntities, getTaxProfileSummary } from '../../services/api';
+import { getPersonalDetails, getAllEntities, getTaxProfileSummary, getInsights } from '../../services/api';
 // Static content that isn't document-derived yet (opportunities + deadlines).
 // Deadline banner reads the same mock feed the Insights page shows, so the
 // two can't contradict each other. When getInsights() replaces the mock feed,
 // this import goes with it.
-import { getInitialInsightsForEntity } from "../InsightsInbox";
 import DashboardHeader from '../../components/Dashboard/DashboardHeader';
 import ActionBanner from '../../components/Dashboard/ActionBanner';
 import StatsGrid from '../../components/Dashboard/StatsGrid';
 import OpportunitiesCard from '../../components/Dashboard/OpportunitiesCard';
 import { TbCalendarEvent } from 'react-icons/tb';
+
 
 // Route for the Cukai Account page's document upload tab.
 const UPLOAD_TAB_ROUTE = '/account?tab=upload';
@@ -220,8 +220,8 @@ function shortLabel(title) {
 // It's a temporary connection until the real API provides deadlines in the expected format.
 // currently using mock data from InsightsInbox.jsx. Takes the one due soonest
 const DAY_MS = 86400000;
-function deadlinesFromInsights(entityId) {
-  return getInitialInsightsForEntity(entityId)
+function deadlinesFromInsights(insights) {
+  return (insights || [])
     .filter((i) => i.insightType === 'deadline' && i.deadlineDate)
     .map((i) => {
       const dt = new Date(i.deadlineDate);
@@ -237,8 +237,8 @@ function deadlinesFromInsights(entityId) {
 
 // ── Savings opportunities from insights, to sync for Unclaimed Savings (Overview) ───────────────────────────────────────
 const SAVINGS_TYPES = ['relief_headroom', 'doc_gap'];
-function savingsFromInsights(entityId) {
-  return getInitialInsightsForEntity(entityId)
+function savingsFromInsights(insights) {
+  return (insights || [])
    .filter((i) =>
       SAVINGS_TYPES.includes(i.insightType) &&
       i.rmImpact != null &&
@@ -422,38 +422,84 @@ function bracketHeadroom(chargeableIncome) {
   const suggestSdnBhd = current.rate >= 25;
   return {income, current, next, headroom, filledPct, suggestSdnBhd};
 }
-function HeadroomSlide() {
+function HeadroomSlide({ totals }) {
+  const [showInfo, setShowInfo] = useState(false);
+
+  const chargeableIncome = Number(totals?.estimatedChargeableIncome) || 0;
+  const hasData = chargeableIncome > 0;
+  const { current, next, headroom, filledPct, suggestSdnBhd } = bracketHeadroom(chargeableIncome);
+
+  // Empty state — no data yet, matches the other slides' "no data" look.
+  if (!hasData) {
+    return (
+      <div className="flex flex-1 flex-col justify-center">
+        <p className="text-sm font-bold text-headings">Tax bracket headroom</p>
+        <p className="mt-1 text-xs text-muted">No data yet — upload documents to see your bracket.</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-1 flex-col justify-center">
-      <p className="text-sm font-bold text-headings">Tax bracket headroom</p>
-      <p className="text-2xl font-bold text-headings mt-0.5">RM 246,299</p>
-      <p className="text-xs text-muted">before your rate rises to 26% (Category H)</p>
-      <div className="mt-2.5">
+    <div className="relative flex flex-1 flex-col justify-center">
+      {/* Title row with the info button */}
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-bold text-headings">Tax bracket headroom</p>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setShowInfo((v) => !v); }}
+          aria-label="About converting to Sdn Bhd"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border text-[11px] font-bold text-muted hover:bg-background">
+          i
+        </button>
+      </div>
+
+      {/* Headroom figure + current bracket */}
+      <p className="mt-0.5 flex flex-wrap items-baseline gap-1.5">
+        <span className="text-lg font-bold text-headings">
+          {next ? fmtRM(headroom) : 'Top bracket'}
+        </span>
+        {next && (
+          <span className="text-[11px] text-muted">
+            before your rate rises to {next.rate}% (Category {next.category})
+          </span>
+        )}
+      </p>
+
+      {/* Progress bar showing position within the current bracket */}
+      <div className="mt-2">
         <div className="h-2 bg-border rounded-full overflow-hidden">
-          <div className="h-full rounded-full" style={{ width: '18%', background: '#0D9488' }} />
+          <div className="h-full rounded-full" style={{ width: `${filledPct}%`, background: '#0D9488' }} />
         </div>
         <div className="mt-1.5 flex justify-between text-[11px] text-muted">
-          <span>RM 100k</span>
-          <span>you: RM 153,701</span>
-          <span>RM 400k</span>
+          <span>{fmtRM(current.floor)}</span>
+          <span>you: {fmtRM(chargeableIncome)}</span>
+          <span>{current.ceiling === Infinity ? '∞' : fmtRM(current.ceiling)}</span>
         </div>
       </div>
-    {/* The extra advice box for the headroom box
-    <div className="mt-2.5 rounded-lg bg-primary-tint p-2.5">
-        <p className="text-xs font-semibold text-primary">Consider incorporating to an Sdn Bhd</p>
-        <p className="mt-1 text-[11px] leading-relaxed text-muted">
-          At this income level a company is taxed at 15–17% instead of your 25%. Many sole proprietors speak to a tax professional here.
-        </p>
-      </div> */}
+
+      {/* Sdn Bhd advice — floats over the slide when "i" is clicked, so the
+          slide's own height never changes (keeps it aligned with the stat boxes). */}
+      {showInfo && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={(e) => { e.stopPropagation(); setShowInfo(false); }} />
+          <div className="absolute right-0 top-7 z-20 w-64 rounded-xl border border-border bg-surface p-3 shadow-lg">
+            <p className="text-xs font-semibold text-headings">Thinking of growing?</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted">
+              A sole proprietor is taxed on a rising scale (up to 30%). A Sdn Bhd company
+              pays a flat 15–17%. At higher income, converting can lower your tax — but it
+              also adds costs and admin. Worth discussing with a tax advisor.
+            </p>
+          </div>
+        </>
+      )}
     </div>
   );
 }
-
 function UpcomingCarousel({ deadlines, totals, onViewAll }) {
   const slides = [
     <DeadlineSlide key="deadline" deadlines={deadlines} onViewAll={onViewAll} />,
     <Cp500Slide key="cp500" totals={totals} />,
-    <HeadroomSlide key="headroom" />,
+    <HeadroomSlide key="headroom" totals={totals} />,
   ];
   return <CarouselShell slides={slides} />;
 }
@@ -849,20 +895,40 @@ function BarSlide({ chart }) {
 // ── PieChartsCarousel ──────────────────────────────────────────────────────────
 // Donut slides (Business / Deductible / Reliefs) plus a per-year bar slide,
 // navigated by dots or by side-scrolling. Fills the right col of the body grid.
+// ── PieChartsCarousel ──────────────────────────────────────────────────────────
+// Slide 1: the "By Year" bar chart (unchanged, stays the landing slide).
+// Slides 2 & 3: donuts PAIRED two-per-slide, side by side, to use the wider space —
+//   (Business Income + Personal Income) and (Deductions + Reliefs).
 function PieChartsCarousel({ charts }) {
-  const slides = (charts || []).map((c, i) =>
-    c.type === 'bar' ? <BarSlide key={i} chart={c} /> : <PieSlide key={i} chart={c} />
+  const list = charts || [];
+
+  // Pull each chart out by what it is, so pairing doesn't depend on array order.
+  const barChart    = list.find((c) => c.type === 'bar');
+  const business    = list.find((c) => c.title === 'Business Income');
+  const personal    = list.find((c) => c.title === 'Personal Income');
+  const deductions  = list.find((c) => c.title === 'Deductible Expenses');
+  const reliefs     = list.find((c) => c.title === 'Personal Reliefs');
+
+  // A slide that holds two donuts side by side (two equal columns).
+  const pairSlide = (left, right) => (
+    <div className="grid grid-cols-2 gap-3 flex-1 min-h-0">
+      <div className="flex flex-col min-h-0">{left  && <PieSlide chart={left} />}</div>
+      <div className="flex flex-col min-h-0">{right && <PieSlide chart={right} />}</div>
+    </div>
   );
 
-  // One tab per chart: a name plus a small icon, same style as the stat
-  // card chips. The bar chart has no title field, so we name it here.
- const labels = (charts || []).map((c) => {
-  if (c.type === 'bar') return { name: 'By Year' };
-  if (c.title === 'Business Income') return { name: 'Business Income' };
-  if (c.title === 'Personal Income') return { name: 'Personal Income' };
-  if (c.title === 'Deductible Expenses') return { name: 'Deductions' };
-  return { name: 'Reliefs' };
-});
+  const slides = [
+    barChart ? <BarSlide key="bar" chart={barChart} /> : <div key="bar" />,
+    pairSlide(business, personal),
+    pairSlide(deductions, reliefs),
+  ];
+
+  // One tab per slide now (three total), since donuts are grouped.
+  const labels = [
+    { name: 'By Year' },
+    { name: 'Income' },
+    { name: 'Deductions & Reliefs' },
+  ];
 
   return (
     <CarouselShell
@@ -873,7 +939,6 @@ function PieChartsCarousel({ charts }) {
     />
   );
 }
-
 // ── Neutral placeholders shown until the first fetch resolves ──────────────────
 // Using neutral skeletons (not the mock dashboardData) means the first paint
 // shows empty "—" cards and "No data yet" charts rather than fake figures that
@@ -902,6 +967,7 @@ export default function Overview() {
   const [livePieCharts, setLivePieCharts] = useState(SKELETON_PIES);
   const [liveAlert, setLiveAlert] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [liveInsights, setLiveInsights] = useState([]);
 
   // Load dashboard data for the currently active entity.
   // IMPORTANT: this must not assume activeEntityId already exists in localStorage.
@@ -946,6 +1012,12 @@ export default function Overview() {
       const summary = await getTaxProfileSummary(
         assessmentYear, userId, activeEntity?.id ?? null,
       ).catch(() => null);
+
+      // Fetch AI insights for this entity — feeds the deadline carousel and
+      // the savings card. Returns { insights, lastRun }; we keep just the list.
+      const insightsData = await getInsights(userId, activeEntity?.id ?? null).catch(() => null);
+      setLiveInsights(insightsData?.insights || []);
+
 
       const cy = summary?.currentYear;
       console.log('SUMMARY KEYS', Object.keys(cy || {}).join(', '));
@@ -1214,9 +1286,9 @@ export default function Overview() {
           <div className="col-span-4 h-full">
             <StatsGrid stats={liveStats} compact />
           </div>
-          <div className="col-span-2 h-[190px]"> 
+          <div className="col-span-2 h-full"> 
             <UpcomingCarousel
-            deadlines={deadlinesFromInsights(Number(localStorage.getItem('activeEntityId')))}
+            deadlines={deadlinesFromInsights(liveInsights)}
             totals={liveTotals}
             onViewAll={() => navigate('/insightsinbox?filter=Deadlines')}
           />
@@ -1225,12 +1297,12 @@ export default function Overview() {
 
        {/* ── Middle row: chart + opportunities, fixed height so it doesn't
               stretch and leave the bottom half usable ── */}
-       <div className="grid grid-cols-3 gap-3 h-[220px] shrink-0">
+       <div className="grid grid-cols-3 gap-3 flex-1 min-h-[220px]">
           <div className="col-span-2 min-h-0">
             <PieChartsCarousel charts={livePieCharts} />
           </div>
           <div className="col-span-1 min-h-0">
-<OpportunitiesCard opportunities={savingsFromInsights(Number(localStorage.getItem('activeEntityId')))} scrollable />
+<OpportunitiesCard opportunities={savingsFromInsights(liveInsights)} scrollable />
           </div>
         </div>
       </div>
