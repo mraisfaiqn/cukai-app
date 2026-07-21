@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { getAllEntities, getInsights, updateInsightState, runInsightEngine } from '../services/api';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -428,13 +428,25 @@ function InsightsInbox() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);         // fetch failed (≠ empty feed)
   const [refreshing, setRefreshing] = useState(false); // freshness poll in flight
-  const [tab, setTab] = useState('active');          // active | resolved | dismissed
+  const [tab, setTab] = useState('active');  
+  const [searchParams] = useSearchParams();
   const [activeGroup, setActiveGroup] = useState('All');
   const [expandedId, setExpandedId] = useState(null);
   const [toast, setToast] = useState('');
   const lastRunRef = useRef(null);   // latest lastRun seen — freshness-poll baseline
   const pollTokenRef = useRef(0);    // lets a newer poll supersede an older loop
   const mountPollDoneRef = useRef(false);
+
+
+  // Deep-link support: /insightsinbox?filter=Savings opens on that chip.
+  // Runs on mount AND whenever the URL changes, so links from other pages
+  // switch the tab even when this page is already open.
+  useEffect(() => {
+    const wanted = (searchParams.get('filter') || '').trim().toLowerCase();
+    if (!wanted) return;
+    const match = GROUPS.find((g) => g.toLowerCase() === wanted);
+    if (match) setActiveGroup(match);
+  }, [searchParams]);
 
   // Load the real feed whenever the entity changes. The endpoint returns a
   // WRAPPED payload { insights, lastRun } — never map the response directly.
@@ -463,7 +475,7 @@ function InsightsInbox() {
     } finally {
       setLoading(false);
     }
-  }, [activeEntity?.id]);
+  }, [activeEntity]);
 
   // After a documentsChanged signal, a durable queued row appears immediately
   // and the engine completes later on a backend thread. Poll until a new/changed

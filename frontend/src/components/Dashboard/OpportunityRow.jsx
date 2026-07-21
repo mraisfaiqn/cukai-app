@@ -28,7 +28,7 @@ function OpportunityRow({
     // "/opportunities/:id" route in App.jsx, and the id we put in the URL is exactly
     // what useParams() reads back on the detail page.
     <Link
-      to={`/opportunities/${id}`}
+      to="/insightsinbox?filter=Savings"
       className="flex items-center justify-between gap-4 rounded-lg px-2 py-4 transition-colors hover:bg-primary-tint/50"
     >
       <div className="flex items-start gap-3">
@@ -36,13 +36,13 @@ function OpportunityRow({
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary-tint text-primary">
           {icon ?? <TagIcon />}
         </span>
-        <div>
-          <p className="text-sm font-semibold text-headings">{title}</p>
-          <p className="mt-0.5 text-xs text-muted">{provision}</p>
+        <div className="min-w-0">
+          <p className="text-xs font-semibold leading-snug text-headings">{title}</p>
+          <p className="mt-1 text-[11px] text-muted">{provision}</p>
         </div>
       </div>
       {/* Saving amount */}
-      <p className="shrink-0 text-sm font-semibold text-success">{amount}</p>
+      <p className="shrink-0 text-base font-bold text-success">{amount}</p>
     </Link>
   );
 }

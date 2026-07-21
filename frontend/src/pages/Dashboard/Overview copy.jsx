@@ -19,7 +19,7 @@ import DashboardHeader from '../../components/Dashboard/DashboardHeader';
 import ActionBanner from '../../components/Dashboard/ActionBanner';
 import StatsGrid from '../../components/Dashboard/StatsGrid';
 import OpportunitiesCard from '../../components/Dashboard/OpportunitiesCard';
-import { TbCalendarEvent } from 'react-icons/tb';
+// import { TbCalendarEvent } from 'react-icons/tb';
 
 
 // Route for the Cukai Account page's document upload tab.
@@ -485,8 +485,9 @@ function HeadroomSlide({ totals }) {
           <div className="absolute right-0 top-7 z-20 w-64 rounded-xl border border-border bg-surface p-3 shadow-lg">
             <p className="text-xs font-semibold text-headings">Thinking of growing?</p>
             <p className="mt-1 text-[11px] leading-relaxed text-muted">
-              A sole proprietor is taxed on a rising scale (up to 30%), a Sdn Bhd company
-              pays a flat 15–17%. At higher income, converting can lower your tax. Worth discussing with a tax advisor.
+              A sole proprietor is taxed on a rising scale (up to 30%). A Sdn Bhd company
+              pays a flat 15–17%. At higher income, converting can lower your tax — but it
+              also adds costs and admin. Worth discussing with a tax advisor.
             </p>
           </div>
         </>
@@ -1240,7 +1241,7 @@ export default function Overview() {
   }, [fetchDashboardMetrics]);
 
   return (
-   <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body flex flex-col">
+   <main className="min-h-[calc(100vh-4.1rem)] overflow-y-auto bg-background font-body flex flex-col">  {/* for page scrolling */}
       <div className="mx-auto w-full max-w-7xl px-6 py-3 flex flex-col flex-1 min-h-0 gap-4">
       {/* ── Header using dynamic backend account details ── */}
      <div className="shrink-0">
