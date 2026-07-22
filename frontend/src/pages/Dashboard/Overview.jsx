@@ -1119,8 +1119,8 @@ export default function Overview() {
         { label: 'Total Income', value: fmtRM(totals.totalIncome || 0),
             ...yoy(totals.totalIncome, priorTotals?.totalIncome, 'up'),
             detail: {
-              formula: 'This consist of all the money earned this year and added together — from your business and anywhere else  (e.g., freelance work, investments, rental).',
-              formula2: 'Business Income + Other Income = Total Income',
+              formula: 'Your business profit (after costs) plus any personal income such as employment, rent, or interest.',
+              formula2: 'Business Profit (after costs) + Personal Income = Total Income',
               components: incomeComponents,
               equation: equationFromComponents(incomeComponents, totals.totalIncome),
             } },
@@ -1128,7 +1128,7 @@ export default function Overview() {
           { label: 'Total Deductions', value: fmtRM(totals.q3TotalDeductions || 0),
             ...yoy(totals.q3TotalDeductions, priorTotals?.q3TotalDeductions, 'up'),
             detail: {
-              formula: 'Money you spent running your business, plus a yearly write-off on equipment you bought. LHDN lets you subtract both before your tax is worked out.',
+              formula: 'Money you spent running your business, plus a yearly write-off on equipment. (These have already been subtracted from your Total Income - shown here so you can see what was claimed)',
               formula2: 'Business Expenses + Capital Allowance = Total Deductions',
               components: deductionComponents,
               equation: equationFromComponents(deductionComponents, totals.q3TotalDeductions),
@@ -1137,15 +1137,14 @@ export default function Overview() {
           { label: 'Chargeable Income', value: fmtRM(totals.estimatedChargeableIncome || 0),
             ...yoy(totals.estimatedChargeableIncome, priorTotals?.estimatedChargeableIncome, 'down'),
             detail: {
-              formula: 'This consist of the part of your money that actually gets taxed.',
-              formula2: 'Total Income − Total Deductions − Reliefs = Chargeable Income',
+              formula: 'The part of your income that actually gets taxed. Business costs are already out of Total Income, so only personal reliefs are subtracted here.',
+              formula2: 'Total Income − Reliefs = Chargeable Income',
               equation: fmtRM(totals.totalIncome || 0)
-                + ' − ' + fmtRM(totals.q3TotalDeductions || 0)
                 + ' − ' + fmtRM(reliefsApplied)
                 + ' = ' + fmtRM(totals.estimatedChargeableIncome || 0),
               components: [
-                { label: 'Total income', amount: fmtRM(totals.totalIncome || 0) },
-                { label: 'Business costs', amount: '− ' + fmtRM(totals.q3TotalDeductions || 0) },
+                { label: 'Total income', amount: fmtRM(totals.totalIncome || 0),
+                  count: 'Already after ' + fmtRM(totals.q3TotalDeductions || 0) + ' of business costs' },
                 { label: 'Self relief', amount: '− ' + fmtRM(selfRelief),
                   count: 'Automatic — every resident gets this' },
                 { label: 'Other reliefs', amount: '− ' + fmtRM(q4Reliefs),
