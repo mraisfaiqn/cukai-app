@@ -86,10 +86,8 @@ export default function LoginPanel({ onLogin }) {
             alt="Cukai.ai logo"
             className="h-10 w-10 shrink-0"
           />
-          <span className="select-none text-xl font-bold tracking-tight text-headings">
-            cukai
-          <span className="text-primary">.</span>
-          <span className="font-light text-muted">ai</span>
+          <span className="select-none text-xl font-bold tracking-tight text-[#0F172A]">
+            cuk<span className="font-light text-[#64748B]">ai</span>
           </span>
         </div>
         <p className="text-center text-xs text-[#94A3B8] mb-8 mt-3">
@@ -100,7 +98,7 @@ export default function LoginPanel({ onLogin }) {
           {/* Email/username */}
           <div>
             <label className="block text-xs font-semibold tracking-[0.06em] text-muted mb-2">
-              Username or Email Address
+              Email Address
             </label>
             <input
               type="text"
@@ -108,7 +106,7 @@ export default function LoginPanel({ onLogin }) {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="name@company.com"
               required
-              className="w-full px-4 py-3 rounded-xl border-[1.5px] border-border text-[13.5px] text-headings bg-surface outline-none focus:border-primary transition-colors placeholder-[#CBD5E1]"
+              className="w-full px-4 py-3 rounded-xl border-[1.5px] border-border text-[13.5px] text-[#0F172A] bg-surface outline-none focus:border-primary transition-colors placeholder-[#CBD5E1]"
             />
           </div>
           {/* Password */}
@@ -131,7 +129,7 @@ export default function LoginPanel({ onLogin }) {
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
                 required
-                className="w-full px-4 py-3 pr-11 rounded-xl border-[1.5px] border-border text-[13.5px] text-headings bg-surface outline-none focus:border-primary transition-colors placeholder-[#CBD5E1]"
+                className="w-full px-4 py-3 pr-11 rounded-xl border-[1.5px] border-border text-[13.5px] text-[#0F172A] bg-surface outline-none focus:border-primary transition-colors placeholder-[#CBD5E1]"
               />
               <button
                 type="button"
@@ -182,7 +180,7 @@ export default function LoginPanel({ onLogin }) {
           New to cukai.ai?{" "}
           <NavLink
             to="/getstarted"
-            className="text-headings font-semibold underline underline-offset-2 hover:text-primary transition-colors"
+            className="text-[#0F172A] font-semibold underline underline-offset-2 hover:text-primary transition-colors"
           >
             Sign Up.
           </NavLink>

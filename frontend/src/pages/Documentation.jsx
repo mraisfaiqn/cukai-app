@@ -67,6 +67,25 @@ const CheckIcon = () => (
   </svg>
 );
 
+const SparkleIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .962 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.962 0z" />
+  </svg>
+);
+
+const ChatIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+  </svg>
+);
+
+const UserIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+    <circle cx="12" cy="7" r="4" />
+  </svg>
+);
+
 // ── Documentation Data ─────────────────────────────────────────────────────────
 
 const DOC_SECTIONS = [
@@ -80,21 +99,23 @@ const DOC_SECTIONS = [
         title: 'Platform Overview',
         badge: null,
         content: {
-          description: 'Fiscal Clarity AI is a Malaysian SME-focused tax co-pilot that helps you manage tax filings, generate reports, review documents with OCR, and get AI-powered guidance — all in one platform.',
+          description: 'cukai.ai is a tax co-pilot built for Malaysian sole proprietors and small business owners. It reads the documents you upload, classifies them against LHDN\u2019s Form B categories, tracks your reliefs and deductions automatically, and surfaces savings opportunities and deadlines \u2014 so you spend less time hunting through receipts and more time running your business.',
           sections: [
             {
               heading: 'Core Modules',
               type: 'list',
               items: [
-                { label: 'CukaiBot', desc: 'AI-powered chat assistant for Malaysian tax regulations, LHDN guidelines, and deduction advice.' },
-                { label: 'CukaiVault', desc: 'SME report management hub for generating, storing, reviewing, and exporting tax and business reports.' },
-                { label: 'AI Insights Inbox', desc: 'Timestamped feed of AI-generated alerts, deduction opportunities, compliance reminders, and advisories.' },
+                { label: 'Overview', desc: 'Your dashboard \u2014 a snapshot of income, deductions, projected tax, unclaimed savings, and what needs your attention right now.' },
+                { label: 'Cukai Documents', desc: 'Upload receipts, invoices, statements, and forms \u2014 cukai.ai reads and classifies each one automatically into the right Form B category.' },
+                { label: 'Cukai Insights', desc: 'A running feed of AI-generated alerts: deductions you haven\u2019t claimed yet, upcoming deadlines, documents that need your input, and general advisory notes.' },
+                { label: 'Cukai Bot', desc: 'A conversational assistant for Malaysian tax questions, grounded in LHDN guidelines and aware of your own business context.' },
+                { label: 'Manage Account', desc: 'Your personal tax profile, business entities, and dependants \u2014 the facts Form B actually needs from you.' },
               ],
             },
             {
               heading: 'Who This Is For',
               type: 'paragraph',
-              text: 'Malaysian SMEs, sole proprietors, and finance teams who want a guided, structured approach to annual tax filing under the Income Tax Act 1967 and current LHDN guidelines.',
+              text: 'Malaysian sole proprietors and small business owners preparing an individual income tax return (Form B) under the Income Tax Act 1967, who want a structured, document-driven way to track income, expenses, and reliefs throughout the year instead of scrambling before the filing deadline.',
             },
           ],
         },
@@ -104,18 +125,19 @@ const DOC_SECTIONS = [
         title: 'Navigating the App',
         badge: null,
         content: {
-          description: 'The sidebar provides access to all modules. You can switch between CukaiBot, CukaiVault, AI Insights, and your account settings at any time.',
+          description: 'The top navigation bar gives you access to every part of cukai.ai. You can switch between them at any time without losing your place.',
           sections: [
             {
-              heading: 'Sidebar Items',
+              heading: 'Where to find things',
               type: 'list',
               items: [
-                { label: 'Dashboard', desc: 'Overview of your filing progress, pending actions, and recent insights.' },
-                { label: 'CukaiBot', desc: 'AI chat interface for tax questions.' },
-                { label: 'CukaiVault', desc: 'Reports, receipts, OCR evidence, and source documents.' },
-                { label: 'AI Insights Inbox', desc: 'All AI-generated notifications and advisories.' },
-                { label: 'User Docs', desc: 'This documentation page.' },
-                { label: 'Terms & Conditions', desc: 'Platform usage terms and AI disclaimer.' },
+                { label: 'Overview', desc: 'Your dashboard home \u2014 a snapshot of your tax position and what needs attention.' },
+                { label: 'Cukai Documents', desc: 'Upload, review, and manage every document you\u2019ve submitted.' },
+                { label: 'Cukai Insights', desc: 'All AI-generated alerts, deadlines, and savings opportunities in one feed.' },
+                { label: 'Cukai Bot', desc: 'Ask tax questions and get grounded, cited answers.' },
+                { label: 'Manage Account', desc: 'Update your personal profile, business entities, and dependants \u2014 found under the account menu, top right.' },
+                { label: 'User Manual', desc: 'This page \u2014 module guides and answers to common questions.' },
+                { label: 'Terms & Conditions', desc: 'How cukai.ai handles your data and the limits of what it can do for you \u2014 also under the account menu.' },
               ],
             },
           ],
@@ -124,111 +146,143 @@ const DOC_SECTIONS = [
     ],
   },
   {
-    id: 'cukai-vault',
-    label: 'CukaiVault',
+    id: 'dashboard',
+    label: 'Overview',
     icon: <LayersIcon />,
     items: [
       {
-        id: 'vault-overview',
-        title: 'CukaiVault Overview',
-        badge: 'Module',
+        id: 'dashboard-overview',
+        title: 'What\u2019s on Your Overview Page',
+        badge: null,
         content: {
-          description: 'CukaiVault is the SME report management centre. It organises all tax and business reports, linked receipts, OCR evidence, and source documents in one place.',
+          description: 'Overview is your home base \u2014 a single-glance summary of your tax position for the active business and year, plus anything that needs your attention.',
           sections: [
             {
-              heading: 'Five Main Tabs',
+              heading: 'What you\u2019ll see',
               type: 'list',
               items: [
-                { label: 'Reports', desc: 'View, search, filter, rename, archive, and delete your SME tax reports. Includes a Tax Breakdown chart and key financial figures.' },
-                { label: 'Generate Report', desc: 'Create new reports by selecting report type, tax year, and included sections.' },
-                { label: 'Linked Supporting Receipts', desc: 'Manage receipts, invoices, and bills that support deductible expense claims.' },
-                { label: 'OCR Evidence', desc: 'Review AI-extracted data from scanned documents — confidence scores, missing fields, and verification status.' },
-                { label: 'Source Documents', desc: 'Store and manage audit-trail files such as bank statements, e-invoice records, payroll summaries, and agreements.' },
+                { label: 'Greeting & entity context', desc: 'Which business and year of assessment you\u2019re currently looking at, plus a countdown to your Form B deadline.' },
+                { label: 'Action Required banner', desc: 'Appears whenever something \u2014 a document or an account-level item like an unpaid CP500 instalment \u2014 needs your review before filing.' },
+                { label: 'Tax Health scores', desc: 'Two at-a-glance rings: how many eligible reliefs you\u2019ve actually claimed, and how complete your profile and documents are for generating Form B.' },
+                { label: 'Key figures strip', desc: 'Year-to-date income, deductions, projected tax, and unclaimed savings.' },
+                { label: 'Saving Opportunities', desc: 'The reliefs and deductions cukai.ai has spotted that you haven\u2019t fully claimed yet \u2014 click through to Cukai Insights for the full list.' },
+                { label: 'Upcoming Deadlines', desc: 'Your nearest filing and payment dates.' },
+                { label: 'Charts', desc: 'A breakdown of business expenses, personal expenses, and your overall tax summary for the year.' },
               ],
             },
           ],
         },
       },
       {
-        id: 'reports-tab',
-        title: 'Reports Tab',
+        id: 'switching-entities',
+        title: 'Switching Between Businesses',
         badge: null,
         content: {
-          description: 'The Reports tab is the main report management area. It shows your SME Tax Breakdown chart, key financial values, and a filterable report table.',
+          description: 'If you run more than one business, every page \u2014 Overview, Cukai Documents, Cukai Insights \u2014 shows figures for whichever business entity is currently active.',
           sections: [
-            {
-              heading: 'Report Table Columns',
-              type: 'list',
-              items: [
-                { label: 'Report Name', desc: 'Editable from the column. Click the edit icon to rename.' },
-                { label: 'Total Amount', desc: 'Total reported income or transaction value for the report period.' },
-                { label: 'Deductible Amount', desc: 'Portion of expenses that qualify as tax-deductible under ITA 1967.' },
-                { label: 'Overall Deductible Tax', desc: 'Estimated deductible tax value — AI-assisted, for review only.' },
-                { label: 'Estimated Tax Impact', desc: 'Projected tax saving or liability — not a final tax calculation.' },
-                { label: 'Status', desc: 'Ready, Draft, Under Review, or Archived.' },
-              ],
-            },
-            {
-              heading: 'Report Actions',
-              type: 'list',
-              items: [
-                { label: 'View', desc: 'Opens a detailed report preview modal.' },
-                { label: 'Rename', desc: 'Edit the report name inline from the Report Name column.' },
-                { label: 'Archive', desc: 'Changes the report status to Archived without deleting it.' },
-                { label: 'Delete', desc: 'Prompts a confirmation modal before permanently removing the report.' },
-                { label: 'Download / Export', desc: 'Exports the report. Requires backend connection in production.' },
-              ],
-            },
-          ],
-        },
-      },
-      {
-        id: 'generate-report',
-        title: 'Generate Report',
-        badge: null,
-        content: {
-          description: 'Use the Generate Report tab to create new SME tax reports. Fill in the report type, tax year, reporting period, and select the sections to include.',
-          sections: [
-            {
-              heading: 'Report Types Available',
-              type: 'list',
-              items: [
-                { label: 'Annual Tax Summary', desc: 'Comprehensive year-end summary for SME tax filing (Form C / Form B).' },
-                { label: 'Quarterly Business Review', desc: 'Interim summary for internal review and cash flow planning.' },
-                { label: 'Expense Deduction Report', desc: 'Focused report on deductible business expenses and their tax impact.' },
-                { label: 'Payroll & PCB Summary', desc: 'Summarises monthly PCB contributions and staff cost deductions.' },
-              ],
-            },
             {
               heading: 'Note',
               type: 'paragraph',
-              text: 'Generated reports are marked as Draft if accountant review is selected, or Ready if skipped. All generated figures are AI-assisted estimates and must be verified with a qualified tax agent before submission to LHDN.',
+              text: 'Your personal profile and filed Form B are shared across all your businesses \u2014 only documents, capital assets, and business-specific totals change when you switch entities. See \u2018Business Entities\u2019 under Your Profile & Businesses for how to add or switch between them.',
+            },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    id: 'cukai-documents',
+    label: 'Cukai Documents',
+    icon: <FileTextIcon />,
+    items: [
+      {
+        id: 'documents-overview',
+        title: 'Cukai Documents Overview',
+        badge: 'Module',
+        content: {
+          description: 'Cukai Documents is where every receipt, invoice, bank statement, and form you upload gets read, classified, and organised \u2014 this is the evidence base everything else in cukai.ai is built on.',
+          sections: [
+            {
+              heading: 'What happens when you upload a document',
+              type: 'list',
+              items: [
+                { label: 'Reading', desc: 'Each document is scanned and its content analysed to identify what it is \u2014 an invoice, a bank statement, a filed Form B, and so on.' },
+                { label: 'Classification', desc: 'It\u2019s slotted into a Form B category (business income, business expense, personal relief, etc.) and given a status \u2014 Income, Deductible, Relief, and so on.' },
+                { label: 'Review flags', desc: 'Anything the AI can\u2019t confidently resolve on its own \u2014 an ambiguous category, a partially-deductible expense, low scan quality \u2014 is flagged as Needs Review so you make the final call.' },
+              ],
+            },
+            {
+              heading: 'Supported file types',
+              type: 'paragraph',
+              text: 'PDF, common image formats (JPG, PNG, etc.), and spreadsheets (Excel/CSV) are all supported. Multi-page PDFs are read in full, though very long documents may have a later section flagged if there\u2019s more content than can be processed in one pass \u2014 you\u2019ll see a note on the document if that happens.',
             },
           ],
         },
       },
       {
-        id: 'ocr-evidence',
-        title: 'OCR Evidence',
-        badge: 'AI Feature',
+        id: 'status-badges',
+        title: 'Document Status Badges',
+        badge: null,
         content: {
-          description: 'The OCR Evidence tab shows AI-extracted data from uploaded documents. Each record includes extracted amount, date, vendor, confidence score, missing fields, and verification status.',
+          description: 'Every document carries a status badge summarising how it\u2019s treated for tax purposes. Here\u2019s what each one means:',
           sections: [
             {
-              heading: 'OCR Fields Explained',
+              heading: '',
               type: 'list',
               items: [
-                { label: 'Confidence Score', desc: 'Percentage indicating how reliably the AI extracted the data. Scores below 80% should be manually reviewed.' },
-                { label: 'Missing Fields', desc: 'Fields the AI could not extract — e.g., invoice number, business use note. These need manual completion.' },
-                { label: 'Status', desc: 'Pending, Verified, or Needs Review.' },
+                { label: 'Income', desc: 'Money received \u2014 declared as income on Form B, no deduction involved.' },
+                { label: 'Deductible', desc: 'An allowable business expense that reduces your taxable business profit.' },
+                { label: 'Needs Review', desc: 'Only partially deductible, or otherwise needs your confirmation before it\u2019s counted \u2014 e.g. client entertainment, which is capped at 50% by law.' },
+                { label: 'Partially Deductible', desc: 'You\u2019ve already confirmed the deductible percentage for this document \u2014 only that portion counts from here on.' },
+                { label: 'Relief', desc: 'A personal tax relief item \u2014 medical expenses, EPF contributions, education fees, and similar.' },
+                { label: 'Donation', desc: 'An approved donation, deducted from your aggregate income separately from personal reliefs.' },
+                { label: 'Personal', desc: 'Personal spending with no tax benefit \u2014 won\u2019t reduce your tax bill.' },
+                { label: 'Capital Asset', desc: 'A capital purchase \u2014 machinery, equipment, and similar \u2014 claimed through capital allowance over several years, not as a one-off deduction.' },
+                { label: 'Tax Instalment', desc: 'A CP500 instalment notice or payment \u2014 money already paid or scheduled toward this year\u2019s tax bill.' },
+                { label: 'Not Applicable', desc: 'No financial content relevant to your tax return \u2014 e.g. a non-tax document.' },
+                { label: 'Reference', desc: 'A supporting document \u2014 like a prior year\u2019s Form B or a P&L statement \u2014 kept for context. Never summed into your totals.' },
+                { label: 'Category Removed', desc: 'This document\u2019s category no longer exists in the current classification system and needs to be reclassified.' },
+                { label: 'Uploading\u2026 / Classifying\u2026 / Failed / Archived', desc: 'Where the document currently sits in the upload pipeline, or whether it\u2019s been moved out of your active list.' },
               ],
             },
+          ],
+        },
+      },
+      {
+        id: 'filtering',
+        title: 'Filtering & Searching',
+        badge: null,
+        content: {
+          description: 'Use the filters above your document list to narrow down what you\u2019re looking at.',
+          sections: [
             {
-              heading: 'OCR Actions',
+              heading: '',
               type: 'list',
               items: [
-                { label: 'Mark Verified', desc: 'Confirms the extracted data is correct and clears missing fields.' },
-                { label: 'Recheck', desc: 'Re-runs the OCR extraction simulation on the document.' },
+                { label: 'All / Needs review / Failed / Archived', desc: 'Cross-cutting state filters \u2014 switch between everything, only items waiting on you, only failed uploads, or your archive.' },
+                { label: 'Category filter', desc: 'Narrow by Form B section \u2014 Business Income, Personal Income, Business Expense, Personal Relief, Donations, Personal Expense, Tax Instalments, Tax Rebates, or Reference & Reconciliation.' },
+                { label: 'Year filter', desc: 'Show documents for a specific year of assessment only.' },
+                { label: 'Search', desc: 'Find a document by filename or vendor.' },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        id: 'reviewing',
+        title: 'Reviewing & Reclassifying',
+        badge: null,
+        content: {
+          description: 'Documents flagged Needs Review need a quick decision from you before they\u2019re counted toward your totals.',
+          sections: [
+            {
+              heading: '',
+              type: 'list',
+              items: [
+                { label: 'Confirming a split', desc: 'For partially-deductible categories like client entertainment or a mixed-use vehicle, confirm the percentage that\u2019s genuinely business use.' },
+                { label: 'Reclassifying', desc: 'If cukai.ai got the category wrong, correct it manually \u2014 your totals recalculate automatically.' },
+                { label: 'Archiving', desc: 'Move a document out of your active list without deleting it \u2014 useful for duplicates or documents you\u2019ve superseded.' },
+                { label: 'Manual entry', desc: 'Add a record by hand for anything that doesn\u2019t have a document to upload, like a cash transaction.' },
               ],
             },
           ],
@@ -237,33 +291,173 @@ const DOC_SECTIONS = [
     ],
   },
   {
-    id: 'api',
-    label: 'API Reference',
-    icon: <CodeIcon />,
+    id: 'cukai-insights',
+    label: 'Cukai Insights',
+    icon: <SparkleIcon />,
     items: [
       {
-        id: 'api-overview',
-        title: 'API Overview',
-        badge: 'Developer',
+        id: 'insights-overview',
+        title: 'Cukai Insights Overview',
+        badge: 'AI Feature',
         content: {
-          description: 'The Fiscal Clarity AI API allows developers to integrate report generation, OCR extraction, and tax advisory features into their own systems. Full API documentation will be published ahead of the public API launch.',
+          description: 'Cukai Insights is a running feed of everything cukai.ai has noticed that might need your attention \u2014 savings you haven\u2019t claimed, a deadline coming up, or a document that needs an answer from you before it can be counted.',
           sections: [
             {
-              heading: 'Planned Endpoints',
-              type: 'api',
-              endpoints: [
-                { method: 'GET', path: '/api/v1/reports', desc: 'List all SME reports for the authenticated user.' },
-                { method: 'POST', path: '/api/v1/reports/generate', desc: 'Generate a new tax report with specified parameters.' },
-                { method: 'GET', path: '/api/v1/receipts', desc: 'List all linked supporting receipts.' },
-                { method: 'POST', path: '/api/v1/receipts/upload', desc: 'Upload a new receipt or invoice for OCR processing.' },
-                { method: 'GET', path: '/api/v1/ocr/:id', desc: 'Get OCR evidence details for a specific document.' },
-                { method: 'POST', path: '/api/v1/insights', desc: 'Trigger AI analysis and generate new insights for the current period.' },
+              heading: 'What shows up here',
+              type: 'list',
+              items: [
+                { label: 'Deadlines', desc: 'Upcoming filing or payment deadlines, like your Form B due date.' },
+                { label: 'Needs Answer', desc: 'Something cukai.ai needs a decision on before it can finish a calculation.' },
+                { label: 'Savings', desc: 'A relief or deduction you\u2019re eligible for but haven\u2019t fully claimed yet.' },
+                { label: 'Advisory', desc: 'General guidance \u2014 a provisional note, a reminder tied to a prior year\u2019s Form B, or a periodic summary.' },
               ],
             },
+          ],
+        },
+      },
+      {
+        id: 'insights-filters',
+        title: 'Tabs & Filters',
+        badge: null,
+        content: {
+          description: 'Use the tabs and filter chips at the top of the feed to focus on what matters right now.',
+          sections: [
             {
-              heading: 'Authentication',
-              type: 'paragraph',
-              text: 'All API requests require a Bearer token in the Authorization header. Tokens are generated from the account settings page. API keys should never be shared or committed to source code.',
+              heading: '',
+              type: 'list',
+              items: [
+                { label: 'Active', desc: 'Everything still open and waiting on you.' },
+                { label: 'Resolved', desc: 'Insights you\u2019ve acted on \u2014 these move here automatically.' },
+                { label: 'Dismissed', desc: 'Insights you\u2019ve dismissed; they won\u2019t be re-raised.' },
+                { label: 'Group filters', desc: 'All, Deadlines, Needs Answer, Savings, or Advisory \u2014 narrow the feed to one kind of insight.' },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        id: 'insights-actions',
+        title: 'Taking Action on an Insight',
+        badge: null,
+        content: {
+          description: 'Each insight card gives you a way to act on it directly, without leaving the page.',
+          sections: [
+            {
+              heading: '',
+              type: 'list',
+              items: [
+                { label: 'Open the linked document', desc: 'If an insight is tied to a specific document, jump straight to it in Cukai Documents.' },
+                { label: 'Dismiss', desc: 'Not relevant? Dismiss it \u2014 with an optional reason \u2014 and it moves out of your active feed.' },
+                { label: 'Snooze', desc: 'Push a reminder to a later date if you\u2019re not ready to deal with it yet.' },
+                { label: 'Mark resolved', desc: 'Once you\u2019ve acted on it outside the app \u2014 e.g. made a payment \u2014 mark it resolved so it stops surfacing.' },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    id: 'cukai-bot',
+    label: 'Cukai Bot',
+    icon: <ChatIcon />,
+    items: [
+      {
+        id: 'bot-overview',
+        title: 'Cukai Bot Overview',
+        badge: 'AI Feature',
+        content: {
+          description: 'Cukai Bot is a conversational assistant for Malaysian tax questions. Ask it about a deduction, a relief, or how a specific rule applies to your business, and it answers grounded in LHDN guidelines \u2014 with sources you can check.',
+          sections: [
+            {
+              heading: '',
+              type: 'list',
+              items: [
+                { label: 'Entity-aware', desc: 'Cukai Bot knows which business entity you currently have active, so its answers can reference your own context where relevant.' },
+                { label: 'Chat history', desc: 'Previous conversations are saved per business entity so you can pick up where you left off.' },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        id: 'bot-citations',
+        title: 'Citations & Sources',
+        badge: null,
+        content: {
+          description: 'Where possible, Cukai Bot backs up its answers with citations you can inspect.',
+          sections: [
+            {
+              heading: '',
+              type: 'list',
+              items: [
+                { label: 'Citation panel', desc: 'Shows the specific source \u2014 a regulation, a guideline, or one of your own documents \u2014 behind a claim in the chat.' },
+                { label: 'Document preview', desc: 'Click a citation that references one of your own documents to preview it directly, without leaving the conversation.' },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  },
+  {
+    id: 'account',
+    label: 'Profile & Entities',
+    icon: <UserIcon />,
+    items: [
+      {
+        id: 'personal-profile',
+        title: 'Personal Profile',
+        badge: null,
+        content: {
+          description: 'Your Personal Profile holds the identity, contact, and household facts Form B needs from you as an individual \u2014 separate from any one business.',
+          sections: [
+            {
+              heading: '',
+              type: 'list',
+              items: [
+                { label: 'Identity & residency', desc: 'Full name, TIN, IC/passport number, citizenship, date of birth, gender.' },
+                { label: 'Marital & dependants', desc: 'Marital status and spouse details if married \u2014 this drives spouse relief and joint assessment.' },
+                { label: 'Contact & refund details', desc: 'Your correspondence address and how you\u2019d like any tax refund paid \u2014 bank transfer or DuitNow.' },
+                { label: 'Why it matters', desc: 'cukai.ai checks this profile is complete before generating your Form B, and tells you exactly which field is missing if it isn\u2019t.' },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        id: 'business-entities',
+        title: 'Business Entities',
+        badge: null,
+        content: {
+          description: 'If you run more than one business, each one is set up as its own entity \u2014 its documents, capital assets, and figures stay separate, while your personal profile and filed Form B stay shared across all of them.',
+          sections: [
+            {
+              heading: '',
+              type: 'list',
+              items: [
+                { label: 'Adding a business', desc: 'Register a new entity with its name and MSIC business code.' },
+                { label: 'Switching between entities', desc: 'Use the entity selector to change which business\u2019s documents and figures you\u2019re looking at throughout the app.' },
+                { label: 'Opening balances', desc: 'For a business you\u2019re already running, set an opening unabsorbed business loss / capital allowance so brought-forward figures carry through correctly from day one.' },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        id: 'children',
+        title: 'Children (Child Relief)',
+        badge: null,
+        content: {
+          description: 'Add a record for each child to have their child relief tier calculated automatically, instead of a flat estimate.',
+          sections: [
+            {
+              heading: '',
+              type: 'list',
+              items: [
+                { label: 'What\u2019s tracked', desc: 'Date of birth, disability status, and full-time student / higher-education status \u2014 the exact facts LHDN\u2019s child relief tiers depend on.' },
+                { label: 'Shared custody', desc: 'Set an eligibility percentage if relief for a child is split with a co-parent.' },
+              ],
             },
           ],
         },
@@ -280,35 +474,39 @@ const DOC_SECTIONS = [
         title: 'General Questions',
         badge: null,
         content: {
-          description: 'Frequently asked questions about Fiscal Clarity AI and how it works.',
+          description: 'Answers to the questions we hear most often. If yours isn\u2019t here, the module guides above cover most workflows in more depth \u2014 start there before reaching out to support.',
           sections: [
             {
               heading: '',
               type: 'faq',
               items: [
                 {
-                  q: 'Is Fiscal Clarity AI a licensed tax agent?',
-                  a: 'No. Fiscal Clarity AI is a software tool that provides AI-assisted guidance based on publicly available LHDN regulations. It is not a licensed tax agent. All outputs should be verified with a qualified tax agent before submission.',
+                  q: 'Is cukai.ai a licensed tax agent?',
+                  a: 'No. cukai.ai is a software tool that provides AI-assisted guidance based on publicly available LHDN regulations and the documents you provide. It is not a licensed tax agent, and nothing it produces is a substitute for advice from one. Always have a qualified tax agent review your figures before filing.',
                 },
                 {
-                  q: 'Can I use the platform to submit my tax return directly to LHDN?',
-                  a: 'Not currently. The platform helps you prepare, organise, and review your tax reports. Actual submission to LHDN must be done via MyTax (mytax.hasil.gov.my) or through a licensed tax agent.',
+                  q: 'Can I submit my tax return directly to LHDN through cukai.ai?',
+                  a: 'No. cukai.ai helps you prepare, organise, and review your figures. Actual submission to LHDN must be done through MyTax (mytax.hasil.gov.my) or a licensed tax agent.',
                 },
                 {
-                  q: 'How accurate are the AI-generated tax estimates?',
-                  a: 'AI estimates are based on the information you provide and current LHDN guidelines. Accuracy depends on the completeness and correctness of your input data. Always treat AI figures as estimates for review, not final calculations.',
+                  q: 'How accurate are the AI-generated figures?',
+                  a: 'Accuracy depends entirely on the completeness and correctness of the documents you upload and the profile information you provide. Treat every AI-generated figure as an estimate to be verified, never as a final number.',
                 },
                 {
                   q: 'Is my data stored securely?',
-                  a: 'Yes. All data is encrypted in transit and at rest. We do not share your financial data with third parties. See the Terms & Conditions for full details on data handling.',
+                  a: 'See the Terms & Conditions page for full details on how your data is collected, used, and protected, including your rights under Malaysia\u2019s Personal Data Protection Act 2010.',
                 },
                 {
-                  q: 'What tax years are supported?',
-                  a: 'The platform currently supports YA 2022, YA 2023, and YA 2024. Support for earlier years and YA 2025 will be added as guidelines are published.',
+                  q: 'What\u2019s the difference between Cukai Bot and Cukai Documents?',
+                  a: 'Cukai Bot is a conversational assistant for asking tax questions and getting regulation-based guidance. Cukai Documents is where you upload, classify, and manage the actual documents and figures that feed your tax return.',
                 },
                 {
-                  q: 'What is the difference between CukaiBot and CukaiVault?',
-                  a: 'CukaiBot is a conversational AI assistant for asking tax questions and getting regulation-based guidance. CukaiVault is the structured document and report management module where you generate, store, and organise your tax reports and supporting evidence.',
+                  q: 'A document I uploaded shows Needs Review \u2014 what do I do?',
+                  a: 'Open it in Cukai Documents and check the reason shown on the document \u2014 usually a percentage split to confirm or a category to correct. See \u2018Reviewing & Reclassifying\u2019 under Cukai Documents above.',
+                },
+                {
+                  q: 'I still need help \u2014 what should I do?',
+                  a: 'Start with the module guide for the page you\u2019re stuck on \u2014 most workflows are covered above. If you\u2019re still stuck, or you\u2019ve found something that looks like a bug, reach out to your organisation\u2019s cukai.ai support contact.',
                 },
               ],
             },
@@ -430,7 +628,7 @@ function DocContent({ item }) {
 function Documentation() {
   const allItems = DOC_SECTIONS.flatMap(s => s.items);
   const [activeId, setActiveId] = useState('overview');
-  const [openSections, setOpenSections] = useState({ 'getting-started': true, 'cukai-vault': true, api: true, faq: true });
+  const [openSections, setOpenSections] = useState({ 'getting-started': true });
   const [search, setSearch] = useState('');
 
   const toggleSection = (id) => setOpenSections(p => ({ ...p, [id]: !p[id] }));
@@ -454,8 +652,8 @@ function Documentation() {
 
         {/* ── Page Header (shrink-0 prevents it from squishing) ── */}
         <div className="flex flex-col gap-1 shrink-0">
-          <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Documentation</h1>
-          <p className="text-xs text-muted mt-1">User manual, module guides, API reference, and frequently asked questions.</p>
+          <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">User Manual</h1>
+          <p className="text-xs text-muted mt-1">A guide to every feature in cukai.ai — what each page does and how to use it. Start here before reaching out to support.</p>
         </div>
 
         {/* ── Master Split Layout ── */}
@@ -538,7 +736,7 @@ function Documentation() {
 
             {/* ── Version Footer Sticky Note ── */}
             <div className="mt-3 flex items-center justify-between shrink-0">
-              <p className="text-[10px] text-[#94A3B8]">Fiscal Clarity AI — Documentation v1.0 · More modules will be added as the platform grows.</p>
+              <p className="text-[10px] text-[#94A3B8]">cukai.ai — User Manual · Updated as new features ship.</p>
               <div className="flex items-center gap-1">
                 {allItems.map((item, i) => (
                   <button

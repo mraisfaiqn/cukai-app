@@ -8,9 +8,9 @@
 
 @theme {
   /* Brand */
-  --color-primary: #0F6E56;
-  --color-primary-hover: #1D9E75;
-  --color-primary-tint: #E1F5EE;
+  --color-primary: #0D9488;
+  --color-primary-hover: #0F766E;
+  --color-primary-tint: #F0FDF9;
 
   /* Surfaces & text */
   --color-background: #F7F6F2; /*#E8ECF4*/

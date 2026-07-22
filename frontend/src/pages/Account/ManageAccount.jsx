@@ -117,11 +117,19 @@ function ManageAccount() {
 
   useEffect(() => {
     const load = async () => {
-      try {
-        const userId = localStorage.getItem('userId');
-        if (!userId) return;
+      const userId = localStorage.getItem('userId');
+      if (!userId) return;
 
-        // Fetch personal details
+      // Fetch personal details — its own independent try/catch (Ticket 6,
+      // 23 Jul 2026 fix). Previously this call sat directly inside the same
+      // outer try as the entities/children fetches below: a throw here (a
+      // network blip, a stale/mismatched userId, a transient 500) jumped
+      // straight to the outer catch and skipped the entities fetch
+      // ENTIRELY — even though the entities fetch already had its own inner
+      // try/catch that would have handled its own failure just fine on its
+      // own. Now a failure here only affects the profile form fields
+      // (loadError banner) and can never take the other fetches down with it.
+      try {
         const data = await getPersonalDetails(userId);
 
         if (data) {
@@ -171,43 +179,44 @@ function ManageAccount() {
             hasSspnEvOther:               data.hasSspnEvOther               || false,
           });
         }
-
-        // Fetch all entities (multi-entity support)
-        try {
-          const entities = await getAllEntities(userId);
-          if (entities) {
-            const mapped = entities.map(remapEntityFromApi);
-            setEntityData(mapped);
-
-            // Validate the stored activeEntityId actually belongs to THIS user's
-            // entities. If it doesn't — e.g. it's a leftover from a different
-            // account that logged in earlier in this browser — fall back to the
-            // first entity instead of silently pointing at someone else's data.
-            const stored = parseInt(localStorage.getItem('activeEntityId') || '0');
-            const storedBelongsToUser = mapped.some((ent) => ent.id === stored);
-
-            if ((!stored || !storedBelongsToUser) && mapped.length > 0) {
-              localStorage.setItem('activeEntityId', String(mapped[0].id));
-              setActiveEntityId(mapped[0].id);
-            } else if (storedBelongsToUser) {
-              setActiveEntityId(stored);
-            }
-          }
-        } catch (entityErr) {
-          console.warn('Could not load entities:', entityErr);
-        }
-
-        // Fetch children records (Phase 3 — H16 relief tiering)
-        try {
-          const children = await getChildren(userId);
-          if (children) setChildrenData(children);
-        } catch (childErr) {
-          console.warn('Could not load children records:', childErr);
-        }
-
       } catch (err) {
         console.error('Error loading account data:', err);
         setLoadError('Could not load your profile. Please refresh and try again.');
+      }
+
+      // Fetch all entities (multi-entity support) — independent of whether
+      // the personal-details fetch above succeeded or failed.
+      try {
+        const entities = await getAllEntities(userId);
+        if (entities) {
+          const mapped = entities.map(remapEntityFromApi);
+          setEntityData(mapped);
+
+          // Validate the stored activeEntityId actually belongs to THIS user's
+          // entities. If it doesn't — e.g. it's a leftover from a different
+          // account that logged in earlier in this browser — fall back to the
+          // first entity instead of silently pointing at someone else's data.
+          const stored = parseInt(localStorage.getItem('activeEntityId') || '0');
+          const storedBelongsToUser = mapped.some((ent) => ent.id === stored);
+
+          if ((!stored || !storedBelongsToUser) && mapped.length > 0) {
+            localStorage.setItem('activeEntityId', String(mapped[0].id));
+            setActiveEntityId(mapped[0].id);
+          } else if (storedBelongsToUser) {
+            setActiveEntityId(stored);
+          }
+        }
+      } catch (entityErr) {
+        console.warn('Could not load entities:', entityErr);
+      }
+
+      // Fetch children records (Phase 3 — H16 relief tiering) — likewise
+      // independent of the two fetches above.
+      try {
+        const children = await getChildren(userId);
+        if (children) setChildrenData(children);
+      } catch (childErr) {
+        console.warn('Could not load children records:', childErr);
       }
     };
 

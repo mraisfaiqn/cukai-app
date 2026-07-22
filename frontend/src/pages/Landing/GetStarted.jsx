@@ -214,51 +214,11 @@ function Step0_Account({ data, setData, onNext }) {
         Already have an account?{" "}
         <NavLink
           to="/login"
-          className="text-[#94A3B8] underline underline-offset-2 hover:text-muted transition-colors"
+          className="text-[#94A3B8] font-semibold underline underline-offset-2 hover:text-primary transition-colors"
         >
           Log in
         </NavLink>
       </p>
-    </Card>
-  );
-}
-
-function Step2_Income({ data, setData, onBack, onNext }) {
-  const [mode, setMode] = useState("monthly");
-
-  return (
-    <Card>
-
-      <div className="flex bg-border rounded-xl p-1 mb-3 w-fit">
-        {["monthly", "annual"].map(m => (
-          <button
-            key={m}
-            onClick={() => setMode(m)}
-            className={`px-4 py-1 rounded-lg text-xs font-medium transition-all duration-150 capitalize ${
-              mode === m ? "bg-surface text-headings shadow-sm" : "text-muted hover:text-headings"
-            }`}
-          >
-            {m.charAt(0).toUpperCase() + m.slice(1)}
-          </button>
-        ))}
-      </div>
-
-      <div>
-        <label className="block text-xs font-semibold tracking-[0.06em] text-muted mb-1">
-          {mode === "monthly" ? "Monthly" : "Annual"} Business Income
-        </label>
-        <div className="flex items-center border-[1.5px] border-border rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-primary">
-          <span className="px-4 py-3 text-[13.5px] font-semibold text-muted bg-[#F8FAFC] border-r border-border">RM</span>
-          <input
-            type="number" min="0" step="0.01" placeholder="0.00"
-            value={data.businessIncome || ""}
-            onChange={e => setData({ ...data, businessIncome: e.target.value })}
-            className="flex-1 px-4 py-3 text-[13.5px] text-headings focus:outline-none"
-          />
-        </div>
-      </div>
-
-      <NavButtons onBack={onBack} onNext={onNext} />
     </Card>
   );
 }
@@ -380,37 +340,14 @@ function Step5_BusinessProfile({ data, setData, onBack, onNext }) {
 
       <div className="space-y-3">
         <div>
-          <div className="flex gap-3">
-            {/* Left column */}
-            <div className="flex-1 flex flex-col gap-1.5">
-              <span className="text-xs font-semibold tracking-[0.06em] text-muted">SSM Reg. No.</span>
-              <input
-                type="text"
-                placeholder="e.g. 202301012345"
-                value={data.ssmNumber || ""}
-                onChange={e => setData({ ...data, ssmNumber: e.target.value })}
-                className="w-full h-[46px] px-4 rounded-xl border-[1.5px] border-border text-[13.5px] text-headings placeholder-[#CBD5E1] focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition"
-              />
-            </div>
-
-            {/* Right column */}
-            <div className="flex flex-col items-center gap-1.5">
-              <span className="text-xs font-semibold tracking-[0.06em] text-muted">SST / GST</span>
-              <button
-                onClick={() => setData({ ...data, sst: !data.sst })}
-                className={`flex items-center justify-center h-[46px] px-4 rounded-xl border-[1.5px] transition-all duration-150 ${
-                  data.sst ? "border-primary bg-primary-tint" : "border-border bg-[#F8FAFC] hover:border-primary"
-                }`}
-              >
-                <div className={`relative w-8 h-4 rounded-full transition-all duration-200 ${data.sst ? "bg-primary" : "bg-[#CBD5E1]"}`}>
-                  <span
-                    className="absolute top-0.5 w-3 h-3 bg-surface rounded-full shadow transition-all duration-200"
-                    style={{ left: data.sst ? "calc(100% - 14px)" : "2px" }}
-                  />
-                </div>
-              </button>
-            </div>
-          </div>
+          <span className="text-xs font-semibold tracking-[0.06em] text-muted">SSM Reg. No.</span>
+          <input
+            type="text"
+            placeholder="e.g. 202301012345"
+            value={data.ssmNumber || ""}
+            onChange={e => setData({ ...data, ssmNumber: e.target.value })}
+            className="w-full h-[46px] px-4 mt-1.5 rounded-xl border-[1.5px] border-border text-[13.5px] text-headings placeholder-[#CBD5E1] focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition"
+          />
         </div>
 
         <div className="border-t border-border pt-3">
@@ -660,7 +597,7 @@ export default function GetStarted({ onLogin }) {
   WIZARD_STEPS[0] = (
     <>
       <ProgressBar
-        current={0} total={5}
+        current={0} total={4}
         title="Create your account"
         description="Your details are safe with us."
       />
@@ -670,51 +607,41 @@ export default function GetStarted({ onLogin }) {
   WIZARD_STEPS[1] = (
     <>
       <ProgressBar
-        current={1} total={5}
-        title="What's your business income?"
-        description="Enter your gross income before deductions."
+        current={1} total={4}
+        title="Personal & Family"
+        description="Marital status, children, and dependents for tax relief."
       />
-      <Step2_Income data={data} setData={setData} onBack={() => setStep(0)} onNext={() => setStep(2)} />
+      <Step3_Personal data={data} setData={setData} onBack={() => setStep(0)} onNext={() => setStep(2)} />
     </>
   );
   WIZARD_STEPS[2] = (
     <>
       <ProgressBar
-        current={2} total={5}
-        title="Personal & Family"
-        description="Marital status, children, and dependents for tax relief."
+        current={2} total={4}
+        title="Savings & Insurance"
+        description="Select the savings and insurance contributions you have."
       />
-      <Step3_Personal data={data} setData={setData} onBack={() => setStep(1)} onNext={() => setStep(3)} />
+      <Step4_Savings data={data} setData={setData} onBack={() => setStep(1)} onNext={() => setStep(3)} />
     </>
   );
   WIZARD_STEPS[3] = (
     <>
       <ProgressBar
-        current={3} total={5}
-        title="Savings & Insurance"
-        description="Select the savings and insurance contributions you have."
-      />
-      <Step4_Savings data={data} setData={setData} onBack={() => setStep(2)} onNext={() => setStep(4)} />
-    </>
-  );
-  WIZARD_STEPS[4] = (
-    <>
-      <ProgressBar
-        current={4} total={5}
+        current={3} total={4}
         title="Your Business Profile"
         description="Help us tailor tax reliefs specific to your solopreneur situation."
       />
       <Step5_BusinessProfile
         data={data}
         setData={setData}
-        onBack={() => setStep(3)}
-        // onNext={() => handleRegisterUser(async () => setStep(5))}
-        onNext={() => handleRegisterUser(async () => setStep(6))}
+        onBack={() => setStep(2)}
+        // onNext={() => handleRegisterUser(async () => setStep(4))}
+        onNext={() => handleRegisterUser(async () => setStep(5))}
       />
     </>
   );
-  WIZARD_STEPS[5] = <StepUpload onBack={() => setStep(4)} onNext={() => setStep(6)} />;
-  WIZARD_STEPS[6] = <StepSavings onNext={() => { onLogin(); navigate("/overview"); }} />;
+  // WIZARD_STEPS[4] = <StepUpload onBack={() => setStep(3)} onNext={() => setStep(5)} />;
+  WIZARD_STEPS[5] = <StepSavings onNext={() => { onLogin(); navigate("/overview"); }} />;
 
   const currentView = WIZARD_STEPS[step];
 
@@ -724,8 +651,8 @@ export default function GetStarted({ onLogin }) {
         {/* Logo */}
         <div className="flex items-center justify-center gap-2 mb-1">
           <img src={cukaiLogo} alt="Cukai.ai logo" className="h-10 w-10 shrink-0" />
-          <span className="select-none text-xl font-bold tracking-tight text-headings">
-            cukai<span className="text-primary">.</span><span className="font-light text-muted">ai</span>
+          <span className="select-none text-xl font-bold tracking-tight text-[#0F172A]">
+            cuk<span className="font-light text-[#64748B]">ai</span>
           </span>
         </div>
 

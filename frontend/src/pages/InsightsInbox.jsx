@@ -703,7 +703,7 @@ function InsightsInbox() {
         <div className="flex flex-wrap items-start justify-between gap-4 shrink-0">
           <div>
             <div className="flex items-center gap-2.5">
-              <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">AI Insights</h1>
+              <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Cukai Insights</h1>
               {needsAction.length > 0 && (
                 <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-white">
                   {needsAction.length}
@@ -786,7 +786,11 @@ function InsightsInbox() {
             <button
               key={g}
               onClick={() => setActiveGroup(g)}
-              className={`rounded-full border px-3 py-1 text-xs font-semibold transition-all ${activeGroup === g ? 'border-primary bg-primary-tint text-primary' : 'border-border bg-surface text-muted hover:border-primary hover:text-primary'}`}>
+              className={`rounded-full border px-3 py-1 text-xs font-semibold transition-all ${
+                activeGroup === g
+                  ? (g === 'All' ? 'border-primary bg-primary text-white' : 'border-primary bg-primary-tint text-primary')
+                  : 'border-border bg-surface text-muted hover:border-primary hover:text-primary'
+              }`}>
               {g}
             </button>
           ))}
@@ -794,9 +798,9 @@ function InsightsInbox() {
 
         {/* ── Insight feed ── */}
         <div className="flex-1 overflow-y-auto min-h-0">
-          <div className="space-y-2.5 pb-2">
+          <div className="flex min-h-full flex-col space-y-2.5 pb-2">
             {loading ? (
-              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface py-16 text-center">
+              <div className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface text-center">
                 <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-background">
                   <SparkleIcon className="h-5 w-5 text-muted" />
                 </div>
@@ -805,7 +809,7 @@ function InsightsInbox() {
             ) : error && insights.length === 0 ? (
               // Fetch failed and there is nothing older on screen — say so
               // explicitly instead of masquerading as an empty inbox.
-              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface py-16 text-center">
+              <div className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface text-center">
                 <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-critical-bg">
                   <XIcon className="h-5 w-5 text-critical" />
                 </div>
@@ -820,7 +824,7 @@ function InsightsInbox() {
                 </button>
               </div>
             ) : visible.length === 0 ? (
-              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface py-16 text-center">
+              <div className="flex flex-1 flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface text-center">
                 <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-success-bg">
                   {tab === 'active' ? <CheckIcon className="h-5 w-5 text-success" /> : <InboxIcon className="h-5 w-5 text-muted" />}
                 </div>

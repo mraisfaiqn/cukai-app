@@ -151,6 +151,14 @@ def bracket_headroom(chargeable_income, ya: Optional[int] = None) -> dict:
   (higher-rate) band. Lets the UI show "RM X of headroom left in your
   current Y% bracket" - useful for year-end purchase/relief timing decisions.
   Returns None-filled values if already in the top band (no next bracket).
+
+  Also returns the current band's own floor/ceiling (currentBandFloorMyr /
+  currentBandCeilingMyr, the latter None for the unbounded top band) so a
+  caller can render a "where you sit within this bracket" progress bar
+  without needing its own independent copy of the bracket table — the
+  frontend previously duplicated this table locally (Overview.jsx), which
+  would have silently gone stale the next time this table is updated for a
+  new YA or Budget change, since nothing would keep the two in sync.
   """
   brackets, _ = brackets_for_year(ya)
   # Display-only guidance ("RM X of headroom left"): compute in float so the
@@ -167,7 +175,12 @@ def bracket_headroom(chargeable_income, ya: Optional[int] = None) -> dict:
         "currentMarginalRatePct":   round(rate * 100, 2),
         "nextMarginalRatePct":      round(next_rate * 100, 2) if next_rate is not None else None,
         "headroomToNextBracketMyr": headroom,
+        "currentBandFloorMyr":      round(floor, 2),
+        "currentBandCeilingMyr":    round(ceiling, 2) if ceiling != float("inf") else None,
       }
     floor = ceiling
   # Unreachable given the inf top band, but keep a safe fallback.
-  return {"currentMarginalRatePct": None, "nextMarginalRatePct": None, "headroomToNextBracketMyr": None}
+  return {
+    "currentMarginalRatePct": None, "nextMarginalRatePct": None, "headroomToNextBracketMyr": None,
+    "currentBandFloorMyr": None, "currentBandCeilingMyr": None,
+  }

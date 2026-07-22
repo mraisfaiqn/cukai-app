@@ -1,7 +1,9 @@
-// Dashboard — composes the dashboard from presentational components,
-// feeding each its slice of data from dashboardData.js. The greeting is
-// derived from the current hour here (the only render-time computation);
-// every child stays stateless and prop-driven.
+// Dashboard — composes the dashboard from presentational components.
+// The greeting is derived from the current hour here (the only render-time
+// computation); every child stays stateless and prop-driven. Opportunities
+// and deadlines are both derived live from the real /api/insights feed
+// (see getInsights, deadlinesFromInsights, savingsFromInsights below) —
+// dashboardData.js is no longer used for either.
 //
 // Layout changes:
 //  - TaxHealthCard removed from top row; DeadlinesCarousel takes its slot (right 2 cols).
@@ -11,10 +13,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getPersonalDetails, getAllEntities, getTaxProfileSummary, getInsights } from '../../services/api';
-// Static content that isn't document-derived yet (opportunities + deadlines).
-// Deadline banner reads the same mock feed the Insights page shows, so the
-// two can't contradict each other. When getInsights() replaces the mock feed,
-// this import goes with it.
 import DashboardHeader from '../../components/Dashboard/DashboardHeader';
 import ActionBanner from '../../components/Dashboard/ActionBanner';
 import StatsGrid from '../../components/Dashboard/StatsGrid';
@@ -97,7 +95,7 @@ const TabBarChartIcon = () => (
 // scrollable (trackpad / swipe) with the scrollbar hidden — so laptop users can
 // side-scroll and PC users can click the (larger) dots. Dots reflect and drive
 // the scroll position.
-function CarouselShell({ label, slides, slideLabels, dotsUnderRight = false }) {
+function CarouselShell({ label, slides, slideLabels, dotsUnderRight = false, arrows = false }) {
   const scrollRef = useRef(null);
   const [idx, setIdx] = useState(0);
 
@@ -119,13 +117,13 @@ function CarouselShell({ label, slides, slideLabels, dotsUnderRight = false }) {
   let tabs = null;
   if (slideLabels) {
     tabs = (
-      <div className="flex flex-1 items-center gap-5 ml-16">
+      <div className="flex flex-1 items-center justify-end gap-2">
         {slideLabels.map((item, i) => (
           <button
             key={item.name}
             onClick={() => goTo(i)}
             className={
-              'whitespace-nowrap px-1 pb-2 text-xs -mb-px border-b-2 transition-colors ' +
+              'whitespace-nowrap rounded-t-md px-2 pb-2 pt-1 text-xs -mb-px border-b-2 transition-colors hover:bg-primary-tint ' +
               (i === idx
                 ? 'text-primary font-semibold border-primary'
                 : 'text-muted border-transparent hover:text-headings')
@@ -153,6 +151,31 @@ function CarouselShell({ label, slides, slideLabels, dotsUnderRight = false }) {
     </div>
   );
 
+  const arrowNav = (
+    <div className="flex items-center justify-center gap-3">
+      <button
+        onClick={() => goTo(Math.max(0, idx - 1))}
+        disabled={idx === 0}
+        aria-label="Previous slide"
+        className="flex h-6 w-6 items-center justify-center rounded-full border border-border text-muted transition-colors hover:bg-primary-tint hover:text-primary disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+      </button>
+      <button
+        onClick={() => goTo(Math.min(slides.length - 1, idx + 1))}
+        disabled={idx === slides.length - 1}
+        aria-label="Next slide"
+        className="flex h-6 w-6 items-center justify-center rounded-full border border-border text-muted transition-colors hover:bg-primary-tint hover:text-primary disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </button>
+    </div>
+  );
+
   return (
     <section className="flex h-full flex-col rounded-xl border border-border bg-surface p-3 shadow-md">
       <style>{'.cukai-carousel::-webkit-scrollbar{display:none}'}</style>
@@ -174,7 +197,9 @@ function CarouselShell({ label, slides, slideLabels, dotsUnderRight = false }) {
           </div>
         ))}
       </div>
-      {!slideLabels && (dotsUnderRight ? (
+      {!slideLabels && (arrows ? (
+        <div className="shrink-0 pt-2">{arrowNav}</div>
+      ) : dotsUnderRight ? (
         <div className="grid grid-cols-4 shrink-0 pt-2">
           <div />
           <div className="col-span-3">{dots}</div>
@@ -216,9 +241,9 @@ function shortLabel(title) {
   return title.split('—')[0].trim();
 }
 
-// Turns deadline-type insights into the { label, sub, daysLeft } structure the dashboard expects. 
-// It's a temporary connection until the real API provides deadlines in the expected format.
-// currently using mock data from InsightsInbox.jsx. Takes the one due soonest
+// Turns deadline-type insights (from the real /api/insights feed, via
+// getInsights() below) into the { label, sub, daysLeft } structure the
+// dashboard expects. Takes the one due soonest.
 const DAY_MS = 86400000;
 function deadlinesFromInsights(insights) {
   return (insights || [])
@@ -265,7 +290,7 @@ function DeadlineBanner({ deadlines, onViewAll }) {
   return (
     <div className="flex flex-1 flex-col justify-center">
       <div className="flex items-center justify-between mb-2">
-        <p className="text-sm font-bold text-headings">Upcoming deadline</p>
+        <p className="font-headings text-sm font-semibold text-slate-700">Upcoming deadline</p>
         {onViewAll && (
           <button onClick={onViewAll}
             className="text-xs font-medium text-primary hover:underline whitespace-nowrap">
@@ -309,7 +334,7 @@ function DeadlineBanner({ deadlines, onViewAll }) {
 // ── Cp500Card ──────────────────────────────────────────────────────────────────
 // Shows what fraction of the estimated tax liability has been prepaid via CP500
 // instalments. Reads cp500Paid and estimatedTaxPayable straight from the summary.
-function Cp500Card({ totals }) {
+function Cp500Card({ totals, assessmentYear }) {
   const paid = Number(totals?.cp500Paid) || 0;
   const liability = Number(totals?.estimatedTaxPayable) || 0;
   const pct = liability > 0 ? Math.round((paid / liability) * 100) : 0;
@@ -318,8 +343,8 @@ function Cp500Card({ totals }) {
   return (
     <section className="flex flex-col rounded-xl border border-border bg-surface p-4">
   <div className="flex items-baseline gap-2">
-        <p className="text-sm font-bold text-headings">CP500 Coverage</p>
-        <p className="text-xs text-muted">YA 2026</p>
+        <p className="font-headings text-sm font-semibold text-slate-700">CP500 Coverage</p>
+        <p className="text-xs text-muted">{assessmentYear || ''}</p>
       </div>
 
       <div className="flex items-center gap-3 mt-3">
@@ -343,9 +368,9 @@ function Cp500Card({ totals }) {
 function DeadlineSlide({ deadlines, onViewAll }) {
   if (!deadlines || deadlines.length === 0) {
     return (
-      <div className="flex flex-1 flex-col justify-center">
+      <div className="flex flex-1 flex-col">
         <div className="flex items-center justify-between mb-2">
-          <p className="text-sm font-bold text-headings">Upcoming deadline</p>
+          <p className="font-headings text-sm font-semibold text-slate-700">Upcoming deadline</p>
           {onViewAll && (
             <button onClick={onViewAll}
               className="text-xs font-medium text-primary hover:underline whitespace-nowrap">
@@ -354,16 +379,16 @@ function DeadlineSlide({ deadlines, onViewAll }) {
           )}
         </div>
         <div className="flex flex-1 items-center justify-center">
-          <p className="text-sm text-muted">No upcoming deadlines</p>
+          <p className="text-xs text-muted">No upcoming deadlines</p>
         </div>
       </div>
     );
   }
   const d = [...deadlines].sort((a, b) => (a.daysLeft ?? 9999) - (b.daysLeft ?? 9999))[0];
   return (
-    <div className="flex flex-1 flex-col justify-center">
+    <div className="flex flex-1 flex-col">
       <div className="flex items-center justify-between mb-2">
-        <p className="text-sm font-bold text-headings">Upcoming deadline</p>
+        <p className="font-headings text-sm font-semibold text-slate-700">Upcoming deadline</p>
         {onViewAll && (
           <button onClick={onViewAll}
             className="text-xs font-medium text-primary hover:underline whitespace-nowrap">
@@ -371,39 +396,39 @@ function DeadlineSlide({ deadlines, onViewAll }) {
           </button>
         )}
       </div>
-      <div className="flex items-center gap-2">
-        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0 text-critical" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <div className="flex flex-1 items-center gap-2">
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0 text-critical" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
           <line x1="12" y1="9" x2="12" y2="13" />
           <line x1="12" y1="17" x2="12.01" y2="17" />
         </svg>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-headings truncate">{d.label}</p>
-          <p className="text-xs text-muted truncate">{d.sub}</p>
+          <p className="text-xs font-semibold text-headings truncate">{d.label}</p>
+          <p className="text-[10px] text-muted truncate">{d.sub}</p>
         </div>
       </div>
     </div>
   );
 }
 
-function Cp500Slide({ totals }) {
+function Cp500Slide({ totals, assessmentYear }) {
   const paid = Number(totals?.cp500Paid) || 0;
   const liability = Number(totals?.estimatedTaxPayable) || 0;
   const coverage = liability > 0 ? Math.round((paid / liability) * 100) : 0;
   const color = coverage > 0 ? '#0D9488' : '#DC2626';
   return (
-    <div className="flex flex-1 flex-col justify-center">
+    <div className="flex flex-1 flex-col">
       <div className="flex items-baseline gap-2">
-        <p className="text-sm font-bold text-headings">CP500 coverage</p>
-        <p className="text-xs text-muted">YA 2026</p>
+        <p className="font-headings text-sm font-semibold text-slate-700">CP500 coverage</p>
+        <p className="text-[11px] text-muted">{assessmentYear || ''}</p>
       </div>
-      <div className="flex items-center gap-3 mt-3">
-        <p className="text-2xl font-bold shrink-0" style={{ color }}>{coverage}%</p>
+      <div className="flex flex-1 items-center gap-3 mt-1.5">
+        <p className="text-base font-bold shrink-0" style={{ color }}>{coverage}%</p>
         <div className="flex-1">
           <div className="h-2 bg-border rounded-full overflow-hidden">
             <div className="h-full rounded-full" style={{ width: `${coverage}%`, background: color }} />
           </div>
-          <p className="text-[11px] text-muted mt-1.5">
+          <p className="text-[10px] text-muted mt-1.5">
             {fmtRM(paid)} of {fmtRM(liability)} estimated liability prepaid via CP500
           </p>
         </div>
@@ -412,60 +437,44 @@ function Cp500Slide({ totals }) {
   );
 }
 
-//Tax bracket info logic
-const TAX_BRACKETS = [
-  {category: 'A', floor: 0, ceiling: 5000, rate: 0},
-  {category: 'B', floor: 5001, ceiling: 20000, rate: 1},
-  {category: 'C', floor: 20001, ceiling: 35000, rate: 3},
-  {category: 'D', floor: 35001, ceiling: 50000, rate: 6},
-  {category: 'E', floor: 50001, ceiling: 70000, rate: 11},
-  {category: 'F', floor: 70001, ceiling: 100000, rate: 19},
-  {category: 'G', floor: 100001, ceiling: 400000, rate: 25},
-  {category: 'H', floor: 400001, ceiling: 600000, rate: 26},
-  {category: 'I', floor: 600001, ceiling: 2000000, rate: 28},
-  {category: 'J', floor: 2000001, ceiling: Infinity, rate: 30},
-];
-
-function bracketHeadroom(chargeableIncome) {
-  const income = Number(chargeableIncome) || 0;
-
-  const index = TAX_BRACKETS.findIndex(b => income >= b.floor && income <= b.ceiling);
-  const current = TAX_BRACKETS[index] || TAX_BRACKETS[0];
-  const next = TAX_BRACKETS[index + 1] || null;
-
-  const headroom = current.ceiling === Infinity ? null : current.ceiling - income;
-
-  const span = current.ceiling === Infinity ? 0 : current.ceiling - current.floor;
-  const filledPct = span > 0
-  ? Math.min(100, Math.max(0, ((income-current.floor) / span) * 100))
-  : 100;
-
-  const suggestSdnBhd = current.rate >= 25;
-  return {income, current, next, headroom, filledPct, suggestSdnBhd};
-}
 function HeadroomSlide({ totals }) {
   const [showInfo, setShowInfo] = useState(false);
   const [infoPos, setInfoPos] = useState({ top: 0, left: 0 });
 
   const chargeableIncome = Number(totals?.estimatedChargeableIncome) || 0;
-  const hasData = chargeableIncome > 0;
-  const { current, next, headroom, filledPct, suggestSdnBhd } = bracketHeadroom(chargeableIncome);
+  // currentMarginalRatePct/nextMarginalRatePct/headroomToNextBracketMyr/
+  // currentBandFloorMyr/currentBandCeilingMyr all come straight from the
+  // backend's tax_brackets.py — the single source of truth for bracket
+  // boundaries and rates, versioned via tax_rules.py. Never recompute or
+  // hardcode a copy of the bracket table here.
+  const hasData = chargeableIncome > 0 && totals?.currentMarginalRatePct != null;
 
   // Empty state — no data yet, matches the other slides' "no data" look.
   if (!hasData) {
     return (
-      <div className="flex flex-1 flex-col justify-center">
-        <p className="text-sm font-bold text-headings">Tax bracket headroom</p>
+      <div className="flex flex-1 flex-col">
+        <p className="font-headings text-sm font-semibold text-slate-700">Tax bracket headroom</p>
         <p className="mt-1 text-xs text-muted">No data yet — upload documents to see your bracket.</p>
       </div>
     );
   }
 
+  const currentRatePct = totals.currentMarginalRatePct;
+  const nextRatePct = totals.nextMarginalRatePct;       // null when already in the top band
+  const headroom = totals.headroomToNextBracketMyr;     // null when already in the top band
+  const floor = Number(totals.currentBandFloorMyr) || 0;
+  const ceiling = totals.currentBandCeilingMyr;         // null for the unbounded top band
+  const span = ceiling != null ? ceiling - floor : 0;
+  const filledPct = span > 0
+    ? Math.min(100, Math.max(0, ((chargeableIncome - floor) / span) * 100))
+    : 100;
+  const suggestSdnBhd = currentRatePct >= 25;
+
   return (
-    <div className="relative flex flex-1 flex-col justify-center">
+    <div className="relative flex flex-1 flex-col">
       {/* Title row with the info button */}
       <div className="flex items-center justify-between">
-        <p className="text-sm font-bold text-headings">Tax bracket headroom</p>
+        <p className="font-headings text-sm font-semibold text-slate-700">Tax bracket headroom</p>
         <button
           type="button"
           onClick={(e) => {
@@ -482,25 +491,25 @@ function HeadroomSlide({ totals }) {
 
       {/* Headroom figure + current bracket */}
       <p className="mt-0.5 flex flex-wrap items-baseline gap-1.5">
-        <span className="text-lg font-bold text-headings">
-          {next ? fmtRM(headroom) : 'Top bracket'}
+        <span className="text-sm font-bold text-headings">
+          {nextRatePct != null ? fmtRM(headroom) : 'Top bracket'}
         </span>
-        {next && (
-          <span className="text-[11px] text-muted">
-            before your rate rises to {next.rate}% (Category {next.category})
+        {nextRatePct != null && (
+          <span className="text-[10px] text-muted">
+            before your rate rises to {nextRatePct}%
           </span>
         )}
       </p>
 
       {/* Progress bar showing position within the current bracket */}
-      <div className="mt-2">
+      <div className="mt-1.5 flex-1 flex flex-col justify-center">
         <div className="h-2 bg-border rounded-full overflow-hidden">
           <div className="h-full rounded-full" style={{ width: `${filledPct}%`, background: '#0D9488' }} />
         </div>
-        <div className="mt-1.5 flex justify-between text-[11px] text-muted">
-          <span>{fmtRM(current.floor)}</span>
-          <span>you: {fmtRM(chargeableIncome)}</span>
-          <span>{current.ceiling === Infinity ? '∞' : fmtRM(current.ceiling)}</span>
+        <div className="mt-1.5 flex justify-between text-[10px] text-muted">
+          <span>{fmtRM(floor)}</span>
+          <span>Chargeable Income: {fmtRM(chargeableIncome)}</span>
+          <span>{ceiling == null ? '∞' : fmtRM(ceiling)}</span>
         </div>
       </div>
 
@@ -523,13 +532,13 @@ function HeadroomSlide({ totals }) {
     </div>
   );
 }
-function UpcomingCarousel({ deadlines, totals, onViewAll }) {
+function UpcomingCarousel({ deadlines, totals, assessmentYear, onViewAll }) {
   const slides = [
-    <DeadlineSlide key="deadline" deadlines={deadlines} onViewAll={onViewAll} />,
-    <Cp500Slide key="cp500" totals={totals} />,
     <HeadroomSlide key="headroom" totals={totals} />,
+    <Cp500Slide key="cp500" totals={totals} assessmentYear={assessmentYear} />,
+    <DeadlineSlide key="deadline" deadlines={deadlines} onViewAll={onViewAll} />,
   ];
-  return <CarouselShell slides={slides} />;
+  return <CarouselShell slides={slides} arrows />;
 }
 
 
@@ -685,13 +694,20 @@ function PieSlide({ chart }) {
   const [hovered, setHovered] = useState(null);
   const [mouse, setMouse] = useState({ x: 0, y: 0 });
 
-  const SIZE = 150;                         // enlarged from 150
+  // SIZE drives the box (and the dashed "no data" circle, so both stay in
+  // sync) and now also the ring itself — R/INNER are a much larger fraction
+  // of SIZE so the donut's outer edge fills the box the same way the dashed
+  // placeholder circle does, instead of floating with a wide margin inside it.
+  // TEXT_BASE is a fixed reference so the center total text doesn't grow
+  // along with the enlarged ring.
+  const SIZE = 140;
+  const TEXT_BASE = 160;
   const CX = SIZE / 2, CY = SIZE / 2;
-  const R = SIZE * 0.40, INNER = SIZE * 0.23;
+  const R = SIZE * 0.48, INNER = SIZE * 0.27;
   const { slices, total } = buildSlices(chart.segments, CX, CY, R, INNER);
 
   return (
-    <div className="grid flex-1 min-h-0 grid-cols-4 gap-3">
+    <div className="grid flex-1 min-h-0 grid-rows-[2fr_1fr] gap-2">
       {/* Tooltip portal */}
       {hovered && (
         <div
@@ -714,42 +730,8 @@ function PieSlide({ chart }) {
         </div>
       )}
 
-      {/* Left column (1/4) — legend (scrollable) + footer total */}
-      {/* Left column (1/4) — title, legend (scrollable), footer total */}
-      <div className="col-span-1 flex flex-col min-h-0">
-        
-       <div className="flex-1 min-h-0 overflow-visible flex flex-col justify-start space-y-1.5 pr-0.5">
-          {slices.length === 0 ? (
-            <p className="text-xs text-muted">No data yet</p>
-          ) : (
-            slices.map(sl => (
-              <div key={sl.label} className="flex items-start gap-1.5">
-                <span className="mt-1 h-2 w-2 shrink-0 rounded-sm" style={{ background: sl.color }} />
-                <div className="min-w-0">
-                  <span className="block text-[10px] leading-tight text-muted">{sl.label}</span>
-                  <span className="block text-xs font-semibold leading-tight text-headings">{pct(sl.value, total)}</span>
-                  {sl.cap != null && (
-                    <span className={'block text-[10px] leading-tight ' + (sl.wasCapped ? 'text-warning font-semibold' : 'text-muted')}>
-                      {fmtRM(Math.min(sl.value, sl.cap))} / {fmtRM(sl.cap)}
-                      {sl.wasCapped ? ' · cap reached' : ' cap'}
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-        {chart.footerLabel && (
-          <div className="shrink-0 mt-2 border-t border-border pt-2">
-            <p className="text-sm text-muted">{chart.footerLabel}</p>
-            <p className="text-sm font-bold" style={{ color: chart.footerColor || 'inherit' }}>{fmtRM(total)}</p>
-          </div>
-        )}
-      </div>
-
-      {/* Right columns (3/4) — title fixed at top, donut centered in the remaining space (matches bar chart layout) */}
-      <div className="col-span-3 flex flex-col min-h-0">
-        <div className="flex-1 min-h-0 flex items-center justify-center">
+      {/* Top row (2 parts) — the donut, centered */}
+      <div className="min-h-0 flex items-center justify-center">
         {total === 0 ? (
           <div style={{ width: SIZE, height: SIZE }} className="flex items-center justify-center rounded-full border-2 border-dashed border-border">
             <p className="text-xs text-muted text-center px-2">No data yet</p>
@@ -767,14 +749,31 @@ function PieSlide({ chart }) {
                   onMouseEnter={e => { setMouse({ x: e.clientX, y: e.clientY }); setHovered(sl); }}
                   onMouseMove={e => setMouse({ x: e.clientX, y: e.clientY })} />
               ))}
-              <text x={CX} y={CY - 5} textAnchor="middle" fontSize={SIZE * 0.065} fill="var(--color-muted, #94A3B8)" fontFamily="sans-serif">Total</text>
-              <text x={CX} y={CY + 10} textAnchor="middle" fontSize={SIZE * 0.072} fill="var(--color-headings, #0F172A)" fontWeight="700" fontFamily="sans-serif">
+              <text x={CX} y={CY - 7} textAnchor="middle" fontSize={TEXT_BASE * 0.075} fill="var(--color-muted, #94A3B8)" fontFamily="sans-serif">Total</text>
+              <text x={CX} y={CY + 13} textAnchor="middle" fontSize={TEXT_BASE * 0.085} fill="var(--color-headings, #0F172A)" fontWeight="700" fontFamily="sans-serif">
                 {fmtRM(total)}
               </text>
             </svg>
           </div>
         )}
-        </div>
+      </div>
+
+      {/* Bottom row (1 part) — dot legend, centered below the donut.
+          Categories are dynamic (grow as the user uploads documents into new
+          ones), so it still scrolls horizontally if there are more than fit,
+          but centers when there's room. */}
+      <div className="min-h-0 flex items-center justify-center gap-3 overflow-x-auto">
+        {slices.length === 0 ? (
+          <p className="text-xs text-muted whitespace-nowrap">No data yet</p>
+        ) : (
+          slices.map(sl => (
+            <div key={sl.label} className="flex items-center gap-1 shrink-0">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-sm" style={{ background: sl.color }} />
+              <span className="text-xs leading-tight text-muted whitespace-nowrap">{sl.label}</span>
+              <span className="text-xs font-semibold leading-tight text-headings whitespace-nowrap">{pct(sl.value, total)}</span>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
@@ -786,9 +785,9 @@ function PieSlide({ chart }) {
 // rather than stacked, which would visually imply they sum together.
 const BAR_METRICS = [
   { key: 'totalIncome',                label: 'Total Income',      color: '#0D9488' },
-  { key: 'q3TotalDeductions',          label: 'Total Deductions',  color: '#F59E0B' },
-  { key: 'estimatedChargeableIncome',  label: 'Chargeable Income', color: '#6366F1' },
-  { key: 'estimatedTaxPayable',        label: 'Est. Tax Payable',  color: '#DC2626' },
+  { key: 'q3TotalDeductions',          label: 'Total Deductions',  color: '#2563EB' },
+  { key: 'estimatedChargeableIncome',  label: 'Chargeable Income', color: '#9333EA' },
+  { key: 'estimatedTaxPayable',        label: 'Est. Tax Payable',  color: '#D97706' },
 ];
 
 function BarSlide({ chart }) {
@@ -806,7 +805,7 @@ function BarSlide({ chart }) {
   // Fixed drawing surface, scaled to fit by the viewBox. Sized close to the
   // container's own aspect ratio so it fills rather than letterboxes.
   const W = 880, H = 300;
-  const PAD_L = 64, PAD_R = 16, PAD_T = 26, PAD_B = 52;
+  const PAD_L = 72, PAD_R = 16, PAD_T = 26, PAD_B = 52;
   const baseline = H - PAD_B;
   const plotH = baseline - PAD_T;
   const plotW = W - PAD_L - PAD_R;
@@ -816,7 +815,7 @@ function BarSlide({ chart }) {
   const groupInner = BAR_METRICS.length * barW + (BAR_METRICS.length - 1) * barGap;
 
   return (
-    <div className="grid flex-1 min-h-0 grid-cols-5 gap-3">
+    <div className="flex flex-1 min-h-0 flex-col gap-2">
       {hovered && (
         <div
           className="fixed z-[9999] pointer-events-none rounded-lg border border-border bg-surface px-3 py-2 shadow-lg"
@@ -831,29 +830,10 @@ function BarSlide({ chart }) {
         </div>
       )}
 
-      {/* Left column — title + legend chips */}
-      <div className="col-span-2 flex flex-col min-h-0">
-        <div className="shrink-0 mb-2">
-          <p className="font-headings text-sm font-bold text-headings">Tax Summary by Year</p>
-          <p className="text-xs text-muted mt-0.5">Across years of assessment</p>
-        </div>
-        <div className="flex-1 min-h-0 flex flex-col justify-center gap-1.5">
-          {BAR_METRICS.map(m => (
-            <div key={m.key} className="flex items-center gap-2 min-w-0">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md"
-                style={{ background: m.color + '1A' }}>
-                <span className="h-2 w-2 rounded-full" style={{ background: m.color }} />
-              </span>
-              <span className="truncate text-xs font-medium text-headings">{m.label}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Right columns — the chart */}
-      <div className="col-span-3 flex flex-col min-h-0">
+      {/* Chart — fills the entire section now that the side legend is gone */}
+      <div className="flex-1 min-h-0">
         {rows.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center">
+          <div className="flex h-full items-center justify-center">
             <p className="text-xs text-muted">No data yet</p>
           </div>
         ) : (
@@ -867,16 +847,16 @@ function BarSlide({ chart }) {
                   <line x1={PAD_L} y1={y} x2={W - PAD_R} y2={y}
                     stroke="var(--color-border, #E2E8F0)" strokeWidth="1"
                     strokeDasharray={i === 0 ? 'none' : '3 4'} />
-                  <text x={PAD_L - 10} y={y + 3} textAnchor="end" fontSize="10"
+                  <text x={PAD_L - 12} y={y + 4} textAnchor="end" fontSize="12"
                     fill="var(--color-muted, #94A3B8)" fontFamily="sans-serif">{fmtAxis(val)}</text>
                 </g>
               );
             })}
 
-            <text x={16} y={PAD_T + plotH / 2} fontSize="10" fill="var(--color-muted, #94A3B8)"
+            <text x={16} y={PAD_T + plotH / 2} fontSize="12" fill="var(--color-muted, #94A3B8)"
               fontFamily="sans-serif" textAnchor="middle"
               transform={`rotate(-90 16 ${PAD_T + plotH / 2})`}>Amount (RM)</text>
-            <text x={PAD_L + plotW / 2} y={H - 8} fontSize="10" fill="var(--color-muted, #94A3B8)"
+            <text x={PAD_L + plotW / 2} y={H - 8} fontSize="12" fill="var(--color-muted, #94A3B8)"
               fontFamily="sans-serif" textAnchor="middle">Year of Assessment</text>
 
             {rows.map((r, gi) => {
@@ -897,20 +877,30 @@ function BarSlide({ chart }) {
                           onMouseEnter={e => { setMouse({ x: e.clientX, y: e.clientY }); setHovered({ id: barId, label: metric.label, color: metric.color, value: v, year: r.year }); }}
                           onMouseMove={e => setMouse({ x: e.clientX, y: e.clientY })} />
                         {v > 0 && (
-                          <text x={x + barW / 2} y={baseline - h - 6} textAnchor="middle" fontSize="11"
+                          <text x={x + barW / 2} y={baseline - h - 6} textAnchor="middle" fontSize="13"
                             fill="var(--color-headings, #0F172A)" fontFamily="sans-serif"
                             style={{ pointerEvents: 'none' }}>{fmtBar(v)}</text>
                         )}
                       </g>
                     );
                   })}
-                  <text x={gx + groupInner / 2} y={baseline + 18} textAnchor="middle" fontSize="11"
+                  <text x={gx + groupInner / 2} y={baseline + 18} textAnchor="middle" fontSize="13"
                     fill="var(--color-muted, #94A3B8)" fontFamily="sans-serif">{r.year}</text>
                 </g>
               );
             })}
           </svg>
         )}
+      </div>
+
+      {/* Legend — horizontal row below the chart instead of a side column */}
+      <div className="shrink-0 flex flex-wrap items-center justify-center gap-x-5 gap-y-1.5">
+        {BAR_METRICS.map(m => (
+          <div key={m.key} className="flex items-center gap-1.5 min-w-0">
+            <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: m.color }} />
+            <span className="truncate text-xs font-medium text-headings">{m.label}</span>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -935,8 +925,9 @@ function PieChartsCarousel({ charts }) {
 
   // A slide that holds two donuts side by side (two equal columns).
   const pairSlide = (left, right) => (
-    <div className="grid grid-cols-2 gap-3 flex-1 min-h-0">
+    <div className="relative grid grid-cols-2 gap-3 flex-1 min-h-0">
       <div className="flex flex-col min-h-0">{left  && <PieSlide chart={left} />}</div>
+      <div className="absolute left-1/2 top-[12%] bottom-[12%] w-px -translate-x-1/2 bg-border" />
       <div className="flex flex-col min-h-0">{right && <PieSlide chart={right} />}</div>
     </div>
   );
@@ -949,9 +940,9 @@ function PieChartsCarousel({ charts }) {
 
   // One tab per slide now (three total), since donuts are grouped.
   const labels = [
-    { name: 'By Year' },
-    { name: 'Income' },
-    { name: 'Deductions & Reliefs' },
+    { name: 'Yearly Summary' },
+    { name: 'Aggregate Income' },
+    { name: 'Tax Adjustments' },
   ];
 
   return (
@@ -970,7 +961,7 @@ function PieChartsCarousel({ charts }) {
 const SKELETON_STATS = [
   { label: 'Total Income',      value: '—', change: '' },
   { label: 'Total Deductions',  value: '—', change: '' },
-  { label: 'Chargeable Income', value: '—', change: '' },
+  { label: 'Chargeable Inc.', value: '—', change: '' },
   { label: 'Est. Tax Payable',  value: '—', change: '' },
 ];
 const SKELETON_PIES = [
@@ -1048,13 +1039,14 @@ export default function Overview() {
       const totals = cy?.totals;
       setLiveTotals(totals);
       const docCount = cy?.documentCount ?? 0;
-      const pendingReview = cy?.pendingReviewCount ?? 0;
-      // The actual items behind pendingReview — some are real documents,
+      // The actual items behind pendingReviewCount — some are real documents,
       // some are account-level reconciliation notes (CP500, Breastfeeding,
       // Departure Levy, One-Time Relief) or even a profile-setting issue
       // (Joint Assessment) with no document at all. Previously only the
-      // bare count was ever used; the banner had no way to show WHAT was
-      // actually pending or let the user act on it directly.
+      // bare combined count was ever used; the banner had no way to show
+      // WHAT was actually pending, let the user act on it directly, or even
+      // phrase the summary sentence correctly (see docLinkedItems/
+      // accountLevelItems split below — Ticket 4, 23 Jul 2026 fix).
       const pendingItems = cy?.mixedPendingReview ?? [];
       const daysLeft = daysToFormBDeadline();
 
@@ -1119,8 +1111,8 @@ export default function Overview() {
         { label: 'Total Income', value: fmtRM(totals.totalIncome || 0),
             ...yoy(totals.totalIncome, priorTotals?.totalIncome, 'up'),
             detail: {
-              formula: 'Your business profit (after costs) plus any personal income such as employment, rent, or interest.',
-              formula2: 'Business Profit (after costs) + Personal Income = Total Income',
+              formula: 'This consist of all the money earned this year and added together — from your business and anywhere else  (e.g., freelance work, investments, rental).',
+              formula2: 'Business Income + Other Income = Total Income',
               components: incomeComponents,
               equation: equationFromComponents(incomeComponents, totals.totalIncome),
             } },
@@ -1128,23 +1120,24 @@ export default function Overview() {
           { label: 'Total Deductions', value: fmtRM(totals.q3TotalDeductions || 0),
             ...yoy(totals.q3TotalDeductions, priorTotals?.q3TotalDeductions, 'up'),
             detail: {
-              formula: 'Money you spent running your business, plus a yearly write-off on equipment. (These have already been subtracted from your Total Income - shown here so you can see what was claimed)',
+              formula: 'Money you spent running your business, plus a yearly write-off on equipment you bought. LHDN lets you subtract both before your tax is worked out.',
               formula2: 'Business Expenses + Capital Allowance = Total Deductions',
               components: deductionComponents,
               equation: equationFromComponents(deductionComponents, totals.q3TotalDeductions),
             } },
 
-          { label: 'Chargeable Income', value: fmtRM(totals.estimatedChargeableIncome || 0),
+          { label: 'Chargeable Inc.', value: fmtRM(totals.estimatedChargeableIncome || 0),
             ...yoy(totals.estimatedChargeableIncome, priorTotals?.estimatedChargeableIncome, 'down'),
             detail: {
-              formula: 'The part of your income that actually gets taxed. Business costs are already out of Total Income, so only personal reliefs are subtracted here.',
-              formula2: 'Total Income − Reliefs = Chargeable Income',
+              formula: 'This consist of the part of your money that actually gets taxed.',
+              formula2: 'Total Income − Total Deductions − Reliefs = Chargeable Income',
               equation: fmtRM(totals.totalIncome || 0)
+                + ' − ' + fmtRM(totals.q3TotalDeductions || 0)
                 + ' − ' + fmtRM(reliefsApplied)
                 + ' = ' + fmtRM(totals.estimatedChargeableIncome || 0),
               components: [
-                { label: 'Total income', amount: fmtRM(totals.totalIncome || 0),
-                  count: 'Already after ' + fmtRM(totals.q3TotalDeductions || 0) + ' of business costs' },
+                { label: 'Total income', amount: fmtRM(totals.totalIncome || 0) },
+                { label: 'Business costs', amount: '− ' + fmtRM(totals.q3TotalDeductions || 0) },
                 { label: 'Self relief', amount: '− ' + fmtRM(selfRelief),
                   count: 'Automatic — every resident gets this' },
                 { label: 'Other reliefs', amount: '− ' + fmtRM(q4Reliefs),
@@ -1228,11 +1221,42 @@ export default function Overview() {
 
       // ── Action banner: reflects documents waiting on review in the Upload
       // Documents tab. Hidden entirely once nothing needs attention.
+      //
+      // pendingItems (mixedPendingReview) mixes two genuinely different
+      // kinds of entry: a real, entity-scoped DOCUMENT (documentId != null)
+      // and a person-level reconciliation note with no document at all
+      // (documentId == null — CP500, one-time relief, departure levy, a
+      // profile-setting issue). docCount is purely entity-scoped real
+      // documents, so comparing it against the COMBINED pendingReview count
+      // produces a nonsensical "1 of 0 documents" reading whenever an entity
+      // has 0 real documents but a person-level item is pending. Composing
+      // the sentence from each kind separately keeps the "X of Y documents"
+      // framing meaningful (it's only ever compared against real documents)
+      // while still surfacing account-level items in their own clause.
+      const docLinkedItems = pendingItems.filter((i) => i.documentId != null);
+      const accountLevelItems = pendingItems.filter((i) => i.documentId == null);
+
+      let bannerMessage = null;
+      if (docLinkedItems.length > 0 && accountLevelItems.length > 0) {
+        bannerMessage =
+          `${docLinkedItems.length} of ${docCount} document${docCount === 1 ? '' : 's'} for YA ${assessmentYear} ` +
+          `need${docLinkedItems.length === 1 ? 's' : ''} your review, plus ${accountLevelItems.length} other ` +
+          `item${accountLevelItems.length === 1 ? '' : 's'}, before filing.`;
+      } else if (docLinkedItems.length > 0) {
+        bannerMessage =
+          `${docLinkedItems.length} of ${docCount} document${docCount === 1 ? '' : 's'} for YA ${assessmentYear} ` +
+          `need${docLinkedItems.length === 1 ? 's' : ''} your review before filing.`;
+      } else if (accountLevelItems.length > 0) {
+        bannerMessage =
+          `${accountLevelItems.length} item${accountLevelItems.length === 1 ? '' : 's'} for YA ${assessmentYear} ` +
+          `need${accountLevelItems.length === 1 ? 's' : ''} your review before filing.`;
+      }
+
       setLiveAlert(
-        pendingReview > 0
+        bannerMessage
           ? {
               title: 'Action Required',
-              message: `${pendingReview} of ${docCount} document${docCount === 1 ? '' : 's'} for YA ${assessmentYear} need${pendingReview === 1 ? 's' : ''} your review before filing.`,
+              message: bannerMessage,
               items: pendingItems,
             }
           : null
@@ -1265,7 +1289,7 @@ export default function Overview() {
 
   return (
    <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body flex flex-col">
-      <div className="mx-auto w-full max-w-7xl px-6 py-3 flex flex-col flex-1 min-h-0 gap-4">
+      <div className="mx-auto w-full max-w-7xl px-6 py-4 flex flex-col flex-1 min-h-0 gap-3">
       {/* ── Header using dynamic backend account details ── */}
      <div className="shrink-0">
         <DashboardHeader
@@ -1313,6 +1337,7 @@ export default function Overview() {
             <UpcomingCarousel
             deadlines={deadlinesFromInsights(liveInsights)}
             totals={liveTotals}
+            assessmentYear={liveAccount.assessmentYear}
             onViewAll={() => navigate('/insightsinbox?filter=Deadlines')}
           />
           </div>

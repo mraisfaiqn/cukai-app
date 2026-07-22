@@ -22,10 +22,9 @@ const OverviewIcon = () => (
 
 const AccountIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" className="h-[16px] w-[16px] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M22 12H2" />
-    <path d="M5 12V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v6" />
-    <path d="M5 12v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" />
-    <circle cx="12" cy="12" r="2" />
+    <polygon points="12 2 2 7 12 12 22 7 12 2" />
+    <polyline points="2 17 12 22 22 17" />
+    <polyline points="2 12 12 17 22 12" />
   </svg>
 );
 
@@ -40,7 +39,7 @@ const InsightsIcon = () => (
 );
 
 const UserIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" className="h-[18px] w-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
     <circle cx="12" cy="7" r="4" />
   </svg>
@@ -100,7 +99,7 @@ function Dropdown({ trigger, items, navLinks = false }) {
                   key={i} 
                   to={item.href || '#'} 
                   onClick={() => setOpen(false)} // 🔥 Added to close dropdown on link click
-                  className={({ isActive }) => `flex items-center gap-2.5 px-4 py-2 text-sm transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}
+                  className={({ isActive }) => `flex items-center gap-2.5 px-4 py-2 text-sm transition-colors duration-150 ${isActive ? 'bg-primary-tint text-primary' : 'text-[#0F172A] hover:bg-primary-tint hover:text-primary'}`}
                 >
                   {item.icon && <span className="text-[#64748B]">{item.icon}</span>}
                   {item.label}
@@ -112,7 +111,7 @@ function Dropdown({ trigger, items, navLinks = false }) {
                   key={i} 
                   href={item.href || '#'} 
                   onClick={() => setOpen(false)} // 🔥 Added to close dropdown on anchor click
-                  className="flex items-center gap-2.5 px-4 py-2 text-sm text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488] transition-colors duration-150"
+                  className="flex items-center gap-2.5 px-4 py-2 text-sm text-[#0F172A] hover:bg-primary-tint hover:text-primary transition-colors duration-150"
                 >
                   {item.icon && <span className="text-[#64748B]">{item.icon}</span>}
                   {item.label}
@@ -130,7 +129,7 @@ function Dropdown({ trigger, items, navLinks = false }) {
 
 const navLinks = [
   { href: '/overview', label: 'Overview', Icon: OverviewIcon },
-  { href: '/account', label: 'Account', Icon: AccountIcon },
+  { href: '/account', label: 'Documents', Icon: AccountIcon },
   { href: '/insightsinbox', label: 'Insights', Icon: InsightsIcon },
 ];
 
@@ -165,7 +164,7 @@ function PageHeader({ onLogout }) {
     { heading: true, label: 'My Account' },
     { divider: true },
     { label: 'Manage Account', href: '/manageaccount' },
-    { label: 'Documentation', href: '/documentation' },
+    { label: 'User Manual', href: '/documentation' },
     { label: 'Terms & Conditions', href: '/termsconditions' },
     { divider: true },
     { label: 'Log Out', onClick: handleLogout }, // <-- Assigned onClick callback here
@@ -179,21 +178,19 @@ function PageHeader({ onLogout }) {
         <a href="/" className="flex items-center gap-2.5">
           <img src={cukaiLogo} alt="Cukai.ai logo" className="h-10 w-10 shrink-0" />
           <span className="select-none text-xl font-bold tracking-tight text-[#0F172A]">
-            cukai
-            <span className="text-[#10B981]">.</span>
-            <span className="font-light text-[#64748B]">ai</span>
+            cuk<span className="font-light text-[#64748B]">ai</span>
           </span>
         </a>
 
         {/* Nav links */}
         <nav className="flex items-center gap-1">
           {navLinks.map(({ href, label, Icon }) => (
-            <NavLink key={label} to={href} className={({ isActive }) => `flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-base font-medium transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}>
+            <NavLink key={label} to={href} className={({ isActive }) => `flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-base font-medium transition-colors duration-150 ${isActive ? 'bg-primary-tint text-primary' : 'text-[#0F172A] hover:bg-primary-tint hover:text-primary'}`}>
               <Icon />
               {label}
             </NavLink>
           ))}
-          <NavLink to="/cukaibot" className={({ isActive }) => `flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-base font-medium transition-colors duration-150 ${isActive ? 'bg-[#f0fdf9] text-[#0D9488]' : 'text-[#0F172A] hover:bg-[#f0fdf9] hover:text-[#0D9488]'}`}>
+          <NavLink to="/cukaibot" className={({ isActive }) => `flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-base font-medium transition-colors duration-150 ${isActive ? 'bg-primary-tint text-primary' : 'text-[#0F172A] hover:bg-primary-tint hover:text-primary'}`}>
             <img src={cukaiBot} alt="CukaiBot" className="h-6.5 w-6.5 pt-0.5 -m-1 object-contain" />
             Cukai Bot
           </NavLink>
@@ -206,8 +203,8 @@ function PageHeader({ onLogout }) {
             navLinks
             items={accountItems}
             trigger={(open) => (
-              <button className={`flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-[#64748B] transition-colors duration-150 hover:bg-[#f0fdf9] hover:text-[#0D9488] ${open ? 'bg-[#f0fdf9] text-[#0D9488]' : ''}`}>
-                <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[#0F172A] text-white">
+              <button className={`flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-[#64748B] transition-colors duration-150 hover:text-primary ${open ? 'text-primary' : ''}`}>
+                <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#0F172A] text-primary">
                   <UserIcon />
                 </div>
                 <ChevronDown />

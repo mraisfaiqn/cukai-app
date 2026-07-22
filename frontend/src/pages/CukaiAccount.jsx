@@ -130,6 +130,12 @@ const STATUS_META = {
   non_deductible: { label: 'Personal',        color: '#DC2626', bg: '#FEF2F2', dot: '#DC2626' },
   capital:        { label: 'Capital Asset',   color: '#9A3412', bg: '#FFEDD5', dot: '#F97316' },
   not_applicable: { label: 'Not Applicable',  color: '#64748B', bg: '#F1F5F9', dot: '#94A3B8' },
+  // CP500 instalment notices/receipts — money already paid/scheduled toward
+  // this year's tax bill, not a deductible expense and not "not applicable"
+  // to the return the way a genuinely non-tax document is. Distinct blue-ish
+  // tone so it doesn't read as either "Deductible" (teal) or the old gray
+  // "Not Applicable" pill it used to incorrectly share (Ticket 1, 23 Jul 2026).
+  tax_instalment: { label: 'Tax Instalment',  color: '#1D4ED8', bg: '#EFF6FF', dot: '#1D4ED8' },
   reference:      { label: 'Reference',       color: '#0E7490', bg: '#ECFEFF', dot: '#06B6D4' },
   pending:        { label: 'Uploading…',      color: '#64748B', bg: '#F8FAFC', dot: '#CBD5E1' },
   processing:     { label: 'Classifying…',   color: '#0369A1', bg: '#EFF6FF', dot: '#0369A1' },
@@ -260,6 +266,8 @@ function mapApiDoc(apiDoc) {
     source:       ed.source,
     confidence:   ed.confidence ?? null,
     ocr_quality:  ed.ocr_quality,
+    content_truncated: !!ed.content_truncated,
+    content_chars_dropped: ed.content_chars_dropped ?? null,
     lineItems:    ed.line_items || [],
     asset_class:  ed.asset_class,
     ia_rate_pct:  ed.ia_rate_pct,
@@ -572,6 +580,14 @@ function DocumentPreview({ doc, onClose, onReclassify, onArchive, onUnarchive, o
               {doc.ocr_quality && doc.ocr_quality !== 'good' && (
                 <span className="rounded-full bg-warning-bg px-2 py-0.5 text-xs font-semibold text-warning border border-warning/30">
                   OCR: {doc.ocr_quality}
+                </span>
+              )}
+              {doc.content_truncated && (
+                <span
+                  title={doc.content_chars_dropped ? `${doc.content_chars_dropped.toLocaleString()} character(s) from later pages were not seen during classification` : undefined}
+                  className="rounded-full bg-warning-bg px-2 py-0.5 text-xs font-semibold text-warning border border-warning/30"
+                >
+                  Truncated — later pages not fully read
                 </span>
               )}
             </div>
@@ -2362,7 +2378,7 @@ function CukaiAccount() {
 
         {/* Header */}
         <div className="shrink-0">
-          <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Cukai Account</h1>
+          <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Cukai Documents</h1>
           <p className="text-xs text-muted mt-1">Upload receipts and classify your expenses{activeEntity ? ` — ${activeEntity.name}` : ''}.</p>
         </div>
 
@@ -2397,6 +2413,11 @@ function CukaiAccount() {
             )}
           </div>
         </div>
+
+        {/* ── Footer disclaimer ── */}
+        <p className="shrink-0 text-center text-[10px] text-muted">
+          AI-generated data extraction is for advisory purposes only. Always verify with a licensed tax agent or LHDN resources before taking action.
+        </p>
 
       </div>
     </main>
