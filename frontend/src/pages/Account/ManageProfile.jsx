@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import cukaiLogo from '../../assets/cukai-logo.png';
@@ -3226,7 +3227,12 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
   const [newEntityDraft, setNewEntityDraft] = useState(null);
   // Tabs sit below the always-visible personal summary and govern only the
   // business-profiles area: entity management vs the generated Form B draft.
+  const [searchParams] = useSearchParams();
   const [tab, setTab] = useState('entities');
+
+  useEffect(() => {
+    if (searchParams.get('tab') === 'forms') setTab('forms');
+  }, [searchParams]);
 
   // When the user opens the Generate Forms tab, kick a fresh insight-engine
   // run for the active entity so any "Form B incomplete" card reflects the

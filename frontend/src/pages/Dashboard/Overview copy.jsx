@@ -19,7 +19,7 @@ import DashboardHeader from '../../components/Dashboard/DashboardHeader';
 import ActionBanner from '../../components/Dashboard/ActionBanner';
 import StatsGrid from '../../components/Dashboard/StatsGrid';
 import OpportunitiesCard from '../../components/Dashboard/OpportunitiesCard';
-import { TbCalendarEvent } from 'react-icons/tb';
+// import { TbCalendarEvent } from 'react-icons/tb';
 
 
 // Route for the Cukai Account page's document upload tab.
@@ -196,7 +196,7 @@ function DeadlinesCarousel({ deadlines }) {
       <div className="flex flex-1 items-start gap-3 py-2 px-0.5">
         <span className={'mt-0.5 h-9 w-1 shrink-0 rounded-full ' + tone.bar} />
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-normal text-headings truncate">{d.label}</p>
+          <p className="text-sm font-semibold text-headings truncate">{d.label}</p>
           <p className="mt-0.5 text-xs text-muted truncate">{d.sub}</p>
         </div>
         <span className={'shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ' + tone.pill}>
@@ -222,15 +222,15 @@ function shortLabel(title) {
 const DAY_MS = 86400000;
 function deadlinesFromInsights(insights) {
   return (insights || [])
-    .filter((i) => i.insightType === 'deadline')
+    .filter((i) => i.insightType === 'deadline' && i.deadlineDate)
     .map((i) => {
-      const dt = i.deadlineDate ? new Date(i.deadlineDate) : null;
+      const dt = new Date(i.deadlineDate);
       return {
         label: i.title,
         sub: i.rmImpact != null ? 'Amount due: ' + fmtRM(i.rmImpact) : '',
-        daysLeft: dt ? Math.ceil((dt - Date.now()) / DAY_MS) : null,
-        month: dt ? dt.toLocaleDateString('en-MY', { month: 'short' }).toUpperCase() : null,
-        day: dt ? dt.getDate() : null,
+        daysLeft: Math.ceil((dt - Date.now()) / DAY_MS),
+        month: dt.toLocaleDateString('en-MY', { month: 'short' }).toUpperCase(),
+        day: dt.getDate(),
       };
     });
 }
@@ -260,12 +260,13 @@ function savingsFromInsights(insights) {
 // stays reachable via the link, so this trades completeness for prominence.
 function DeadlineBanner({ deadlines, onViewAll }) {
   if (!deadlines || deadlines.length === 0) return null;
-  const d = [...deadlines].sort((a, b) => (a.daysLeft ?? 9999) - (b.daysLeft ?? 9999))[0];
-  const tone = urgencyFor(d.daysLeft ?? 9999);
+  const d = [...deadlines].sort((a, b) => a.daysLeft - b.daysLeft)[0];
+  const tone = urgencyFor(d.daysLeft);
+
   return (
-    <div className="flex flex-1 flex-col justify-center">
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-sm font-bold text-headings">Upcoming deadline</p>
+    <section className="flex flex-col rounded-xl border border-border bg-surface px-4 py-3 shadow-sm">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-muted">Upcoming Deadline</p>
         {onViewAll && (
           <button onClick={onViewAll}
             className="text-xs font-medium text-primary hover:underline whitespace-nowrap">
@@ -273,38 +274,24 @@ function DeadlineBanner({ deadlines, onViewAll }) {
           </button>
         )}
       </div>
-      <div className="flex items-center gap-3">
-        {d.day != null ? (
-          <div className="flex h-11 w-16 shrink-0 flex-col items-center justify-center rounded-lg bg-critical-bg text-critical leading-none">
-            <span className="text-[9px] font-semibold uppercase">{d.month}</span>
-            <span className="text-base font-bold">{d.day}</span>
-          </div>
-        ) : (
-          <div className="flex h-11 w-16 shrink-0 items-center justify-center rounded-lg bg-critical-bg text-critical">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-              <line x1="12" y1="9" x2="12" y2="13" />
-              <line x1="12" y1="17" x2="12.01" y2="17" />
-            </svg>
-          </div>
-        )}
+
+      <div className="mt-2 flex items-center gap-3">
+        <div className="flex h-11 w-16 shrink-0 flex-col items-center justify-center rounded-lg bg-critical-bg text-critical leading-none">
+          <span className="text-[9px] font-semibold uppercase">{d.month}</span>
+          <span className="text-base font-bold">{d.day}</span>
+        </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-headings truncate">{d.label}</p>
           <p className="text-xs text-muted truncate">{d.sub}</p>
         </div>
-
-      {/*for days left countdown in Upcoming deadlines box }
-        {d.daysLeft != null && (
-          <span className={'shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold whitespace-nowrap ' + tone.pill}>
-            {d.daysLeft} days left
-          </span>
-        )} */}
-
-
+        <span className="shrink-0 rounded-full bg-critical-bg px-2.5 py-1 text-[11px] font-semibold text-critical whitespace-nowrap">
+          {d.daysLeft} days left
+        </span>
       </div>
-    </div>
+    </section>
   );
 }
+
 //CP500 card
 // ── Cp500Card ──────────────────────────────────────────────────────────────────
 // Shows what fraction of the estimated tax liability has been prepaid via CP500
@@ -343,23 +330,13 @@ function Cp500Card({ totals }) {
 function DeadlineSlide({ deadlines, onViewAll }) {
   if (!deadlines || deadlines.length === 0) {
     return (
-      <div className="flex flex-1 flex-col justify-center">
-        <div className="flex items-center justify-between mb-2">
-          <p className="text-sm font-bold text-headings">Upcoming deadline</p>
-          {onViewAll && (
-            <button onClick={onViewAll}
-              className="text-xs font-medium text-primary hover:underline whitespace-nowrap">
-              View all
-            </button>
-          )}
-        </div>
-        <div className="flex flex-1 items-center justify-center">
-          <p className="text-sm text-muted">No upcoming deadlines</p>
-        </div>
+      <div className="flex flex-1 items-center justify-center">
+        <p className="text-sm text-muted">No upcoming deadlines</p>
       </div>
     );
   }
-  const d = [...deadlines].sort((a, b) => (a.daysLeft ?? 9999) - (b.daysLeft ?? 9999))[0];
+  const d = [...deadlines].sort((a, b) => a.daysLeft - b.daysLeft)[0];
+  const tone = urgencyFor(d.daysLeft);
   return (
     <div className="flex flex-1 flex-col justify-center">
       <div className="flex items-center justify-between mb-2">
@@ -371,16 +348,18 @@ function DeadlineSlide({ deadlines, onViewAll }) {
           </button>
         )}
       </div>
-      <div className="flex items-center gap-2">
-        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0 text-critical" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-          <line x1="12" y1="9" x2="12" y2="13" />
-          <line x1="12" y1="17" x2="12.01" y2="17" />
-        </svg>
+      <div className="flex items-center gap-3">
+        <div className="flex h-11 w-16 shrink-0 flex-col items-center justify-center rounded-lg bg-critical-bg text-critical leading-none">
+          <span className="text-[9px] font-semibold uppercase">{d.month}</span>
+          <span className="text-base font-bold">{d.day}</span>
+        </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-headings truncate">{d.label}</p>
           <p className="text-xs text-muted truncate">{d.sub}</p>
         </div>
+        <span className={'shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold whitespace-nowrap ' + tone.pill}>
+          {d.daysLeft} days left
+        </span>
       </div>
     </div>
   );
@@ -445,7 +424,6 @@ function bracketHeadroom(chargeableIncome) {
 }
 function HeadroomSlide({ totals }) {
   const [showInfo, setShowInfo] = useState(false);
-  const [infoPos, setInfoPos] = useState({ top: 0, left: 0 });
 
   const chargeableIncome = Number(totals?.estimatedChargeableIncome) || 0;
   const hasData = chargeableIncome > 0;
@@ -468,12 +446,7 @@ function HeadroomSlide({ totals }) {
         <p className="text-sm font-bold text-headings">Tax bracket headroom</p>
         <button
           type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            const r = e.currentTarget.getBoundingClientRect();
-            setInfoPos({ top: r.bottom + 8, left: r.right });
-            setShowInfo((v) => !v);
-          }}
+          onClick={(e) => { e.stopPropagation(); setShowInfo((v) => !v); }}
           aria-label="About converting to Sdn Bhd"
           className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border text-[11px] font-bold text-muted hover:bg-background">
           i
@@ -509,13 +482,12 @@ function HeadroomSlide({ totals }) {
       {showInfo && (
         <>
           <div className="fixed inset-0 z-10" onClick={(e) => { e.stopPropagation(); setShowInfo(false); }} />
-          <div
-            style={{ top: infoPos.top, left: infoPos.left, transform: 'translateX(-100%)' }}
-            className="fixed z-[9999] w-72 max-h-[70vh] overflow-y-auto rounded-xl border border-border bg-surface p-4 shadow-lg">
+          <div className="absolute right-0 top-7 z-20 w-64 rounded-xl border border-border bg-surface p-3 shadow-lg">
             <p className="text-xs font-semibold text-headings">Thinking of growing?</p>
             <p className="mt-1 text-[11px] leading-relaxed text-muted">
-              A sole proprietor is taxed on a rising scale (up to 30%), a Sdn Bhd company
-              pays a flat 15–17%. At higher income, converting can lower your tax. Do reach out to a tax advisor.
+              A sole proprietor is taxed on a rising scale (up to 30%). A Sdn Bhd company
+              pays a flat 15–17%. At higher income, converting can lower your tax — but it
+              also adds costs and admin. Worth discussing with a tax advisor.
             </p>
           </div>
         </>
@@ -718,23 +690,27 @@ function PieSlide({ chart }) {
       {/* Left column (1/4) — title, legend (scrollable), footer total */}
       <div className="col-span-1 flex flex-col min-h-0">
         
-       <div className="flex-1 min-h-0 overflow-visible flex flex-col justify-start space-y-1.5 pr-0.5">
+       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col justify-start space-y-1.5 pr-0.5">
           {slices.length === 0 ? (
             <p className="text-xs text-muted">No data yet</p>
           ) : (
             slices.map(sl => (
-              <div key={sl.label} className="flex items-start gap-1.5">
-                <span className="mt-1 h-2 w-2 shrink-0 rounded-sm" style={{ background: sl.color }} />
-                <div className="min-w-0">
-                  <span className="block text-[10px] leading-tight text-muted">{sl.label}</span>
-                  <span className="block text-xs font-semibold leading-tight text-headings">{pct(sl.value, total)}</span>
-                  {sl.cap != null && (
-                    <span className={'block text-[10px] leading-tight ' + (sl.wasCapped ? 'text-warning font-semibold' : 'text-muted')}>
-                      {fmtRM(Math.min(sl.value, sl.cap))} / {fmtRM(sl.cap)}
-                      {sl.wasCapped ? ' · cap reached' : ' cap'}
-                    </span>
-                  )}
+              <div key={sl.label} className="flex items-start justify-between gap-2">
+                <div className="flex items-start gap-1.5 min-w-0">
+                  <span className="mt-1.5 h-2 w-2 shrink-0 rounded-sm" style={{ background: sl.color }} />
+                  <div className="min-w-0">
+                    <span className="block leading-tight text-[11px] text-muted">{sl.label}</span>
+                    {/* Relief-cap progress: shown only for capped relief categories.
+                        Amber once the statutory ceiling is reached. */}
+                    {sl.cap != null && (
+                      <span className={'block text-[10px] leading-tight ' + (sl.wasCapped ? 'text-warning font-semibold' : 'text-muted')}>
+                        {fmtRM(Math.min(sl.value, sl.cap))} / {fmtRM(sl.cap)}
+                        {sl.wasCapped ? ' · cap reached' : ' cap'}
+                      </span>
+                    )}
+                  </div>
                 </div>
+                <span className="text-sm font-semibold text-headings shrink-0">{pct(sl.value, total)}</span>
               </div>
             ))
           )}
@@ -811,12 +787,12 @@ function BarSlide({ chart }) {
   const plotH = baseline - PAD_T;
   const plotW = W - PAD_L - PAD_R;
   const groupW = rows.length ? plotW / rows.length : plotW;
-  const barW = Math.min(44, (groupW * 0.85) / BAR_METRICS.length);
+  const barW = Math.min(30, (groupW * 0.72) / BAR_METRICS.length);
   const barGap = barW * 0.28;
   const groupInner = BAR_METRICS.length * barW + (BAR_METRICS.length - 1) * barGap;
 
   return (
-    <div className="grid flex-1 min-h-0 grid-cols-5 gap-3">
+    <div className="grid flex-1 min-h-0 grid-cols-4 gap-3">
       {hovered && (
         <div
           className="fixed z-[9999] pointer-events-none rounded-lg border border-border bg-surface px-3 py-2 shadow-lg"
@@ -832,7 +808,7 @@ function BarSlide({ chart }) {
       )}
 
       {/* Left column — title + legend chips */}
-      <div className="col-span-2 flex flex-col min-h-0">
+      <div className="col-span-1 flex flex-col min-h-0">
         <div className="shrink-0 mb-2">
           <p className="font-headings text-sm font-bold text-headings">Tax Summary by Year</p>
           <p className="text-xs text-muted mt-0.5">Across years of assessment</p>
@@ -897,7 +873,7 @@ function BarSlide({ chart }) {
                           onMouseEnter={e => { setMouse({ x: e.clientX, y: e.clientY }); setHovered({ id: barId, label: metric.label, color: metric.color, value: v, year: r.year }); }}
                           onMouseMove={e => setMouse({ x: e.clientX, y: e.clientY })} />
                         {v > 0 && (
-                          <text x={x + barW / 2} y={baseline - h - 6} textAnchor="middle" fontSize="11"
+                          <text x={x + barW / 2} y={baseline - h - 6} textAnchor="middle" fontSize="8.5"
                             fill="var(--color-headings, #0F172A)" fontFamily="sans-serif"
                             style={{ pointerEvents: 'none' }}>{fmtBar(v)}</text>
                         )}
@@ -1265,7 +1241,7 @@ export default function Overview() {
   }, [fetchDashboardMetrics]);
 
   return (
-   <main className="h-[calc(100vh-4.1rem)] overflow-hidden bg-background font-body flex flex-col">
+   <main className="min-h-[calc(100vh-4.1rem)] overflow-y-auto bg-background font-body flex flex-col">  {/* for page scrolling */}
       <div className="mx-auto w-full max-w-7xl px-6 py-3 flex flex-col flex-1 min-h-0 gap-4">
       {/* ── Header using dynamic backend account details ── */}
      <div className="shrink-0">
