@@ -99,6 +99,21 @@ function daysUntil(iso) {
   return Math.ceil((new Date(iso) - Date.now()) / DAY_MS);
 }
 
+// Statutory Form B filing deadline: 30 June following the year of assessment.
+// Mirrors Overview.jsx's daysToFormBDeadline() exactly — kept here too as a
+// direct backstop so "Next deadline" always has a real compliance deadline to
+// show, even when the engine hasn't surfaced a `deadline` card for Form B yet
+// (insights/engine.py only turns it into an active card once it's within its
+// 180-day countdown window). Without this fallback, "Next deadline" reads
+// "Nothing due" for most of the year while Overview's header still (rightly)
+// counts down to the same date — this keeps both surfaces in agreement.
+function daysToFormBDeadline(today = new Date()) {
+  const year = today.getFullYear();
+  let deadline = new Date(year, 5, 30); // June is month index 5
+  if (today > deadline) deadline = new Date(year + 1, 5, 30);
+  return Math.max(0, Math.ceil((deadline - today) / DAY_MS));
+}
+
 function fmtDate(iso) {
   return new Date(iso).toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' });
 }
@@ -605,11 +620,57 @@ function InsightsInbox() {
   const dismissed = insights.filter(i => i.state === 'dismissed');
 
   const needsAction = active.filter(i => i.severity === 'deadline' || i.severity === 'action_required');
-  const potentialImpact = active.reduce((sum, i) => sum + (i.rmImpact || 0), 0);
-  const nextDeadlineDays = active
-    .map(i => daysUntil(i.deadlineDate))
-    .filter(d => d !== null && d >= 0)
-    .sort((a, b) => a - b)[0];
+
+  // "Potential impact" = tax you could still avoid paying by acting — known
+  // relief headroom, a detected missing recurring deduction, or an avoidable
+  // bracket-jump (the provision rule's rm_impact is the extra tax you'll pay
+  // unless you act before 31 Dec — same shape as a savings opportunity, just
+  // framed as "avoid" instead of "claim"; its other sub-type, the monthly
+  // set-aside card, always carries rm_impact: None, so including the whole
+  // type is safe). Deliberately excludes:
+  //  - `deadline`: rmImpact there (e.g. a CP500 installment amount) is money
+  //    OWED, not saved.
+  //  - `review_pending`: its rmImpact is money currently EXCLUDED pending an
+  //    answer (e.g. a mixed-use gift invoice awaiting a branding/alcohol
+  //    confirmation) — genuinely contingent, since the eventual deductible
+  //    portion depends on how the user answers. Folding a not-yet-resolved
+  //    figure into "confirmed savings" overstates it; it's already reflected
+  //    in "Needs action" and on the card itself.
+  const IMPACT_INSIGHT_TYPES = new Set(['relief_headroom', 'doc_gap', 'provision']);
+  const potentialImpact = active
+    .filter(i => IMPACT_INSIGHT_TYPES.has(i.insightType))
+    .reduce((sum, i) => sum + (i.rmImpact || 0), 0);
+  // "Next deadline" must be an actual statutory/compliance deadline, not any
+  // insight that happens to carry a deadlineDate — relief_headroom cards also
+  // set one (the calendar-year relief-claim window, 31 Dec), which used to
+  // leak in here whenever no real `deadline` card was active, silently
+  // turning "next deadline" into "days left in the year."
+  const nextDeadlineInsight = active
+    .filter(i => i.insightType === 'deadline')
+    .map(i => ({ insight: i, days: daysUntil(i.deadlineDate) }))
+    .filter(x => x.days !== null && x.days >= 0)
+    .sort((a, b) => a.days - b.days)[0]?.insight || null;
+
+  // Fall back to the statutory Form B date directly when no `deadline` card
+  // is currently active (Form B is usually far enough out that the engine
+  // hasn't surfaced a card for it yet) — see daysToFormBDeadline() above for
+  // why. Both Overview and this tile show "Form B" for now as a result.
+  const nextDeadlineDays = nextDeadlineInsight
+    ? daysUntil(nextDeadlineInsight.deadlineDate)
+    : daysToFormBDeadline();
+
+  // Short, stable subtitle for the deadline tile — the insight's own `title`
+  // is a full sentence ("YA 2026 Form B due in 162 days"), too long for a
+  // stat card, so map its dedupeKey to a couple of words instead. Falls back
+  // to "Form B filing" when there's no active card (the fallback above).
+  function shortDeadlineLabel(insight) {
+    if (!insight) return 'Form B filing';
+    const key = insight.dedupeKey || '';
+    if (key.startsWith('cp500:')) return 'CP500 installment';
+    if (key === 'form_b_filing') return 'Form B filing';
+    if (key.startsWith('bank_statement_')) return 'Bank statement';
+    return insight.title;
+  }
 
   const tabList = tab === 'active' ? active : tab === 'resolved' ? resolved : dismissed;
   const visible = tabList
@@ -680,13 +741,29 @@ function InsightsInbox() {
             {[
               { label: 'Needs action', value: needsAction.length, tone: needsAction.length > 0 ? 'text-critical' : 'text-headings' },
               { label: 'Potential impact', value: potentialImpact > 0 ? fmtRM(potentialImpact) : '—', tone: 'text-primary' },
-              { label: 'Next deadline', value: nextDeadlineDays != null ? `${nextDeadlineDays}d` : '—', tone: nextDeadlineDays != null && nextDeadlineDays <= 14 ? 'text-critical' : 'text-headings' },
             ].map(s => (
               <div key={s.label} className="rounded-xl border border-border bg-surface px-4 py-3 min-w-[104px]">
                 <p className="font-headings text-sm text-muted whitespace-nowrap">{s.label}</p>
                 <p className={`font-headings text-xl font-bold tracking-tight ${s.tone}`}>{s.value}</p>
               </div>
             ))}
+
+            {/* Next deadline — a real compliance deadline (CP500 / Form B /
+                missing records), with the "what" alongside the "when". Falls
+                back to the statutory Form B date when no card is active yet,
+                so this always agrees with Overview's own Form B countdown.
+                Clicking goes to that insight's action, or to Overview when
+                using the fallback. */}
+            <button
+              type="button"
+              onClick={() => nextDeadlineInsight ? runAction(nextDeadlineInsight) : navigate('/overview')}
+              className="rounded-xl border border-border bg-surface px-4 py-3 min-w-[104px] text-left cursor-pointer transition-colors hover:border-primary">
+              <p className="font-headings text-sm text-muted whitespace-nowrap">Next deadline</p>
+              <p className={`font-headings text-xl font-bold tracking-tight ${nextDeadlineDays <= 14 ? 'text-critical' : 'text-headings'}`}>
+                {nextDeadlineDays}d
+              </p>
+              <p className="text-[10px] text-muted truncate max-w-[110px]">{shortDeadlineLabel(nextDeadlineInsight)}</p>
+            </button>
           </div>
         </div>
 

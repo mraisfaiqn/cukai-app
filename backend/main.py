@@ -4263,16 +4263,32 @@ def get_tax_profile_summary(
       # year_progress is a plain fraction (day-of-year / days-in-year); convert
       # once to Decimal so the run-rate division stays in Decimal money math.
       progress = Decimal(str(year_progress))
+      # current_income (totals.totalIncome) is already NET of Q3 business
+      # deductions/capital allowance (see business_income_after_bf_losses
+      # above) — it is not gross revenue. Projecting it forward and then
+      # subtracting q3Deductions AGAIN here double-counted the same
+      # deduction, inflating projectedChargeableIncome (and therefore every
+      # insight built on it: the bracket-jump warning, the monthly
+      # set-aside amount) well above the real run-rate figure.
       proj_inc  = money(current_income / progress)
-      proj_ded  = money(current_year["totals"]["q3Deductions"] / progress)
+      # Relief RECEIPTS accumulate with uploads over the year, so they scale
+      # with progress the same way income does.
       proj_rel  = money(current_year["totals"]["q4Reliefs"] / progress)
-      proj_char = max(Decimal("0"), proj_inc - proj_ded - proj_rel)
+      # Self relief and profile-toggle reliefs are FIXED annual statutory
+      # amounts (Sch. 9 para 1, etc — see individual_relief_applied /
+      # total_profile_reliefs above) — the full-year amount applies no
+      # matter how much of the year has elapsed, so unlike income/relief
+      # receipts they are NOT divided by progress. The real (non-projected)
+      # chargeable-income formula above already subtracts both; the
+      # projection previously subtracted neither.
+      self_relief     = current_year["totals"].get("individualSelfRelief") or Decimal("0")
+      profile_reliefs = (current_year["totals"].get("profileReliefs") or {}).get("totalMyr") or Decimal("0")
+      proj_char = max(Decimal("0"), proj_inc - proj_rel - self_relief - profile_reliefs)
       projection = {
         "basis":                      "run_rate",
         "yearProgressPct":            round(year_progress * 100, 1),
         "asOfDate":                   today.isoformat(),
         "projectedTotalIncome":       proj_inc,
-        "projectedQ3Deductions":      proj_ded,
         "projectedQ4Reliefs":         proj_rel,
         "projectedChargeableIncome":  money(proj_char),
         "projectedTaxPayable":        _estimate_tax(proj_char, year),
