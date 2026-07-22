@@ -359,7 +359,7 @@ ALL_Q4 = Q4_PERSONAL_RELIEF_CATEGORIES
 #                bucket so the frontend never lumps it in with genuinely non-applicable documents
 # not_applicable — non-financial / non-deductible supporting document with no standalone
 #                  deductibility (e.g. CP500 installment notice, generic non-tax document)
-VALID_STATUSES = {"income", "deductible", "mixed", "relief", "non_deductible", "not_applicable", "capital", "donation"}
+VALID_STATUSES = {"income", "deductible", "mixed", "relief", "non_deductible", "not_applicable", "capital", "donation", "tax_instalment"}
 
 # Default status per category
 CATEGORY_STATUS_MAP: dict[str, str] = {}
@@ -591,7 +591,7 @@ def derive_aggregation_state(category: str, status: str) -> str:
     return "needs_user_confirmation"
   if status == "mixed":
     return "needs_apportionment"
-  if status in ("not_applicable", "non_deductible"):
+  if status in ("not_applicable", "non_deductible", "tax_instalment"):
     return "excluded_by_rule"
   return "resolved"
 
@@ -2803,11 +2803,37 @@ def classify_and_extract_with_llm(
   # Spreadsheets are pre-capped inside extract_text_from_spreadsheet().
   capped_content = content[:LLM_CONTENT_CHAR_LIMIT]
 
+  # ── Truncation hint ────────────────────────────────────────────────────
+  # A long multi-page document (especially a multi-page bank/loan statement
+  # with many transaction rows) can have its LATER pages silently dropped
+  # here even though Docling extracted every page correctly. The caller
+  # (run_document_pipeline) computes this fact and folds it onto ocr_meta
+  # BEFORE calling this function — mirroring how 'quality' already arrives
+  # here — so it can be surfaced both to the LLM (this hint) and, via
+  # build_extracted_data, persisted for the user deterministically, not
+  # left to the LLM to decide whether to mention it.
+  truncation_hint = ""
+  if ocr_meta and ocr_meta.get("content_truncated"):
+    chars_dropped = ocr_meta.get("content_chars_dropped", 0)
+    truncation_hint = (
+      f"\n\n⚠️  CONTENT TRUNCATED: This document's extracted text is longer than "
+      f"what's shown below — {chars_dropped:,} character(s) from later pages were "
+      "cut off before reaching you. Because of this:\n"
+      "  1. Only classify/extract based on what's actually shown — do not assume\n"
+      "     later pages match the pattern of earlier ones.\n"
+      "  2. If this is a multi-page statement (bank, loan, CP500, etc.) where later\n"
+      "     rows may contain additional transactions or a different total, set\n"
+      "     confidence no higher than 60 and note that the document was truncated.\n"
+      "  3. Set question to ask the user to confirm whether anything on the later,\n"
+      "     unseen pages needs separate attention (e.g. additional transactions)."
+    )
+
   user_message = (
     f"Filename: {filename}\n\n"
     f"Extracted content:\n---\n{capped_content}\n---"
     f"{spreadsheet_hint}"
-    f"{ocr_quality_hint}\n\n"
+    f"{ocr_quality_hint}"
+    f"{truncation_hint}\n\n"
     "Return ONLY valid JSON. No markdown code fences, no preamble, no explanation."
   )
 
@@ -3002,6 +3028,8 @@ def build_extracted_data(
     "file_kind":          file_kind,
     "ocr_quality":        ocr_meta.get("quality")    if ocr_meta else None,
     "ocr_char_count":     ocr_meta.get("char_count") if ocr_meta else None,
+    "content_truncated":       bool(ocr_meta.get("content_truncated")) if ocr_meta else False,
+    "content_chars_dropped":   ocr_meta.get("content_chars_dropped") if ocr_meta else None,
     "quadrant":           llm_result.get("quadrant"),
     "ita_section":        llm_result.get("ita_section"),
 
@@ -3675,17 +3703,34 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
       extracted_content, ocr_meta = extract_text_with_docling(file_path)
       is_spreadsheet = False
 
+    # Truncation check (Ticket 3, 23 Jul 2026): classify_and_extract_with_llm
+    # caps its content to LLM_CONTENT_CHAR_LIMIT chars before sending it to
+    # Gemini. Docling extracts every page of a PDF/image correctly, but for a
+    # long multi-page document (especially a multi-page bank/loan statement
+    # with many transaction rows) that cap can silently drop later pages from
+    # the LLM's view entirely, with nothing previously flagging that it
+    # happened. Computed here, once, against the FULL un-capped
+    # extracted_content — before classify_and_extract_with_llm does its own
+    # slicing — so it's a deterministic fact derived in code, not something
+    # left to the LLM to notice or admit.
+    if len(extracted_content) > LLM_CONTENT_CHAR_LIMIT:
+      if ocr_meta is None:
+        ocr_meta = {}
+      ocr_meta["content_truncated"] = True
+      ocr_meta["content_chars_dropped"] = len(extracted_content) - LLM_CONTENT_CHAR_LIMIT
+
     logger.info(
       f"[Pipeline] Extraction complete for Document ID {doc_id} "
       f"({len(extracted_content)} chars"
-      + (f", OCR quality={ocr_meta['quality']}" if ocr_meta else "")
+      + (f", OCR quality={ocr_meta.get('quality')}" if ocr_meta and ocr_meta.get("quality") else "")
+      + (f", TRUNCATED (-{ocr_meta.get('content_chars_dropped')} chars)" if ocr_meta and ocr_meta.get("content_truncated") else "")
       + ")"
     )
 
     # ── OCR unreadable guard ──────────────────────────────────────────────
     # If Docling extracted almost nothing, the LLM will produce noise.
     # Mark as failed with a user-friendly message instead of wasting an LLM call.
-    if ocr_meta and ocr_meta["quality"] == "unreadable" and len(extracted_content.strip()) < OCR_MIN_CHARS:
+    if ocr_meta and ocr_meta.get("quality") == "unreadable" and len(extracted_content.strip()) < OCR_MIN_CHARS:
       raise ValueError(
         "Document is unreadable after OCR. "
         f"{ocr_meta['quality_note']} "
@@ -3713,17 +3758,22 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
     # fallback and the elif chain entirely — status is now ALWAYS this
     # dict's canonical value for the category, no exceptions.
     #
-    # Deliberately still CATEGORY_STATUS_MAP (the original dict), not the
-    # new registry's CATEGORY_TAX_TREATMENT — the new registry introduces
-    # vocabulary ("tax_instalment", "rebate", "reference") that other,
-    # not-yet-migrated code still reading this persisted value from
-    # doc.tax_status (e.g. main.py's _business_totals_for_year, used by the
-    # carryforward engine) doesn't yet know how to interpret. Swapping the
-    # PERSISTED vocabulary is a separate, later migration step, done
-    # together with migrating those other call sites — not bundled into
-    # this fix, to avoid a cross-module mismatch this session's testing
-    # (dispatch_comparison.py) doesn't cover.
-    status = CATEGORY_STATUS_MAP.get(category, "mixed")
+    # Cutover (Ticket 1, 23 Jul 2026): CATEGORY_STATUS_MAP incorrectly hardcoded
+    # both CP500 categories to "not_applicable", which read as a dead-end
+    # "no financial content" document instead of what it actually is — an
+    # advance tax payment/schedule. CATEGORY_TAX_TREATMENT (category_registry.py)
+    # already has the correct value ("tax_instalment") for these, so status is
+    # now read from there instead. The one not-yet-migrated consumer of this
+    # persisted value, main.py's _business_totals_for_year (used by the
+    # carryforward engine), and this module's own derive_aggregation_state
+    # (below) have both been updated to treat "tax_instalment" the same way
+    # they already treated "not_applicable"/"non_deductible" — excluded from
+    # direct summing — so this cutover can't leak a CP500 amount into Q3
+    # deductions. Bundled with the category_registry.py fix to "Mixed /
+    # Pending Review" (Ticket 2) in the same commit, since that category would
+    # otherwise silently relabel to "Not Applicable" the moment this line
+    # started reading CATEGORY_TAX_TREATMENT.
+    status = CATEGORY_TAX_TREATMENT.get(category, "mixed")
 
     # document_role/aggregation_state: kept on pipeline.py's OWN existing
     # functions here too (not the new registry-based ones), for the exact
@@ -3751,6 +3801,36 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
       llm_result, extracted_content, file_kind, ocr_meta,
       document_role=document_role, aggregation_state=aggregation_state,
     )
+
+    # ── Truncated-content review gate ────────────────────────────────────
+    # A long document (multi-page bank/loan statement, etc.) can have later
+    # pages silently dropped by classify_and_extract_with_llm's content cap
+    # (see LLM_CONTENT_CHAR_LIMIT / ocr_meta['content_truncated'] above).
+    # Only a problem when the document would otherwise be trusted outright:
+    # aggregation_state == "resolved" means this amount is summed directly
+    # into the user's totals with no human ever looking at it. Every other
+    # aggregation_state (needs_apportionment, needs_user_confirmation,
+    # reference_only, excluded_by_rule) already routes through its own
+    # review/exclusion path regardless of truncation, so only the
+    # "resolved" case needs to be downgraded here.
+    if extracted_data.get("content_truncated") and aggregation_state == "resolved":
+      aggregation_state = "needs_user_confirmation"
+      extracted_data["aggregation_state"] = aggregation_state
+      chars_dropped = extracted_data.get("content_chars_dropped") or 0
+      extracted_data["reason"] = (
+        f"This document is long enough that {chars_dropped:,} character(s) from its "
+        "later pages were cut off before classification — the amount extracted may not "
+        "reflect the full document."
+      )
+      extracted_data["question"] = (
+        "Please confirm this amount is correct, or check whether the later, unseen "
+        "pages contain additional transactions or a different total."
+      )
+      logger.info(
+        f"[Pipeline] Document ID {doc_id}: content truncated by "
+        f"{chars_dropped} char(s) — downgraded from 'resolved' to "
+        "'needs_user_confirmation' pending manual review."
+      )
 
     # ── EA form self-employment cross-check ─────────────────────────────
     # A sole proprietor's business profit already IS their taxable income
@@ -3851,13 +3931,17 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
         logger.warning(f"[Pipeline] Document ID {doc_id} classified as Filed Form B but no form_b fields were extracted — no profile saved.")
       if fb and ya_fb:
         try:
-          # Upsert: one FormBProfile per (user_id, entity_id, ya_year), so two
-          # entities can each file a Form B for the same year without clobbering
-          # each other. document.entity_id may be None (no active entity) — that
-          # matches the existing NULL-entity row via IS NULL.
+          # Upsert: one FormBProfile per (user_id, ya_year) — see the model's
+          # own docstring for why this can never be per-entity: every field
+          # this prompt populates (chargeable_income, tax_charged, aggregate_income,
+          # etc.) is a whole-return total from the ONE real filed Form B, not a
+          # per-business figure. document.entity_id is stored on the row purely
+          # as historical/debugging metadata (see profile_kwargs below) — it must
+          # never be part of this lookup, or the same filed Form B silently
+          # duplicates once per entity the user happened to have active across
+          # different uploads.
           existing = db.query(FormBProfile).filter(
             FormBProfile.user_id == document.user_id,
-            FormBProfile.entity_id == document.entity_id,
             FormBProfile.year_of_assessment == int(ya_fb),
           ).first()
 
@@ -3903,10 +3987,10 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
           if existing:
             for k, v in profile_kwargs.items():
               setattr(existing, k, v)
-            logger.info(f"[Pipeline] Updated FormBProfile for user={document.user_id} entity={document.entity_id} YA={ya_fb}")
+            logger.info(f"[Pipeline] Updated FormBProfile for user={document.user_id} YA={ya_fb} (uploaded while entity={document.entity_id} was active)")
           else:
             db.add(FormBProfile(**profile_kwargs))
-            logger.info(f"[Pipeline] Created FormBProfile for user={document.user_id} entity={document.entity_id} YA={ya_fb}")
+            logger.info(f"[Pipeline] Created FormBProfile for user={document.user_id} YA={ya_fb} (uploaded while entity={document.entity_id} was active)")
 
           db.commit()
         except Exception as fb_e:

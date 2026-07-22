@@ -34,7 +34,7 @@ export default function BrandingPanel() {
           <h1 className="text-[2.4rem] font-extrabold text-white leading-tight tracking-tight mt-2 mb-1">
             Tax Compliance Assisted by
           </h1>
-          <h1 className="text-[2.4rem] font-extrabold text-primary leading-tight tracking-tight mb-2">
+          <h1 className="text-[2.4rem] font-extrabold text-[#10B981] leading-tight tracking-tight mb-2">
             Artificial Intelligence
           </h1>
 

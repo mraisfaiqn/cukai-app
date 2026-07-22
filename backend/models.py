@@ -307,7 +307,7 @@ class Document(Base):
             name="ck_document_status",
         ),
         CheckConstraint(
-            "tax_status IS NULL OR tax_status IN ('income', 'deductible', 'mixed', 'not_applicable', 'relief', 'non_deductible', 'capital', 'donation')",
+            "tax_status IS NULL OR tax_status IN ('income', 'deductible', 'mixed', 'not_applicable', 'relief', 'non_deductible', 'capital', 'donation', 'tax_instalment')",
             name="ck_document_tax_status",
         ),
         CheckConstraint(
@@ -606,17 +606,31 @@ class FinancialStatementProfile(Base):
 class FormBProfile(Base):
     """
     Structured data extracted from a previously filed Form B.
-    One record per (user_id, entity_id, year_of_assessment) — each business
-    entity keeps its own filed Form B for a given year, so a user with two
-    entities can upload a Form B for the same year under each without one
-    overwriting the other.
+
+    One record per (user_id, year_of_assessment) — a filed Form B is a
+    whole-person, whole-return document (chargeable income, tax charged,
+    tax payable, aggregate income, statutory income by s.4 section, etc.
+    are all single figures for the ENTIRE return, not a per-business
+    breakdown), so it can never correctly belong to one business entity
+    over another. A user with several entities still files exactly ONE
+    Form B per year covering all of them combined.
+
+    entity_id is kept as a column purely as historical/debugging metadata
+    (which entity happened to be active in the UI at the moment this
+    document was uploaded, entirely unrelated to the document's actual
+    content) — it is NOT part of this table's identity and must never be
+    used to scope a lookup or upsert. See Ticket 5 (23 Jul 2026): this used
+    to be entity-scoped, which was a genuine bug, not a deliberate
+    multi-entity design — compare to CP500Record below, which correctly
+    documents and implements the same person-level (not entity-level)
+    reasoning for the same underlying kind of fact.
     """
     __tablename__ = "form_b_profiles"
 
     id                 = Column(Integer, primary_key=True, index=True)
     user_id            = Column(String(128), nullable=True, index=True)
-    # Which business entity this filed Form B belongs to. Nullable so pre-entity
-    # rows and Form Bs uploaded without an active entity are still valid.
+    # Historical/debugging metadata only — see class docstring. NOT part of
+    # this row's identity; never filtered on for a lookup or upsert.
     entity_id          = Column(Integer, ForeignKey("entities.id", ondelete="SET NULL"), nullable=True, index=True)
     year_of_assessment = Column(Integer, nullable=False)
     source_document_id = Column(Integer, nullable=True)
@@ -652,11 +666,12 @@ class FormBProfile(Base):
     created_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
-        # Uniqueness is per (user, entity, year) so each entity can hold its own
-        # filed Form B for a given YA. (Postgres treats NULL entity_id values as
-        # distinct, so the app-level upsert in pipeline.py is what dedupes the
-        # no-entity case.)
-        Index("ix_formb_user_entity_ya", "user_id", "entity_id", "year_of_assessment", unique=True),
+        # Uniqueness is per (user, year) — see class docstring for why this
+        # can never be per-entity. Ticket 5 (23 Jul 2026): was previously
+        # (user_id, entity_id, year_of_assessment), which allowed the SAME
+        # filed Form B to be silently duplicated once per entity a user
+        # happened to have active across different uploads/re-uploads.
+        Index("ix_formb_user_ya", "user_id", "year_of_assessment", unique=True),
     )
 
 

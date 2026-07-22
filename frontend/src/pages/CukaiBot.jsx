@@ -2416,10 +2416,11 @@ function CukaiBot() {
         {/* ── Page Header (shrink-0 prevents it from squishing) ── */}
         <div className="shrink-0">
           <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Cukai Bot</h1>
-      {activeEntity && <p className="text-xs text-muted mt-0.5">Context: {activeEntity.name}</p>}
-          <p className="mt-1 text-xs text-muted">
-            Ask anything about Malaysian tax regulations, deductions, or e-invoicing — powered by LHDN 2024 Guidelines.
-          </p>
+          {activeEntity &&
+            <p className="mt-1 text-xs text-muted">
+              Ask anything about Malaysian tax regulations, deductions, or {activeEntity.name} — powered by LHDN 2024 Guidelines.
+            </p>
+          }
         </div>
 
         {/* ── Master Split Layout Area ── */}
@@ -2600,9 +2601,6 @@ function CukaiBot() {
                   </button>
                 </div>
               </div>
-              <p className="mt-2 text-center text-[10px] text-[#94A3B8]">
-                AI can make mistakes. Always verify with official LHDN resources.
-              </p>
             </div>
           </div>
 
@@ -2647,16 +2645,14 @@ function CukaiBot() {
               </div>
             </div>
 
-            {/* Disclaimer Notice Block */}
-            <div className="rounded-2xl border border-warning/30 bg-warning-bg p-4 shrink-0">
-              <p className="text-xs font-semibold text-warning">Important Notice</p>
-              <p className="mt-1.5 text-xs leading-relaxed text-warning">
-                Cukai Bot provides guidance based on publicly available LHDN regulations. Always consult a licensed tax agent for filing advice specific to your situation.
-              </p>
-            </div>
-
           </div>
         </div>
+
+        {/* ── Footer disclaimer ── */}
+        <p className="shrink-0 text-center text-[10px] text-muted">
+          AI-generated chat responses are for advisory purposes only. Always verify with a licensed tax agent or LHDN resources before taking action.
+        </p>
+
       </div>
 
       {previewCitation && (

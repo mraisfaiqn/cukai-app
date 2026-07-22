@@ -822,15 +822,21 @@ async def delete_entity(
     .delete(synchronize_session=False)
   )
 
-  # Filed Form B profiles tied to the entity (or to one of its documents).
-  fb_conditions = [FormBProfile.entity_id == entity_id]
+  # Filed Form B profiles are a whole-person record (Ticket 5, 23 Jul 2026) —
+  # they no longer belong to any one entity by entity_id, so deleting this
+  # entity must not cascade-delete a person-wide filed return just because
+  # this entity happened to be active in the UI when it was uploaded. Only
+  # delete a FormBProfile row here if its OWN source document belonged to
+  # this entity (and is about to be deleted below) — that's a genuine
+  # referential-integrity cascade (the source document is gone), not an
+  # entity-scoping decision.
+  fb_deleted = 0
   if doc_ids:
-    fb_conditions.append(FormBProfile.source_document_id.in_(doc_ids))
-  fb_deleted = (
-    db.query(FormBProfile)
-    .filter(or_(*fb_conditions))
-    .delete(synchronize_session=False)
-  )
+    fb_deleted = (
+      db.query(FormBProfile)
+      .filter(FormBProfile.source_document_id.in_(doc_ids))
+      .delete(synchronize_session=False)
+    )
 
   # The entity's documents themselves.
   doc_deleted = (
@@ -938,7 +944,6 @@ async def suggest_opening_balance(
     db.query(FormBProfile)
     .filter(
       FormBProfile.user_id == str(entity.person_id),
-      FormBProfile.entity_id == entity.id,
       FormBProfile.year_of_assessment == prior_year,
     )
     .first()
@@ -2108,7 +2113,7 @@ def reclassify_document(
   # A user-confirmed correction is, by definition, resolved — unless they're
   # explicitly re-flagging it as mixed/relief-non-deductible/etc., in which
   # case the derived state above already reflects that.
-  if new_status and new_status not in ("mixed", "not_applicable", "non_deductible") and ed["aggregation_state"] != "reference_only":
+  if new_status and new_status not in ("mixed", "not_applicable", "non_deductible", "tax_instalment") and ed["aggregation_state"] != "reference_only":
     ed["aggregation_state"] = "resolved"
 
   # Apportioned Q3 categories (client entertainment, gifts, mixed-use vehicle,
@@ -2992,6 +2997,8 @@ def get_tax_profile_summary(
         "itaSection":        ed.get("ita_section"),
         "confidence":        confidence,
         "ocrQuality":        ed.get("ocr_quality"),
+        "contentTruncated":  bool(ed.get("content_truncated")),
+        "contentCharsDropped": ed.get("content_chars_dropped"),
         "note":              ed.get("note"),
         "documentRole":      document_role,
         "aggregationState":  aggregation_state,
@@ -3164,6 +3171,7 @@ def get_tax_profile_summary(
       # other flagged item, rather than only in the relief breakdown note.
       mixed_pending.append({
         "documentId":    None,
+        "entityId":      None,
         "fileName":      h11_relief["label"],
         "documentType":  "Breastfeeding Equipment Relief (H11)",
         "category":      "Q4 — Breastfeeding Equipment",
@@ -3216,6 +3224,7 @@ def get_tax_profile_summary(
     if departure_levy_result["tripsClaimedThisYear"] > 0 or departure_levy_result["tripsBlockedThisYear"] > 0:
       mixed_pending.append({
         "documentId":    None,
+        "entityId":      None,
         "fileName":      "Departure Levy Rebate (B27iii)",
         "documentType":  "Departure Levy Lifetime-Cap Reconciliation",
         "category":      "Q4 — Departure Levy (Umrah/Religious Travel)",
@@ -3247,6 +3256,7 @@ def get_tax_profile_summary(
     if cp500_result["needsReview"]:
       mixed_pending.append({
         "documentId":    None,
+        "entityId":      None,
         "fileName":      "CP500 Self-Instalments (B33iii)",
         "documentType":  "CP500 Instalment Reconciliation",
         "category":      "Q3 — CP500 Payment Receipt",
@@ -3546,6 +3556,7 @@ def get_tax_profile_summary(
         )
         mixed_pending.append({
           "documentId":    None,
+          "entityId":      None,
           "fileName":      "Joint Assessment Income Transfer (B21/B22)",
           "documentType":  "Profile Setting",
           "category":      "B21/B22",
@@ -4198,20 +4209,23 @@ def get_tax_profile_summary(
     return q
 
   def _fb_for_year(ya: int):
-    # A filed Form B now belongs to a specific business entity (FormBProfile
-    # .entity_id), so it's scoped exactly like documents: when an entity is
-    # selected, return THAT entity's filed Form B for the year — this is what
-    # populates the prior-year figures (income / deductions / chargeable income /
-    # tax) in the trend + bar chart. In the all-entities view (entity_id is None)
-    # there's no single person-wide return to surface — each entity has its own —
-    # so fall back to document-derived figures rather than arbitrarily picking
-    # one entity's filing. Returns the record or None.
-    if entity_id is None:
-      return None
+    # A filed Form B is a whole-person, whole-return document — chargeable
+    # income, tax charged, aggregate income, etc. are single figures for
+    # the ENTIRE return, not a per-business breakdown (see FormBProfile's
+    # own docstring in models.py). There is exactly one such record per
+    # (user, year), regardless of which entity happens to be selected in
+    # the UI right now, so this is intentionally NOT scoped by entity_id —
+    # unlike _docs_for_year above, which correctly IS entity-scoped because
+    # individual documents genuinely do belong to one business or another.
+    # Ticket 5 fix (23 Jul 2026): this used to filter on entity_id and
+    # return None outright in the all-entities view, so a real filed Form B
+    # on file never populated the prior-year trend/bar-chart comparison
+    # unless that exact entity happened to be selected — a genuine bug, not
+    # a deliberate per-entity design (compare CP500Record, which correctly
+    # documents the same person-level reasoning). Returns the record or None.
     return db.query(FormBProfile).filter(
       FormBProfile.year_of_assessment == ya,
       FormBProfile.user_id == user_id,
-      FormBProfile.entity_id == entity_id,
     ).first()
 
   # Current year
@@ -4233,14 +4247,13 @@ def get_tax_profile_summary(
   )
   if entity_id is not None:
     doc_years_q = doc_years_q.filter(Document.entity_id == entity_id)
-  # Form B years contribute to the trend for the SELECTED entity (each entity
-  # has its own filed Form B). In the all-entities view we use document-derived
-  # figures only (see _fb_for_year), so no Form B years are added there.
-  fb_years = []
-  if entity_id is not None:
-    fb_years = [r[0] for r in db.query(FormBProfile.year_of_assessment)
-                .filter(FormBProfile.user_id == user_id,
-                        FormBProfile.entity_id == entity_id).distinct()]
+  # Form B years contribute to the trend regardless of which entity is
+  # selected (or none) — a filed Form B is a whole-person record, not
+  # scoped to any one business (Ticket 5 fix, 23 Jul 2026: this used to be
+  # gated to "only when a specific entity is selected", which meant a real
+  # filed Form B on file never showed up in the all-entities trend at all).
+  fb_years = [r[0] for r in db.query(FormBProfile.year_of_assessment)
+              .filter(FormBProfile.user_id == user_id).distinct()]
   all_years = sorted(set([r[0] for r in doc_years_q.distinct()] + fb_years))
 
   yearly_trend = []
@@ -4308,16 +4321,13 @@ def get_tax_profile_summary(
 def get_form_b_profile(
   year:      int,
   user_id:   str = Query(..., description="Owner of the Form B record."),
-  entity_id: Optional[int] = Query(default=None, description="Business entity the Form B belongs to; omit for the no-entity record."),
+  entity_id: Optional[int] = Query(default=None, description="Deprecated, ignored. A filed Form B is a whole-person record (Ticket 5, 23 Jul 2026) — kept only so an older caller that still sends this param doesn't 422."),
   db: Session = Depends(get_db),
 ):
-  q = db.query(FormBProfile).filter(
+  record = db.query(FormBProfile).filter(
     FormBProfile.year_of_assessment == year,
     FormBProfile.user_id == user_id,
-  )
-  if entity_id is not None:
-    q = q.filter(FormBProfile.entity_id == entity_id)
-  record = q.first()
+  ).first()
   if not record:
     raise HTTPException(status_code=404, detail=f"No filed Form B found for YA {year}.")
   return {

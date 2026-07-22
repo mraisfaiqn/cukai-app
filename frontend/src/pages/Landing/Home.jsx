@@ -46,7 +46,7 @@ function useReveal(threshold = 0.1) {
 }
 
 // ── Static data ─────────────────────────────────────────────────────────────
-const brands = ['React JS', 'Python', 'FastAPI', 'PostgreSQL', 'MongoDB', 'Google Cloud', 'Google Gemini'];
+const brands = ['React JS', 'Python', 'FastAPI', 'PostgreSQL', 'MongoDB', 'Firebase', 'Google Cloud', 'Google Gemini', 'Cloud Run'];
 
 
 function LandingNav() {
@@ -72,7 +72,7 @@ function LandingNav() {
         <NavLink onClick={() => { document.getElementById('main-scroll')?.scrollTo({ top: 0, behavior: 'smooth' }); }} className="flex items-center gap-2 group">
           <img src={cukaiLogo} alt="cukai.ai logo" className="h-10 w-10 shrink-0" />
           <span className="select-none text-xl font-bold tracking-tight text-[#0F172A]">
-            cukai<span className="text-[#10B981]">.</span><span className="font-light text-[#64748B]">ai</span>
+            cuk<span className="font-light text-[#64748B]">ai</span>
           </span>
         </NavLink>
 
@@ -80,7 +80,7 @@ function LandingNav() {
           {[
             { label: 'How It Works', id: 'how-it-works' },
             { label: 'Features', id: 'features' },
-            { label: 'Cukai Account', id: 'cukaiaccount' },
+            { label: 'Cukai Documents', id: 'cukaidocuments' },
             { label: 'Cukai Bot', id: 'cukaibot' },
             { label: 'Pricing', id: 'pricing' },
             { label: 'FAQ', id: 'faq' },
@@ -93,7 +93,7 @@ function LandingNav() {
 
         <div className="hidden md:flex items-center gap-6">
           <NavLink to="/login" className="text-[15px] font-medium text-[#64748B] hover:text-[#0F172A] transition-colors">Log In</NavLink>
-          <NavLink to="/getstarted" className="bg-[#10B981] hover:bg-emerald-400 text-white font-medium text-[15px] px-5 py-2.5 rounded-lg shadow-[0_4px_14px_rgba(16,185,129,0.35)] hover:shadow-[0_6px_20px_rgba(16,185,129,0.45)] transition-all duration-200 hover:-translate-y-0.5">
+          <NavLink to="/getstarted" className="bg-primary hover:bg-primary-hover text-white font-medium text-[15px] px-5 py-2.5 rounded-lg shadow-[0_4px_14px_rgba(13,148,136,0.35)] hover:shadow-[0_6px_20px_rgba(13,148,136,0.45)] transition-all duration-200 hover:-translate-y-0.5">
             Get Started
           </NavLink>
         </div>
@@ -109,7 +109,7 @@ function LandingNav() {
             {[
               { label: 'Features', id: 'features' },
               { label: 'How It Works', id: 'how-it-works' },
-              { label: 'Cukai Account', id: 'cukaiaccount' },
+              { label: 'Cukai Documents', id: 'cukaidocuments' },
               { label: 'Cukai Bot', id: 'cukaibot' },
               { label: 'Pricing', id: 'pricing' },
               { label: 'FAQ', id: 'faq' },
@@ -118,7 +118,7 @@ function LandingNav() {
             ))}
             <div className="pt-4 flex flex-col gap-4">
               <NavLink to="/login" className="text-center font-medium text-[#64748B] py-2">Log In</NavLink>
-              <NavLink to="/getstarted" className="bg-[#10B981] text-white text-center font-medium px-5 py-3 rounded-lg shadow-sm">Get Started</NavLink>
+              <NavLink to="/getstarted" className="bg-primary hover:bg-primary-hover text-white text-center font-medium px-5 py-3 rounded-lg shadow-sm transition-colors">Get Started</NavLink>
             </div>
           </div>
         </div>
@@ -189,7 +189,7 @@ function Hero() {
               </div>
 
               <div className="mt-2 flex flex-col sm:flex-row gap-4 opacity-0 animate-[fadeUp_0.6s_cubic-bezier(0.16,1,0.3,1)_480ms_forwards]">
-                <NavLink to="/getstarted" className="h-[48px] px-8 bg-[#10B981] text-white rounded-lg font-medium hover:bg-[#0D9488] transition-all flex items-center justify-center gap-2 shadow-sm hover:-translate-y-0.5">
+                <NavLink to="/getstarted" className="h-[48px] px-8 bg-primary text-white rounded-lg font-medium hover:bg-primary-hover transition-all flex items-center justify-center gap-2 shadow-sm hover:-translate-y-0.5">
                   Get Started
                 </NavLink>
                 <NavLink onClick={scrollToHow} className="h-[48px] px-8 bg-white border border-slate-300 text-slate-900 rounded-lg font-medium hover:bg-slate-50 transition-all flex items-center justify-center border-solid shadow-sm hover:-translate-y-0.5">
@@ -528,10 +528,10 @@ function ShowcaseReveal({ children }) {
   );
 }
 
-function CukaiAccountShowcase() {
+function CukaiDocumentsShowcase() {
   return (
     <section
-      id="cukaiaccount"
+      id="cukaidocuments"
       className="snap-start h-screen flex flex-col justify-center px-6 md:px-12 py-10 bg-[#0F172A] text-white relative overflow-hidden"
     >
       <div className="absolute inset-0 opacity-10 pointer-events-none bg-[radial-gradient(ellipse_at_center,#86F2E4_0%,transparent_70%)]" />
@@ -540,9 +540,9 @@ function CukaiAccountShowcase() {
 
         {/* Header */}
         <div className="text-center max-w-3xl mx-auto opacity-0 animate-[fadeUp_0.6s_cubic-bezier(0.16,1,0.3,1)_80ms_forwards]">
-          <AiBadge>✦ Cukai Account</AiBadge>
+          <AiBadge>✦ Cukai Documents</AiBadge>
           <h2 className="text-[clamp(22px,3vw,36px)] font-bold text-white mt-4 mb-2 leading-tight tracking-tight">
-            Personalise your Cukai Account.
+            Personalise your Cukai Documents.
           </h2>
           <p className="text-[clamp(12px,1.4vw,15px)] text-[#7C839B]">
             Audit-ready records, organised by AI — stored for the full 7-year LHDN window.
@@ -990,7 +990,7 @@ function Footer() {
           <div className="flex items-center gap-2">
             <img src={cukaiLogo} alt="cukai.ai logo" className="h-8 w-8 shrink-0 -ml-1" />
             <span className="select-none text-lg font-bold tracking-tight text-white">
-              cukai<span className="text-[#10B981]">.</span><span className="font-light text-[#64748B]">ai</span>
+              cuk<span className="font-light text-[#64748B]">ai</span>
             </span>
           </div>
           <p className="text-[#7C839B]/80 max-w-sm text-[13px] leading-relaxed">
@@ -1008,7 +1008,7 @@ function Footer() {
           <button onClick={() => scrollTo('how-it-works')} className="text-[#7C839B]/80 hover:text-[#6FFBBE] transition-colors text-left text-[13px]">How It Works</button>
           <button onClick={() => scrollTo('features')} className="text-[#7C839B]/80 hover:text-[#6FFBBE] transition-colors text-left text-[13px]">Features</button>
           <button onClick={() => scrollTo('pricing')} className="text-[#7C839B]/80 hover:text-[#6FFBBE] transition-colors text-left text-[13px]">Pricing</button>
-          <button onClick={() => scrollTo('cukaiaccount')} className="text-[#7C839B]/80 hover:text-[#6FFBBE] transition-colors text-left text-[13px]">Cukai Account</button>
+          <button onClick={() => scrollTo('cukaidocuments')} className="text-[#7C839B]/80 hover:text-[#6FFBBE] transition-colors text-left text-[13px]">Cukai Documents</button>
           <button onClick={() => scrollTo('cukaibot')} className="text-[#7C839B]/80 hover:text-[#6FFBBE] transition-colors text-left text-[13px]">Cukai Bot</button>
         </div>     
       </div>
@@ -1024,7 +1024,7 @@ function Home() {
         <Hero />
         <HowItWorks />
         <Features />
-        <CukaiAccountShowcase />
+        <CukaiDocumentsShowcase />
         <CukaiBotShowcase />
         <Pricing />
         <FAQ />

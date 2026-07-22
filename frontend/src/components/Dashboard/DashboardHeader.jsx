@@ -29,7 +29,7 @@ function DashboardHeader({
         {greeting}, {name}
       </h1>
 
-      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
         <span className="font-medium text-body-text">{entity}</span>
         <span aria-hidden="true">·</span>
         <span>{msic}</span>
@@ -43,7 +43,7 @@ function DashboardHeader({
         <button
           type="button"
           onClick={onDeadlineClick}
-          className="flex items-center gap-1.5 rounded-full px-2 py-0.5 font-medium text-primary transition-colors hover:bg-primary-tint focus:outline-none focus:ring-2 focus:ring-primary/40"
+          className="flex items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1 font-medium text-primary transition-colors hover:border-primary hover:bg-[#0F172A] hover:text-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
         >
           <CalendarIcon />
           {deadlineNote}

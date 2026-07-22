@@ -305,7 +305,7 @@ CATEGORY_REGISTRY: dict[str, CategoryDef] = {
   # already correctly separated from Q1-Q4 and don't need re-bucketing.
   # ══════════════════════════════════════════════════════════════════════
   "Non-Tax Document":        CategoryDef(bucket="NON_TAX", tax_treatment="not_applicable", computation_source="none"),
-  "Mixed / Pending Review":  CategoryDef(bucket="REVIEW",   tax_treatment="not_applicable", computation_source="none"),
+  "Mixed / Pending Review":  CategoryDef(bucket="REVIEW",   tax_treatment="mixed", computation_source="none"),
 }
 
 
