@@ -1699,7 +1699,13 @@ function ChatHeaderTitle({ title, sessionId, onRename }) {
 
 // ── Main Component ───────────────────────────────────────────────────────────
 
-function CukaiBot() {
+// `embed` (default false) strips the page chrome so this component can be
+// iframed inside the browser-extension side panel: no big "Cukai Bot" title
+// block, full viewport height (there's no PageHeader above it in embed mode),
+// and tighter padding to fit a narrow panel. The chat-history sidebar already
+// self-hides below the `lg` breakpoint (see ChatHistorySidebar's `hidden
+// lg:flex`), so a ~400px panel shows just the conversation with no extra work.
+function CukaiBot({ embed = false }) {
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -2410,18 +2416,22 @@ function CukaiBot() {
   const lastAssistantMessageId = [...messages].reverse().find((m) => m.role === 'assistant')?.id ?? null;
 
   return (
-    <main className="h-[calc(100vh-4.1rem)] bg-background font-body flex flex-col overflow-hidden">
-      <div className="mx-auto w-full max-w-7xl flex flex-col gap-4 px-6 py-4 h-full overflow-hidden">
+    <main className={`${embed ? 'h-screen' : 'h-[calc(100vh-4.1rem)]'} bg-background font-body flex flex-col overflow-hidden`}>
+      <div className={`mx-auto w-full flex flex-col h-full overflow-hidden ${embed ? 'gap-2 px-3 py-3' : 'max-w-7xl gap-4 px-6 py-4'}`}>
 
-        {/* ── Page Header (shrink-0 prevents it from squishing) ── */}
-        <div className="shrink-0">
-          <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Cukai Bot</h1>
-          {activeEntity &&
-            <p className="mt-1 text-xs text-muted">
-              Ask anything about Malaysian tax regulations, deductions, or {activeEntity.name} — powered by LHDN 2024 Guidelines.
-            </p>
-          }
-        </div>
+        {/* ── Page Header (shrink-0 prevents it from squishing) ──
+            Hidden in embed mode: the side panel already has its own header, and
+            the tall title block would waste scarce vertical space in a panel. */}
+        {!embed && (
+          <div className="shrink-0">
+            <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Cukai Bot</h1>
+            {activeEntity &&
+              <p className="mt-1 text-xs text-muted">
+                Ask anything about Malaysian tax regulations, deductions, or {activeEntity.name} — powered by LHDN 2024 Guidelines.
+              </p>
+            }
+          </div>
+        )}
 
         {/* ── Master Split Layout Area ── */}
         <div className="flex flex-1 gap-6 min-h-0 overflow-hidden">
