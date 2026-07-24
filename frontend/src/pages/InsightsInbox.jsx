@@ -602,13 +602,20 @@ function InsightsInbox() {
     }
   };
   // Deep-link: every card's primary action lands the user where the fix happens.
-  // A CukaiBot destination additionally carries this insight's id as a URL
-  // param so the chat can ground its first reply in it (see CukaiBot.jsx's
-  // mount effect + api.js's sendChatMessage) instead of opening a blank chat.
+  // A CukaiBot destination additionally carries this insight's id AND title as
+  // URL params — CukaiBot uses these to (a) ground its first reply in this
+  // specific card (see api.js's sendChatMessage + main.py's
+  // _insight_context_block), (b) show an amber "insight context" chip above
+  // the input so the person can see the reply will be grounded in this card
+  // rather than a blank question, and (c) auto-send the staged prompt without
+  // an extra click — every insight whose action lands here (relief_headroom's
+  // "How to claim these", provision's "Plan year-end moves", digest's "Ask
+  // CukaiBot about this") gets the same one-tap handoff, since all three are
+  // fundamentally the same "hand this card's context to the bot" action.
   const runAction = (insight) => {
     if (!insight.action) return;
     if (insight.action.to === '/cukaibot') {
-      navigate(`/cukaibot?insightId=${insight.id}`);
+      navigate(`/cukaibot?${new URLSearchParams({ insightId: insight.id, askContext: '1', title: insight.title })}`);
     } else {
       navigate(insight.action.to);
     }
@@ -858,10 +865,6 @@ function InsightsInbox() {
           </div>
         </div>
 
-        {/* ── Footer disclaimer ── */}
-        <p className="shrink-0 text-center text-[10px] text-muted">
-          AI-generated insights are for advisory purposes only. Always verify with a licensed tax agent or LHDN resources before taking action.
-        </p>
       </div>
     </main>
   );
