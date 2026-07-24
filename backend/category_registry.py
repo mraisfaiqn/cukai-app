@@ -13,7 +13,7 @@ Redesigned bucket structure (this session's full review):
   Q3              — genuine s.33(1)/Schedule 3 business expense
   Q4              — genuine personal relief, H2-H21 only (reduces B23 -> B24)
   DONATIONS       — Part G, reduces aggregate income at B17 (before B24)
-  TAX_INSTALMENTS — feeds B33 (tax ALREADY PAID, reduces final balance)
+  TAX_INSTALLMENTS — feeds B33 (tax ALREADY PAID, reduces final balance)
   REBATES         — feeds B27 or B29 (reduces the TAX BILL, after B26/B28)
   REFERENCE       — never summed; sub-typed by `reference_type` (see below)
   NON_TAX         — zero financial content
@@ -72,11 +72,11 @@ from typing import Optional
 @dataclass(frozen=True)
 class CategoryDef:
   bucket: str                          # "Q1" | "Q2" | "Q3" | "Q4" | "DONATIONS"
-                                        # | "TAX_INSTALMENTS" | "REBATES"
+                                        # | "TAX_INSTALLMENTS" | "REBATES"
                                         # | "REFERENCE" | "NON_TAX" | "REVIEW"
   tax_treatment: str                   # "income" | "deductible" | "mixed" | "capital"
                                         # | "relief" | "non_deductible" | "donation"
-                                        # | "tax_instalment" | "rebate" | "reference"
+                                        # | "tax_installment" | "rebate" | "reference"
                                         # | "not_applicable" (NON_TAX/REVIEW only)
   computation_source: str              # "direct" | "registry" | "ledger" | "none"
   reference_type: Optional[str] = None # only set when bucket == "REFERENCE"
@@ -114,7 +114,7 @@ CATEGORY_REGISTRY: dict[str, CategoryDef] = {
   # ══════════════════════════════════════════════════════════════════════
   # Q3 — BUSINESS EXPENSE (ITA s.33(1) / Schedule 3 / s.39(1)).
   # CP500 removed entirely — it was never a business expense (see
-  # TAX_INSTALMENTS below); it's the proprietor's OWN personal tax
+  # TAX_INSTALLMENTS below); it's the proprietor's OWN personal tax
   # pre-payment, feeding B33, not Part N.
   # ══════════════════════════════════════════════════════════════════════
   "Q3 — Cost of Goods Sold":                CategoryDef(bucket="Q3", tax_treatment="deductible", computation_source="direct"),
@@ -169,7 +169,7 @@ CATEGORY_REGISTRY: dict[str, CategoryDef] = {
   # ══════════════════════════════════════════════════════════════════════
   # Q4 — PERSONAL RELIEF — H2 through H21 ONLY (reduces B23 -> B24).
   # Zakat/Departure Levy/Section 110/Section 107D REMOVED — they're
-  # REBATES/TAX_INSTALMENTS (a different computation stage), not this.
+  # REBATES/TAX_INSTALLMENTS (a different computation stage), not this.
   # ══════════════════════════════════════════════════════════════════════
   "Q4 — Life Insurance & Takaful Relief": CategoryDef(bucket="Q4", tax_treatment="relief", computation_source="direct"),
   "Q4 — EPF Personal Contribution":       CategoryDef(bucket="Q4", tax_treatment="relief", computation_source="direct"),
@@ -238,15 +238,15 @@ CATEGORY_REGISTRY: dict[str, CategoryDef] = {
   "Q4 — Donation: Paintings to Art Gallery":   CategoryDef(bucket="DONATIONS", tax_treatment="donation", computation_source="direct"),
 
   # ══════════════════════════════════════════════════════════════════════
-  # TAX_INSTALMENTS — feeds B33: money the proprietor ALREADY PAID toward
-  # this year's tax bill (CP500 self-instalments, s.107D withholding on
+  # TAX_INSTALLMENTS — feeds B33: money the proprietor ALREADY PAID toward
+  # this year's tax bill (CP500 self-installments, s.107D withholding on
   # agent/dealer/distributor payments) — reduces the final balance, not
   # chargeable income and not the tax bill itself. Personal, never a
   # business deduction, per your own confirmation this session.
   # ══════════════════════════════════════════════════════════════════════
-  "Q3 — CP500 Instalment Notice": CategoryDef(bucket="TAX_INSTALMENTS", tax_treatment="tax_instalment", computation_source="registry"),
-  "Q3 — CP500 Payment Receipt":   CategoryDef(bucket="TAX_INSTALMENTS", tax_treatment="tax_instalment", computation_source="registry"),
-  "Q4 — Section 107D Withholding": CategoryDef(bucket="TAX_INSTALMENTS", tax_treatment="tax_instalment", computation_source="direct"),
+  "Q3 — CP500 Installment Notice": CategoryDef(bucket="TAX_INSTALLMENTS", tax_treatment="tax_installment", computation_source="registry"),
+  "Q3 — CP500 Payment Receipt":   CategoryDef(bucket="TAX_INSTALLMENTS", tax_treatment="tax_installment", computation_source="registry"),
+  "Q4 — Section 107D Withholding": CategoryDef(bucket="TAX_INSTALLMENTS", tax_treatment="tax_installment", computation_source="direct"),
 
   # ══════════════════════════════════════════════════════════════════════
   # REBATES — reduces the TAX BILL directly (ringgit-for-ringgit, capped at
@@ -324,14 +324,14 @@ ALL_Q2              = [c for c, d in CATEGORY_REGISTRY.items() if d.bucket == "Q
 ALL_Q3              = [c for c, d in CATEGORY_REGISTRY.items() if d.bucket == "Q3"]
 ALL_Q4              = [c for c, d in CATEGORY_REGISTRY.items() if d.bucket == "Q4"]
 ALL_DONATIONS       = [c for c, d in CATEGORY_REGISTRY.items() if d.bucket == "DONATIONS"]
-ALL_TAX_INSTALMENTS = [c for c, d in CATEGORY_REGISTRY.items() if d.bucket == "TAX_INSTALMENTS"]
+ALL_TAX_INSTALLMENTS = [c for c, d in CATEGORY_REGISTRY.items() if d.bucket == "TAX_INSTALLMENTS"]
 ALL_REBATES         = [c for c, d in CATEGORY_REGISTRY.items() if d.bucket == "REBATES"]
 ALL_REFERENCE       = [c for c, d in CATEGORY_REGISTRY.items() if d.bucket == "REFERENCE"]
 
 ALL_CATEGORIES = list(CATEGORY_REGISTRY.keys())
 
 # tax_treatment lookup — the direct replacement for the old CATEGORY_STATUS_MAP.
-# Note the vocabulary itself changed: "donation" | "tax_instalment" | "rebate" |
+# Note the vocabulary itself changed: "donation" | "tax_installment" | "rebate" |
 # "reference" are new values that didn't exist before (they were previously
 # squeezed into "donation" [ok], "not_applicable" [wrong, for CP500], or
 # "relief" [wrong, for Zakat/Section110/Departure Levy]).
@@ -339,7 +339,7 @@ CATEGORY_TAX_TREATMENT: dict[str, str] = {c: d.tax_treatment for c, d in CATEGOR
 
 VALID_TAX_TREATMENTS = {
   "income", "deductible", "mixed", "capital", "relief", "non_deductible",
-  "donation", "tax_instalment", "rebate", "reference", "not_applicable",
+  "donation", "tax_installment", "rebate", "reference", "not_applicable",
 }
 
 # Bucket lookup — new; lets any downstream code ask "which of the 10 top-level
@@ -385,8 +385,8 @@ SCHEDULE_SOURCE_CATEGORIES = {
 REGISTRY_SCHEDULE_LABELS: dict[str, str] = {
   "Q3 — Capital Assets & Equipment":    "Capital Allowance schedule",
   "Q3 — Capital Renovation & Fit-Out":  "Capital Allowance schedule",
-  "Q3 — CP500 Instalment Notice":       "CP500 instalment reconciliation (B33)",
-  "Q3 — CP500 Payment Receipt":         "CP500 instalment reconciliation (B33)",
+  "Q3 — CP500 Installment Notice":       "CP500 installment reconciliation (B33)",
+  "Q3 — CP500 Payment Receipt":         "CP500 installment reconciliation (B33)",
   "Q4 — Breastfeeding Equipment":       "Breastfeeding Equipment relief (H11)",
   "Q4 — Food Waste Compost Machine":    "one-time relief tracker",
   "Q4 — Food Waste Grinder Machine":    "one-time relief tracker",

@@ -99,14 +99,14 @@ const DOC_SECTIONS = [
         title: 'Platform Overview',
         badge: null,
         content: {
-          description: 'cukai.ai is a tax co-pilot built for Malaysian sole proprietors and small business owners. It reads the documents you upload, classifies them against LHDN\u2019s Form B categories, tracks your reliefs and deductions automatically, and surfaces savings opportunities and deadlines \u2014 so you spend less time hunting through receipts and more time running your business.',
+          description: 'cukai is a tax co-pilot built for Malaysian sole proprietors and small business owners. It reads the documents you upload, classifies them against LHDN\u2019s Form B categories, tracks your reliefs and deductions automatically, and surfaces savings opportunities and deadlines \u2014 so you spend less time hunting through receipts and more time running your business.',
           sections: [
             {
               heading: 'Core Modules',
               type: 'list',
               items: [
                 { label: 'Overview', desc: 'Your dashboard \u2014 a snapshot of income, deductions, projected tax, unclaimed savings, and what needs your attention right now.' },
-                { label: 'Cukai Documents', desc: 'Upload receipts, invoices, statements, and forms \u2014 cukai.ai reads and classifies each one automatically into the right Form B category.' },
+                { label: 'Cukai Documents', desc: 'Upload receipts, invoices, statements, and forms \u2014 cukai reads and classifies each one automatically into the right Form B category.' },
                 { label: 'Cukai Insights', desc: 'A running feed of AI-generated alerts: deductions you haven\u2019t claimed yet, upcoming deadlines, documents that need your input, and general advisory notes.' },
                 { label: 'Cukai Bot', desc: 'A conversational assistant for Malaysian tax questions, grounded in LHDN guidelines and aware of your own business context.' },
                 { label: 'Manage Account', desc: 'Your personal tax profile, business entities, and dependants \u2014 the facts Form B actually needs from you.' },
@@ -125,7 +125,7 @@ const DOC_SECTIONS = [
         title: 'Navigating the App',
         badge: null,
         content: {
-          description: 'The top navigation bar gives you access to every part of cukai.ai. You can switch between them at any time without losing your place.',
+          description: 'The top navigation bar gives you access to every part of cukai. You can switch between them at any time without losing your place.',
           sections: [
             {
               heading: 'Where to find things',
@@ -137,7 +137,7 @@ const DOC_SECTIONS = [
                 { label: 'Cukai Bot', desc: 'Ask tax questions and get grounded, cited answers.' },
                 { label: 'Manage Account', desc: 'Update your personal profile, business entities, and dependants \u2014 found under the account menu, top right.' },
                 { label: 'User Manual', desc: 'This page \u2014 module guides and answers to common questions.' },
-                { label: 'Terms & Conditions', desc: 'How cukai.ai handles your data and the limits of what it can do for you \u2014 also under the account menu.' },
+                { label: 'Terms & Conditions', desc: 'How cukai handles your data and the limits of what it can do for you \u2014 also under the account menu.' },
               ],
             },
           ],
@@ -162,10 +162,10 @@ const DOC_SECTIONS = [
               type: 'list',
               items: [
                 { label: 'Greeting & entity context', desc: 'Which business and year of assessment you\u2019re currently looking at, plus a countdown to your Form B deadline.' },
-                { label: 'Action Required banner', desc: 'Appears whenever something \u2014 a document or an account-level item like an unpaid CP500 instalment \u2014 needs your review before filing.' },
+                { label: 'Action Required banner', desc: 'Appears whenever something \u2014 a document or an account-level item like an unpaid CP500 installment \u2014 needs your review before filing.' },
                 { label: 'Tax Health scores', desc: 'Two at-a-glance rings: how many eligible reliefs you\u2019ve actually claimed, and how complete your profile and documents are for generating Form B.' },
                 { label: 'Key figures strip', desc: 'Year-to-date income, deductions, projected tax, and unclaimed savings.' },
-                { label: 'Saving Opportunities', desc: 'The reliefs and deductions cukai.ai has spotted that you haven\u2019t fully claimed yet \u2014 click through to Cukai Insights for the full list.' },
+                { label: 'Saving Opportunities', desc: 'The reliefs and deductions cukai has spotted that you haven\u2019t fully claimed yet \u2014 click through to Cukai Insights for the full list.' },
                 { label: 'Upcoming Deadlines', desc: 'Your nearest filing and payment dates.' },
                 { label: 'Charts', desc: 'A breakdown of business expenses, personal expenses, and your overall tax summary for the year.' },
               ],
@@ -200,7 +200,7 @@ const DOC_SECTIONS = [
         title: 'Cukai Documents Overview',
         badge: 'Module',
         content: {
-          description: 'Cukai Documents is where every receipt, invoice, bank statement, and form you upload gets read, classified, and organised \u2014 this is the evidence base everything else in cukai.ai is built on.',
+          description: 'Cukai Documents is where every receipt, invoice, bank statement, and form you upload gets read, classified, and organised \u2014 this is the evidence base everything else in cukai is built on.',
           sections: [
             {
               heading: 'What happens when you upload a document',
@@ -238,7 +238,7 @@ const DOC_SECTIONS = [
                 { label: 'Donation', desc: 'An approved donation, deducted from your aggregate income separately from personal reliefs.' },
                 { label: 'Personal', desc: 'Personal spending with no tax benefit \u2014 won\u2019t reduce your tax bill.' },
                 { label: 'Capital Asset', desc: 'A capital purchase \u2014 machinery, equipment, and similar \u2014 claimed through capital allowance over several years, not as a one-off deduction.' },
-                { label: 'Tax Instalment', desc: 'A CP500 instalment notice or payment \u2014 money already paid or scheduled toward this year\u2019s tax bill.' },
+                { label: 'Tax Installment', desc: 'A CP500 installment notice or payment \u2014 money already paid or scheduled toward this year\u2019s tax bill.' },
                 { label: 'Not Applicable', desc: 'No financial content relevant to your tax return \u2014 e.g. a non-tax document.' },
                 { label: 'Reference', desc: 'A supporting document \u2014 like a prior year\u2019s Form B or a P&L statement \u2014 kept for context. Never summed into your totals.' },
                 { label: 'Category Removed', desc: 'This document\u2019s category no longer exists in the current classification system and needs to be reclassified.' },
@@ -260,7 +260,7 @@ const DOC_SECTIONS = [
               type: 'list',
               items: [
                 { label: 'All / Needs review / Failed / Archived', desc: 'Cross-cutting state filters \u2014 switch between everything, only items waiting on you, only failed uploads, or your archive.' },
-                { label: 'Category filter', desc: 'Narrow by Form B section \u2014 Business Income, Personal Income, Business Expense, Personal Relief, Donations, Personal Expense, Tax Instalments, Tax Rebates, or Reference & Reconciliation.' },
+                { label: 'Category filter', desc: 'Narrow by Form B section \u2014 Business Income, Personal Income, Business Expense, Personal Relief, Donations, Personal Expense, Tax Installments, Tax Rebates, or Reference & Reconciliation.' },
                 { label: 'Year filter', desc: 'Show documents for a specific year of assessment only.' },
                 { label: 'Search', desc: 'Find a document by filename or vendor.' },
               ],
@@ -280,7 +280,7 @@ const DOC_SECTIONS = [
               type: 'list',
               items: [
                 { label: 'Confirming a split', desc: 'For partially-deductible categories like client entertainment or a mixed-use vehicle, confirm the percentage that\u2019s genuinely business use.' },
-                { label: 'Reclassifying', desc: 'If cukai.ai got the category wrong, correct it manually \u2014 your totals recalculate automatically.' },
+                { label: 'Reclassifying', desc: 'If cukai got the category wrong, correct it manually \u2014 your totals recalculate automatically.' },
                 { label: 'Archiving', desc: 'Move a document out of your active list without deleting it \u2014 useful for duplicates or documents you\u2019ve superseded.' },
                 { label: 'Manual entry', desc: 'Add a record by hand for anything that doesn\u2019t have a document to upload, like a cash transaction.' },
               ],
@@ -300,14 +300,14 @@ const DOC_SECTIONS = [
         title: 'Cukai Insights Overview',
         badge: 'AI Feature',
         content: {
-          description: 'Cukai Insights is a running feed of everything cukai.ai has noticed that might need your attention \u2014 savings you haven\u2019t claimed, a deadline coming up, or a document that needs an answer from you before it can be counted.',
+          description: 'Cukai Insights is a running feed of everything cukai has noticed that might need your attention \u2014 savings you haven\u2019t claimed, a deadline coming up, or a document that needs an answer from you before it can be counted.',
           sections: [
             {
               heading: 'What shows up here',
               type: 'list',
               items: [
                 { label: 'Deadlines', desc: 'Upcoming filing or payment deadlines, like your Form B due date.' },
-                { label: 'Needs Answer', desc: 'Something cukai.ai needs a decision on before it can finish a calculation.' },
+                { label: 'Needs Answer', desc: 'Something cukai needs a decision on before it can finish a calculation.' },
                 { label: 'Savings', desc: 'A relief or deduction you\u2019re eligible for but haven\u2019t fully claimed yet.' },
                 { label: 'Advisory', desc: 'General guidance \u2014 a provisional note, a reminder tied to a prior year\u2019s Form B, or a periodic summary.' },
               ],
@@ -419,7 +419,7 @@ const DOC_SECTIONS = [
                 { label: 'Identity & residency', desc: 'Full name, TIN, IC/passport number, citizenship, date of birth, gender.' },
                 { label: 'Marital & dependants', desc: 'Marital status and spouse details if married \u2014 this drives spouse relief and joint assessment.' },
                 { label: 'Contact & refund details', desc: 'Your correspondence address and how you\u2019d like any tax refund paid \u2014 bank transfer or DuitNow.' },
-                { label: 'Why it matters', desc: 'cukai.ai checks this profile is complete before generating your Form B, and tells you exactly which field is missing if it isn\u2019t.' },
+                { label: 'Why it matters', desc: 'cukai checks this profile is complete before generating your Form B, and tells you exactly which field is missing if it isn\u2019t.' },
               ],
             },
           ],
@@ -481,12 +481,12 @@ const DOC_SECTIONS = [
               type: 'faq',
               items: [
                 {
-                  q: 'Is cukai.ai a licensed tax agent?',
-                  a: 'No. cukai.ai is a software tool that provides AI-assisted guidance based on publicly available LHDN regulations and the documents you provide. It is not a licensed tax agent, and nothing it produces is a substitute for advice from one. Always have a qualified tax agent review your figures before filing.',
+                  q: 'Is cukai a licensed tax agent?',
+                  a: 'No. cukai is a software tool that provides AI-assisted guidance based on publicly available LHDN regulations and the documents you provide. It is not a licensed tax agent, and nothing it produces is a substitute for advice from one. Always have a qualified tax agent review your figures before filing.',
                 },
                 {
-                  q: 'Can I submit my tax return directly to LHDN through cukai.ai?',
-                  a: 'No. cukai.ai helps you prepare, organise, and review your figures. Actual submission to LHDN must be done through MyTax (mytax.hasil.gov.my) or a licensed tax agent.',
+                  q: 'Can I submit my tax return directly to LHDN through cukai?',
+                  a: 'No. cukai helps you prepare, organise, and review your figures. Actual submission to LHDN must be done through MyTax (mytax.hasil.gov.my) or a licensed tax agent.',
                 },
                 {
                   q: 'How accurate are the AI-generated figures?',
@@ -506,7 +506,7 @@ const DOC_SECTIONS = [
                 },
                 {
                   q: 'I still need help \u2014 what should I do?',
-                  a: 'Start with the module guide for the page you\u2019re stuck on \u2014 most workflows are covered above. If you\u2019re still stuck, or you\u2019ve found something that looks like a bug, reach out to your organisation\u2019s cukai.ai support contact.',
+                  a: 'Start with the module guide for the page you\u2019re stuck on \u2014 most workflows are covered above. If you\u2019re still stuck, or you\u2019ve found something that looks like a bug, reach out to your organisation\u2019s cukai support contact.',
                 },
               ],
             },
@@ -653,7 +653,7 @@ function Documentation() {
         {/* ── Page Header (shrink-0 prevents it from squishing) ── */}
         <div className="flex flex-col gap-1 shrink-0">
           <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">User Manual</h1>
-          <p className="text-xs text-muted mt-1">A guide to every feature in cukai.ai — what each page does and how to use it. Start here before reaching out to support.</p>
+          <p className="text-xs text-muted mt-1">A guide to every feature in cukai — what each page does and how to use it. Start here before reaching out to support.</p>
         </div>
 
         {/* ── Master Split Layout ── */}
@@ -736,7 +736,7 @@ function Documentation() {
 
             {/* ── Version Footer Sticky Note ── */}
             <div className="mt-3 flex items-center justify-between shrink-0">
-              <p className="text-[10px] text-[#94A3B8]">cukai.ai — User Manual · Updated as new features ship.</p>
+              <p className="text-[10px] text-[#94A3B8]">cukai — User Manual · Updated as new features ship.</p>
               <div className="flex items-center gap-1">
                 {allItems.map((item, i) => (
                   <button

@@ -69,13 +69,13 @@ function Dropdown({ trigger, items, navLinks = false }) {
     <div className="relative" ref={ref}>
       <div onClick={() => setOpen(o => !o)}>{trigger(open)}</div>
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-48 rounded-xl border border-slate-100 bg-white py-1 shadow-lg z-50">
+        <div className="absolute right-0 top-full mt-2 w-48 overflow-hidden rounded-xl border border-slate-100 bg-white pb-1 shadow-lg z-50">
           {items.map((item, i) =>
             item.divider
               ? <div key={i} className="my-1 border-t border-slate-100" />
               : item.heading
               ? (
-                <p key={i} className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-[#64748B]">
+                <p key={i} className="bg-[#0F172A] px-4 py-2 text-xs font-semibold uppercase tracking-wide text-[#39FFD6]">
                   {item.label}
                 </p>
               )

@@ -10,7 +10,7 @@ const SECTIONS = [
     id: 'acceptance',
     title: '1. Acceptance of These Terms',
     paragraphs: [
-      'These Terms and Conditions ("Terms") form a binding agreement between you ("User", "you") and cukai.ai ("cukai.ai", "we", "us", "our") governing your access to and use of the cukai.ai web application and related services (collectively, the "Service"). By creating an account, accessing, or using the Service in any way, you confirm that you have read, understood, and agree to be bound by these Terms and by our handling of your personal data as described in Section 6 (Personal Data Protection).',
+      'These Terms and Conditions ("Terms") form a binding agreement between you ("User", "you") and cukai ("cukai", "we", "us", "our") governing your access to and use of the cukai web application and related services (collectively, the "Service"). By creating an account, accessing, or using the Service in any way, you confirm that you have read, understood, and agree to be bound by these Terms and by our handling of your personal data as described in Section 6 (Personal Data Protection).',
       'If you do not agree to these Terms, you must not access or use the Service. If you are using the Service on behalf of a business or other entity, you confirm that you have the authority to bind that entity to these Terms, and "you" refers to both you individually and that entity.',
     ],
   },
@@ -18,9 +18,9 @@ const SECTIONS = [
     id: 'description',
     title: '2. Description of the Service',
     paragraphs: [
-      'cukai.ai is a software tool that helps Malaysian individuals and sole proprietors organise financial documents, estimate tax positions, and identify potential deductions and reliefs under the Income Tax Act 1967, using a combination of automated document processing and artificial intelligence ("AI").',
-      'cukai.ai is a supporting tool only. It does not prepare or submit any filing to Lembaga Hasil Dalam Negeri Malaysia ("LHDN") on your behalf, and it is not connected to LHDN\u2019s MyTax system or any other government filing system. You remain solely responsible for reviewing, verifying, and submitting your own tax filings through the proper official channels, or through a licensed tax agent.',
-      'cukai.ai is not a law firm, audit firm, or licensed tax agent under the Income Tax Act 1967 or the Tax Agent\u2019s Licence framework administered by LHDN, and no part of the Service constitutes the practice of law, accountancy, or tax agency services.',
+      'cukai is a software tool that helps Malaysian individuals and sole proprietors organise financial documents, estimate tax positions, and identify potential deductions and reliefs under the Income Tax Act 1967, using a combination of automated document processing and artificial intelligence ("AI").',
+      'cukai is a supporting tool only. It does not prepare or submit any filing to Lembaga Hasil Dalam Negeri Malaysia ("LHDN") on your behalf, and it is not connected to LHDN\u2019s MyTax system or any other government filing system. You remain solely responsible for reviewing, verifying, and submitting your own tax filings through the proper official channels, or through a licensed tax agent.',
+      'cukai is not a law firm, audit firm, or licensed tax agent under the Income Tax Act 1967 or the Tax Agent\u2019s Licence framework administered by LHDN, and no part of the Service constitutes the practice of law, accountancy, or tax agency services.',
     ],
   },
   {
@@ -91,7 +91,7 @@ const SECTIONS = [
     id: 'intellectual-property',
     title: '7. Intellectual Property',
     paragraphs: [
-      'The Service, including its software, design, text, graphics, and underlying technology, is owned by or licensed to cukai.ai and is protected by Malaysian and international intellectual property laws. These Terms do not grant you any ownership interest in the Service.',
+      'The Service, including its software, design, text, graphics, and underlying technology, is owned by or licensed to cukai and is protected by Malaysian and international intellectual property laws. These Terms do not grant you any ownership interest in the Service.',
       'You retain ownership of the documents and data you upload. By uploading content, you grant us a limited, non-exclusive licence to process, store, and display that content solely for the purpose of providing the Service to you.',
     ],
   },
@@ -100,7 +100,7 @@ const SECTIONS = [
     title: '8. Disclaimers and Limitation of Liability',
     paragraphs: [
       'To the maximum extent permitted by applicable Malaysian law, the Service is provided "as is" and "as available", without warranties of any kind, whether express or implied, including any warranty of accuracy, merchantability, fitness for a particular purpose, or non-infringement.',
-      'To the maximum extent permitted by applicable law, cukai.ai and its officers, employees, and service providers will not be liable for any indirect, incidental, special, or consequential loss, or for any penalty, surcharge, or additional tax liability arising from an incorrect, late, or omitted filing, arising out of or in connection with your use of the Service.',
+      'To the maximum extent permitted by applicable law, cukai and its officers, employees, and service providers will not be liable for any indirect, incidental, special, or consequential loss, or for any penalty, surcharge, or additional tax liability arising from an incorrect, late, or omitted filing, arising out of or in connection with your use of the Service.',
       'Nothing in these Terms excludes or limits any liability that cannot lawfully be excluded or limited under Malaysian law, including liability for death or personal injury caused by negligence, or for fraud or fraudulent misrepresentation.',
     ],
   },
@@ -108,7 +108,7 @@ const SECTIONS = [
     id: 'indemnity',
     title: '9. Indemnification',
     paragraphs: [
-      'You agree to indemnify and hold cukai.ai harmless from any claim, loss, or expense (including reasonable legal fees) arising from your breach of these Terms, your misuse of the Service, or your submission of inaccurate, unlawful, or unauthorised information or documents.',
+      'You agree to indemnify and hold cukai harmless from any claim, loss, or expense (including reasonable legal fees) arising from your breach of these Terms, your misuse of the Service, or your submission of inaccurate, unlawful, or unauthorised information or documents.',
     ],
   },
   {
@@ -138,7 +138,7 @@ const SECTIONS = [
     title: '13. General Provisions',
     paragraphs: [
       'If any provision of these Terms is found to be unenforceable or invalid under applicable law, that provision will be limited or eliminated to the minimum extent necessary, and the remaining provisions will remain in full force and effect.',
-      'These Terms, together with any policies referenced in them, constitute the entire agreement between you and cukai.ai regarding the Service, and supersede any prior agreements on the same subject matter.',
+      'These Terms, together with any policies referenced in them, constitute the entire agreement between you and cukai regarding the Service, and supersede any prior agreements on the same subject matter.',
     ],
   },
   {
@@ -162,7 +162,7 @@ function TermsConditions() {
         <div className="shrink-0">
           <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Terms & Conditions</h1>
           <p className="text-xs text-muted mt-1">
-            Please read these terms carefully before using cukai.ai. They govern your access to and use of our services, including how we collect, use, and protect your personal data under Malaysia's Personal Data Protection Act 2010.
+            Please read these terms carefully before using cukai. They govern your access to and use of our services, including how we collect, use, and protect your personal data under Malaysia's Personal Data Protection Act 2010.
           </p>
         </div>
 
@@ -172,22 +172,43 @@ function TermsConditions() {
           {/* Table of contents */}
           <aside className="hidden w-56 shrink-0 lg:flex lg:flex-col h-full overflow-y-auto pr-1">
             <nav className="space-y-0.5">
-              {SECTIONS.map((sec) => (
-                <button
-                  key={sec.id}
-                  onClick={() => {
-                    setActiveId(sec.id);
-                    document.getElementById(sec.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                  }}
-                  className={`block w-full rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
-                    activeId === sec.id
-                      ? 'bg-headings font-semibold text-white'
-                      : 'text-muted hover:bg-primary-tint hover:text-primary'
-                  }`}
-                >
-                  {sec.title}
-                </button>
-              ))}
+              {SECTIONS.map((sec) => {
+                // sec.title is stored as "N. Label" (e.g. "1. Acceptance of
+                // These Terms") so the numbered body headings and this TOC
+                // stay in sync. Split it here so the number renders as its
+                // own small chip instead of plain leading text — otherwise
+                // it visually blends into the label, and a wrapped second
+                // line has nothing to hang-indent under.
+                const match = sec.title.match(/^(\d+)\.\s*(.*)$/);
+                const number = match ? match[1] : null;
+                const label = match ? match[2] : sec.title;
+                const active = activeId === sec.id;
+                return (
+                  <button
+                    key={sec.id}
+                    onClick={() => {
+                      setActiveId(sec.id);
+                      document.getElementById(sec.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }}
+                    className={`flex w-full items-start gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
+                      active
+                        ? 'bg-headings font-semibold text-white'
+                        : 'text-muted hover:bg-primary-tint hover:text-primary'
+                    }`}
+                  >
+                    {number && (
+                      <span
+                        className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
+                          active ? 'bg-white/20 text-white' : 'bg-primary-tint text-primary'
+                        }`}
+                      >
+                        {number}
+                      </span>
+                    )}
+                    <span className="leading-snug">{label}</span>
+                  </button>
+                );
+              })}
             </nav>
           </aside>
 

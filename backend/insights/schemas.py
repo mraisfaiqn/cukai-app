@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from insights.models import Insight, InsightRun, InsightRunChange
+from insights.insight_models import Insight, InsightRun, InsightRunChange
 
 
 class SignalOut(BaseModel):

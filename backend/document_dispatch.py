@@ -196,8 +196,8 @@ def dispatch_document(
     if gline and aggregation_state == "resolved":
       donation_entries_by_gline[gline].append({**entry, "reliefCapMyr": ed.get("relief_cap_myr")})
 
-  elif bucket == "TAX_INSTALMENTS":
-    # Section 107D is the only DIRECT (non-registry) TAX_INSTALMENTS member
+  elif bucket == "TAX_INSTALLMENTS":
+    # Section 107D is the only DIRECT (non-registry) TAX_INSTALLMENTS member
     # left here — CP500 is always registry_managed (handled above).
     if category == "Q4 — Section 107D Withholding" and aggregation_state == "resolved":
       section107d_entries.append({**entry, "reliefCapMyr": ed.get("relief_cap_myr")})
@@ -338,7 +338,7 @@ def dispatch_document(
 # ══════════════════════════════════════════════════════════════════════════
 # What changes in _build_year_summary's main loop (main.py):
 #
-# Replace the entire block from `if doc.category == "Q3 — CP500 Instalment
+# Replace the entire block from `if doc.category == "Q3 — CP500 Installment
 # Notice"...` down through the final `if is_pending_review: mixed_pending...`
 # with a single call:
 #

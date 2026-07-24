@@ -100,7 +100,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
 from models import Document, FormBProfile, Person
-from insights.models import Insight, InsightRun, InsightRunChange
+from insights.insight_models import Insight, InsightRun, InsightRunChange
 from profile_completeness import missing_profile_fields
 from tax_rules import TAX_RULES_VERSION
 from utils import extract_llm_text
