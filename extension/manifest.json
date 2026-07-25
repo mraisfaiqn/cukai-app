@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "CukaiBot Assistant",
+  "version": "0.2.0",
+  "description": "Ask CukaiBot your Malaysian tax questions and copy your Form B figures from any page — including the LHDN e-Filing portal.",
+  "action": {
+    "default_title": "Open CukaiBot"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://localhost:5173/*",
+    "https://cukai-my.web.app/*"
+  ],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["logo-data.js", "floating-button.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon.png",
+    "48": "icons/icon.png",
+    "128": "icons/icon.png"
+  }
+}

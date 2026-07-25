@@ -1,0 +1,107 @@
+/* ─── CukaiBot side panel (iframe shell) ──────────────────────────────────
+   The panel itself is just a header + tab bar; the actual UI is the real web
+   app rendered inside iframes (/embed/cukaibot and /embed/formb), so it stays
+   pixel-identical to the CukaiBot page and shares its logged-in session. */
+
+:root {
+  --primary: #0D9488;
+  --primary-hover: #0F766E;
+  --primary-tint: #ECFDF5;
+  --bg: #F8FAFC;
+  --surface: #FFFFFF;
+  --headings: #0F172A;
+  --text: #334155;
+  --muted: #64748B;
+  --border: #E2E8F0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0B1220; --surface: #131C2B; --headings: #F1F5F9;
+    --text: #CBD5E1; --muted: #94A3B8; --border: #24324A; --primary-tint: #0E2A26;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  display: flex; flex-direction: column; height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--text);
+}
+.hidden { display: none !important; }
+
+/* ── Header ── */
+.header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; background: var(--surface);
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.brand { display: flex; align-items: center; gap: 7px; }
+.brand-logo { width: 24px; height: 24px; border-radius: 6px; object-fit: contain; }
+.brand-title { font-weight: 700; color: var(--headings); font-size: 13px; }
+
+.tabs { display: flex; gap: 3px; margin-left: 4px; flex: 1; }
+.tab {
+  border: none; background: transparent; color: var(--muted);
+  font-size: 12px; font-weight: 600; padding: 5px 11px; border-radius: 8px; cursor: pointer;
+}
+.tab:hover { background: var(--bg); color: var(--headings); }
+.tab.active { background: var(--primary-tint); color: var(--primary); }
+
+.icon-btn {
+  border: none; background: transparent; color: var(--muted);
+  cursor: pointer; padding: 5px; border-radius: 8px; display: flex; flex-shrink: 0;
+}
+.icon-btn:hover { background: var(--bg); color: var(--headings); }
+
+/* ── Settings ── */
+.settings {
+  padding: 11px; background: var(--surface); border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 9px; flex-shrink: 0;
+}
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--headings); font-weight: 600; }
+.field input {
+  padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px; background: var(--bg); color: var(--headings);
+}
+.field input:focus { outline: none; border-color: var(--primary); }
+.settings-actions { display: flex; gap: 8px; }
+.hint { margin: 0; font-size: 11px; color: var(--muted); line-height: 1.45; }
+.hint code { background: var(--bg); padding: 1px 4px; border-radius: 4px; font-size: 11px; }
+
+.btn-primary {
+  background: var(--primary); color: #fff; border: none; border-radius: 8px;
+  padding: 7px 14px; font-weight: 600; font-size: 12px; cursor: pointer;
+}
+.btn-primary:hover { background: var(--primary-hover); }
+
+/* ── Content / iframes ── */
+.content { flex: 1; position: relative; min-height: 0; }
+.frame {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  border: none; background: var(--bg);
+}
+
+.load-error {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center;
+  padding: 24px; gap: 6px; color: var(--muted); font-size: 12.5px; line-height: 1.5;
+  background: var(--bg);
+}
+.load-error-title { font-weight: 700; color: var(--headings); font-size: 14px; margin: 0 0 2px; }
+.load-error p { margin: 0; }
+
+/* ── Loading overlay ── */
+.loading {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px;
+  background: var(--bg); color: var(--muted); font-size: 12.5px;
+}
+.loading.hidden { display: none !important; }
+.spinner {
+  width: 28px; height: 28px; border-radius: 50%;
+  border: 3px solid var(--border); border-top-color: var(--primary);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

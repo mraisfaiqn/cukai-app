@@ -11,6 +11,7 @@ import InsightsInbox from './pages/InsightsInbox'
 import Documentation from './pages/Documentation'
 import ManageAccount from './pages/Account/ManageAccount'
 import TermsConditions from './pages/Account/TermsConditions'
+import FormBValues from './pages/Embed/FormBValues'
 import * as API from './services/api'
 
 // 1. A wrapper that protects internal pages
@@ -42,6 +43,27 @@ function PublicLayout({ isAuthenticated }) {
   return <Outlet />
 }
 
+// 3. A chrome-free layout for the browser-extension side panel. These routes
+// (/embed/*) are meant to be loaded inside an <iframe> in the extension: no
+// PageHeader, no app nav — just the bare feature, sized to fill the panel.
+// Auth still applies, but because the iframe is same-origin as the web app it
+// shares the app's localStorage session, so logging into the app in a normal
+// tab automatically authenticates the panel too (this is what fixes the
+// "not logged in / no documents found" problem the standalone panel had).
+function EmbedLayout({ isAuthenticated }) {
+  if (!isAuthenticated) {
+    return (
+      <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 24, fontFamily: 'system-ui, sans-serif', color: '#64748B', fontSize: 13, lineHeight: 1.6 }}>
+        <div>
+          <p style={{ fontWeight: 700, color: '#0F172A', marginBottom: 6 }}>Please log in first</p>
+          Open the Cukai app in a browser tab and sign in — then reopen this panel.
+        </div>
+      </div>
+    )
+  }
+  return <div style={{ height: '100vh', overflow: 'hidden' }}><Outlet /></div>
+}
+
 function App() {
   // Initialise from localStorage instead of always starting false — LoginPanel
   // already saves userId there on a successful login, but nothing was ever
@@ -71,6 +93,12 @@ function App() {
           <Route path="/documentation" element={<Documentation />} />
           <Route path="/manageaccount" element={<ManageAccount />} />
           <Route path="/termsconditions" element={<TermsConditions />} />
+        </Route>
+
+        {/* EMBED ROUTES (loaded inside the browser-extension side panel iframe) */}
+        <Route element={<EmbedLayout isAuthenticated={isAuthenticated} />}>
+          <Route path="/embed/cukaibot" element={<CukaiBot embed />} />
+          <Route path="/embed/formb" element={<FormBValues />} />
         </Route>
 
         {/* Global Catch-all Fallback */}

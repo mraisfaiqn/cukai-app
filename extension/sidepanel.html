@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CukaiBot</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <!-- ── Header: brand + tabs + settings ─────────────────────────────────── -->
+  <header class="header">
+    <div class="brand">
+      <img src="icons/icon.png" alt="" class="brand-logo" />
+      <span class="brand-title">CukaiBot</span>
+    </div>
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-tab="chat">Chat</button>
+      <button class="tab" data-tab="formb">Form B</button>
+    </div>
+    <button id="settingsBtn" class="icon-btn" title="Settings">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      </svg>
+    </button>
+  </header>
+
+  <!-- ── Settings (hidden by default) ────────────────────────────────────── -->
+  <section id="settingsPanel" class="settings hidden">
+    <label class="field">
+      <span>Cukai app URL</span>
+      <input id="appUrl" type="text" placeholder="http://localhost:5173" />
+    </label>
+    <div class="settings-actions">
+      <button id="saveSettings" class="btn-primary">Save &amp; reload</button>
+    </div>
+    <p class="hint">Use the same URL where you log into the Cukai app — the panel shares that tab's session, so you stay logged in automatically. Example: <code>https://cukai-my.web.app</code></p>
+  </section>
+
+  <!-- ── Content: two iframes, one per tab ───────────────────────────────── -->
+  <!-- allow="clipboard-write" is REQUIRED for the Form B tab's copy buttons:
+       these iframes are cross-origin (the app) inside the extension page, and
+       browsers block navigator.clipboard.writeText() in a cross-origin iframe
+       unless the parent grants it here. -->
+  <main class="content">
+    <iframe id="frame-chat"  class="frame" title="CukaiBot chat" allow="clipboard-write"></iframe>
+    <iframe id="frame-formb" class="frame hidden" title="Form B figures" allow="clipboard-write"></iframe>
+
+    <!-- Loading overlay — shown while the active iframe cold-boots the app, so
+         the panel never looks blank/frozen on first open. -->
+    <div id="loading" class="loading">
+      <div class="spinner"></div>
+      <p>Loading CukaiBot…</p>
+    </div>
+
+    <div id="loadError" class="load-error hidden">
+      <p class="load-error-title">Can't reach the Cukai app</p>
+      <p>Check the app URL in Settings (⚙️) and make sure the app is running and you're logged in.</p>
+    </div>
+  </main>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

@@ -763,7 +763,62 @@ function EmptyCitationsPlaceholder() {
   );
 }
 
-function AssistantMessage({ message, isActive, onSelectCitations, showFollowups = false, onSelectFollowup }) {
+// ─── Compact citations (embed mode only) ─────────────────────────────────────
+// The full-width page shows sources in the rich right-hand CitationCard panel,
+// but that panel is `hidden lg:flex` — so at the extension side panel's width
+// it never appears, leaving no way to see or open a source. This renders each
+// citation as a small chip instead: only its type tag + title + a navigation
+// button (plus a verified ✓ when gazette-checked) — no snippets or excerpts.
+// Opening is smart: a user's own uploaded document (isInternal) opens the
+// in-app preview modal; an external law/ruling opens in a new tab.
+function CompactCitations({ citations, onPreview }) {
+  if (!citations || citations.length === 0) return null;
+  const openSource = (c) => {
+    if (c.isInternal) { onPreview?.(c); return; }
+    if (c.sourceUrl) window.open(c.sourceUrl, '_blank', 'noopener,noreferrer');
+  };
+  return (
+    <div className="mt-2 space-y-1.5">
+      <div className="flex items-center gap-1.5">
+        <BookIcon className="h-3.5 w-3.5 text-primary" />
+        <span className="text-[10px] font-bold uppercase tracking-wider text-muted">
+          {citations.length} source{citations.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      {citations.map((c, i) => (
+        <button
+          key={i}
+          type="button"
+          onClick={() => openSource(c)}
+          title={c.isInternal ? 'Preview document' : (c.sourceUrl ? 'Open source' : undefined)}
+          disabled={!c.isInternal && !c.sourceUrl}
+          className="group flex w-full items-center gap-2 rounded-lg border border-border bg-slate-50 px-2.5 py-1.5 text-left transition-colors hover:border-primary hover:bg-primary-tint disabled:cursor-default disabled:hover:border-border disabled:hover:bg-slate-50"
+        >
+          {c.tag && (
+            <span className="inline-flex shrink-0 items-center rounded bg-headings px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-white">
+              {c.tag}
+            </span>
+          )}
+          <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-headings">
+            {c.title || 'Untitled source'}
+          </span>
+          {c.verified && (
+            <span className="shrink-0" title={typeof c.verified === 'string' ? c.verified : 'Verified'}>
+              <CheckCircleIcon />
+            </span>
+          )}
+          {(c.isInternal || c.sourceUrl) && (
+            <span className="shrink-0 text-slate-300 transition-colors group-hover:text-primary">
+              {c.isInternal ? <EyeIcon /> : <ExternalLinkIcon />}
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AssistantMessage({ message, isActive, onSelectCitations, showFollowups = false, onSelectFollowup, embed = false, onPreview }) {
   const citationCount = message.citations?.length || 0;
   const followups = showFollowups ? (message.followups || []).slice(0, 3) : [];
   return (
@@ -783,13 +838,22 @@ function AssistantMessage({ message, isActive, onSelectCitations, showFollowups 
           }`}
         >
           <MarkdownText text={message.text} className="select-text text-xs leading-relaxed text-[#334155]" />
-          {citationCount > 0 && (
+          {/* In embed mode the count is replaced by the CompactCitations chips
+              below (which have their own header), so this label is hidden to
+              avoid showing "N sources" twice. */}
+          {citationCount > 0 && !embed && (
             <span className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-medium text-muted">
               <FileTextIcon className="h-3 w-3" />
               {citationCount} source{citationCount === 1 ? '' : 's'}
             </span>
           )}
         </button>
+
+        {/* Compact, tappable sources — embed (side panel) only, since the rich
+            right-hand citation panel is hidden at panel width. */}
+        {embed && citationCount > 0 && (
+          <CompactCitations citations={message.citations} onPreview={onPreview} />
+        )}
 
         {message.structured && (
           <div className="rounded-xl border border-border bg-surface shadow-sm overflow-hidden">
@@ -1741,7 +1805,13 @@ function ChatHeaderTitle({ title, sessionId, onRename }) {
 
 // ── Main Component ───────────────────────────────────────────────────────────
 
-function CukaiBot() {
+// `embed` (default false) strips the page chrome so this component can be
+// iframed inside the browser-extension side panel: no big "Cukai Bot" title
+// block, full viewport height (there's no PageHeader above it in embed mode),
+// and tighter padding to fit a narrow panel. The chat-history sidebar already
+// self-hides below the `lg` breakpoint (see ChatHistorySidebar's `hidden
+// lg:flex`), so a ~400px panel shows just the conversation with no extra work.
+function CukaiBot({ embed = false }) {
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -2493,18 +2563,43 @@ function CukaiBot() {
   const lastAssistantMessageId = [...messages].reverse().find((m) => m.role === 'assistant')?.id ?? null;
 
   return (
-    <main className="h-[calc(100vh-4.1rem)] bg-background font-body flex flex-col overflow-hidden">
-      <div className="mx-auto w-full max-w-7xl flex flex-col gap-4 px-6 py-4 h-full overflow-hidden">
+    <main className={`${embed ? 'h-screen' : 'h-[calc(100vh-4.1rem)]'} bg-background font-body flex flex-col overflow-hidden`}>
+      <div className={`mx-auto w-full flex flex-col h-full overflow-hidden ${embed ? 'gap-2 px-3 py-3' : 'max-w-7xl gap-4 px-6 py-4'}`}>
 
-        {/* ── Page Header (shrink-0 prevents it from squishing) ── */}
-        <div className="shrink-0">
-          <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Cukai Bot</h1>
-          {activeEntity &&
-            <p className="mt-1 text-xs text-muted">
-              Ask anything about Malaysian tax regulations, deductions, or {activeEntity.name} — powered by LHDN 2024 Guidelines.
-            </p>
-          }
-        </div>
+        {/* ── Page Header (shrink-0 prevents it from squishing) ──
+            Hidden in embed mode: the side panel already has its own header, and
+            the tall title block would waste scarce vertical space in a panel. */}
+        {!embed && (
+          <div className="shrink-0">
+            <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Cukai Bot</h1>
+            {activeEntity &&
+              <p className="mt-1 text-xs text-muted">
+                Ask anything about Malaysian tax regulations, deductions, or {activeEntity.name} — powered by LHDN 2024 Guidelines.
+              </p>
+            }
+          </div>
+        )}
+
+        {/* ── Embed-mode compact bar ──
+            In the extension side panel the full chat-history sidebar is hidden
+            (it's `hidden lg:flex`, and the panel is far narrower than lg), so
+            there's no visible way to start a fresh thread. This slim bar gives
+            embed users the one control they'd actually miss — "New chat" —
+            without dragging the whole sidebar into a 400px panel. */}
+        {embed && (
+          <div className="shrink-0 flex items-center justify-between">
+            <span className="text-xs font-semibold text-muted">
+              {activeEntity ? activeEntity.name : 'CukaiBot'}
+            </span>
+            <button
+              onClick={handleNewChat}
+              className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-semibold text-muted transition-colors hover:border-primary hover:text-primary"
+            >
+              <PlusIcon className="h-3.5 w-3.5" />
+              New chat
+            </button>
+          </div>
+        )}
 
         {/* ── Master Split Layout Area ── */}
         <div className="flex flex-1 gap-6 min-h-0 overflow-hidden">
@@ -2613,6 +2708,8 @@ function CukaiBot() {
                     message={msg}
                     isActive={msg.id === activeCitationsMessageId}
                     onSelectCitations={handleSelectCitations}
+                    embed={embed}
+                    onPreview={setPreviewCitation}
                     showFollowups={msg.id === lastAssistantMessageId && !dismissedFollowupIds.has(msg.id)}
                     onSelectFollowup={(prompt) => {
                       // Dismiss THIS message's follow-ups the moment one is
