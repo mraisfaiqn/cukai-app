@@ -27,11 +27,11 @@ from sqlalchemy import or_, func
 from database import init_db, SessionLocal
 import models
 from models import Document, FormBProfile, CapitalAsset, BreastfeedingEquipmentClaim, FinancialStatementProfile, Child, CP500Record, OneTimeReliefClaim, ChatSession, ChatMessage, ChatAttachment
-from insights.models import Insight
+from insights.insight_models import Insight
 from capital_allowance import compute_capital_allowance_for_year
 from carryforward import compute_multi_year_carryforward, MAX_LOSS_CARRYFORWARD_YEARS
 from child_relief import compute_h16_for_children
-from cp500 import compute_cp500_for_year
+from cp500 import compute_cp500_for_year, compute_cp500_schedule_status
 from one_time_relief import compute_one_time_relief_for_year, compute_departure_levy_rebate_for_year
 from utils import parse_amount, money
 from pipeline import (
@@ -62,7 +62,7 @@ from document_dispatch import dispatch_document
 # Registers the Insight/InsightRun tables on the shared Base (so init_db's
 # create_all picks them up) and provides the /api/insights endpoints.
 from insights.router import router as insights_router
-from insights.models import Insight
+from insights.insight_models import Insight
 from breastfeeding_relief import compute_breastfeeding_relief_for_year, H11_CAP_MYR
 import mongo
 from embeddings import embed_text
@@ -161,7 +161,7 @@ def _requeue_interrupted_documents() -> None:
 def _requeue_interrupted_insight_runs() -> None:
   """Resume durable queued/running insight jobs after a process restart."""
   from insights.engine import run_insight_engine
-  from insights.models import InsightRun
+  from insights.insight_models import InsightRun
 
   db = SessionLocal()
   try:
@@ -582,24 +582,143 @@ async def get_personal_details(person_id: int = Path(gt=0), db: Session = Depend
   return _serialize_person(person)
 
 
-@app.get("/companyDetails/{person_id}")
-async def get_company_details(person_id: int = Path(gt=0), db: Session = Depends(get_db)):
-  person = db.query(models.Person).filter(models.Person.id == person_id).first()
-  if not person:
-    raise HTTPException(status_code=404, detail="Person not found")
-  if not person.entities:
-    raise HTTPException(status_code=404, detail="No company found for this person")
-  return _serialize_entity(person.entities[0])
-
-
 @app.delete("/userDelete/{person_id}")
 async def delete_user(person_id: int = Path(gt=0), db: Session = Depends(get_db)):
+  """
+  Permanently delete a Person and every row anywhere in the system that
+  belongs to them — the "delete my account" flow triggered from the Danger
+  Zone at the bottom of the Personal Profile panel.
+
+  WHY THIS ISN'T JUST `db.delete(person); db.commit()`
+    Person.entities / Person.children use ORM-level cascade="all,
+    delete-orphan", and insights.insight_models.Insight/InsightRun both use
+    a real ondelete="CASCADE" FK straight to persons.id — those genuinely
+    do clean up automatically. But every OTHER per-user table in models.py
+    (Document, CapitalAsset, BreastfeedingEquipmentClaim, CP500Record,
+    OneTimeReliefClaim, FinancialStatementProfile, ChatSession, ChatMessage,
+    ChatAttachment) stores its owner as a plain `user_id = String(128)`
+    column with NO foreign key at all — see the Document model's own
+    comment on why (int Person.id vs str Document.user_id). A bare
+    `db.delete(person)` would leave every one of those rows behind:
+    documents, capital-allowance assets, CP500 history, chat history — all
+    still sitting in Postgres, on disk, and in MongoDB, permanently
+    orphaned. That's not a leak to another user, but it does mean the
+    account isn't actually gone, which defeats the entire point of this
+    endpoint. So each of those tables is explicitly bulk-deleted below,
+    scoped by the exact same `user_id = str(person_id)` string every other
+    endpoint in this file already uses (see the "Data scoping" note above
+    _verify_entity_owned) before the Person row itself is removed.
+
+  SAFETY: every single query below filters on an EXACT equality match
+  against `target_user_id` (never LIKE/wildcard), so this can only ever
+  touch rows belonging to this one person_id — there is no path by which
+  another user's data is read, modified, or deleted by this endpoint.
+  Everything runs in ONE transaction: if anything raises before the final
+  db.commit(), get_db()'s finally-block close() discards the whole
+  uncommitted transaction, so a failure partway through can never leave a
+  half-deleted account behind.
+  """
   person = db.query(models.Person).filter(models.Person.id == person_id).first()
   if not person:
     raise HTTPException(status_code=404, detail="User not found")
+
+  target_user_id = str(person_id)  # matches the str(person_id) convention used everywhere else
+
+  # ── Collect on-disk file paths + Mongo doc ids BEFORE deleting rows ────────
+  # (once the row is gone we'd have no way to find the file/chunks to clean up)
+  doc_rows = db.query(Document).filter(Document.user_id == target_user_id).all()
+  doc_ids = [d.id for d in doc_rows]
+  doc_file_paths = [d.file_path for d in doc_rows if d.file_path]
+
+  attachment_rows = db.query(ChatAttachment).filter(ChatAttachment.user_id == target_user_id).all()
+  attachment_file_paths = [a.file_path for a in attachment_rows if a.file_path]
+
+  # ── Bulk-delete every non-cascading per-user table, exactly scoped ────────
+  # Order doesn't matter for correctness here (none of these FK into each
+  # other in a way that would block deletion), but children-before-parents
+  # keeps the intent readable.
+  deleted_counts = {}
+  deleted_counts["FormBProfile"] = (
+    db.query(FormBProfile).filter(FormBProfile.user_id == target_user_id)
+    .delete(synchronize_session=False)
+  )
+  deleted_counts["CapitalAsset"] = (
+    db.query(CapitalAsset).filter(CapitalAsset.user_id == target_user_id)
+    .delete(synchronize_session=False)
+  )
+  deleted_counts["BreastfeedingEquipmentClaim"] = (
+    db.query(BreastfeedingEquipmentClaim).filter(BreastfeedingEquipmentClaim.user_id == target_user_id)
+    .delete(synchronize_session=False)
+  )
+  deleted_counts["CP500Record"] = (
+    db.query(CP500Record).filter(CP500Record.user_id == target_user_id)
+    .delete(synchronize_session=False)
+  )
+  deleted_counts["OneTimeReliefClaim"] = (
+    db.query(OneTimeReliefClaim).filter(OneTimeReliefClaim.user_id == target_user_id)
+    .delete(synchronize_session=False)
+  )
+  # Full delete (not the partial-half-clear used by delete_document) is
+  # correct here: an account deletion removes BOTH the P&L and BS halves
+  # together, since they can only ever have belonged to this one user.
+  deleted_counts["FinancialStatementProfile"] = (
+    db.query(FinancialStatementProfile).filter(FinancialStatementProfile.user_id == target_user_id)
+    .delete(synchronize_session=False)
+  )
+  # ChatAttachment/ChatMessage are deleted explicitly (not left to the
+  # chat_sessions.session_id ON DELETE CASCADE) so an attachment that was
+  # uploaded but never sent (session_id/message_id both NULL — see the
+  # ChatAttachment model docstring) is still caught; it wouldn't be reached
+  # by a ChatSession cascade at all.
+  deleted_counts["ChatAttachment"] = (
+    db.query(ChatAttachment).filter(ChatAttachment.user_id == target_user_id)
+    .delete(synchronize_session=False)
+  )
+  deleted_counts["ChatMessage"] = (
+    db.query(ChatMessage).filter(ChatMessage.user_id == target_user_id)
+    .delete(synchronize_session=False)
+  )
+  deleted_counts["ChatSession"] = (
+    db.query(ChatSession).filter(ChatSession.user_id == target_user_id)
+    .delete(synchronize_session=False)
+  )
+  deleted_counts["Document"] = (
+    db.query(Document).filter(Document.user_id == target_user_id)
+    .delete(synchronize_session=False)
+  )
+
+  # ── Person itself ──────────────────────────────────────────────────────────
+  # Cascades ORM-side to Entity + Child (Person.entities / Person.children
+  # both use cascade="all, delete-orphan"), and DB-side to Insight /
+  # InsightRun / InsightRunChange via their ondelete="CASCADE" FKs straight
+  # to persons.id.
   db.delete(person)
   db.commit()
-  return {"message": "User successfully deleted"}
+
+  for table, count in deleted_counts.items():
+    if count:
+      logger.info(f"[Delete Account] Removed {count} {table} row(s) for person_id {person_id}.")
+  logger.info(f"[Delete Account] Person {person_id} and all linked rows deleted.")
+
+  # ── Best-effort cleanup: on-disk files + Mongo chunks ───────────────────────
+  # Non-fatal — the account is already fully gone from Postgres either way,
+  # matching the same non-fatal convention delete_document already uses.
+  for fp in doc_file_paths + attachment_file_paths:
+    try:
+      if fp and os.path.isfile(fp):
+        os.remove(fp)
+    except OSError as e:
+      logger.warning(f"[Delete Account] Could not remove file '{fp}': {e}")
+
+  for doc_id in doc_ids:
+    try:
+      mongo_deleted = mongo.delete_chunks_for_document(doc_id)
+      if mongo_deleted:
+        logger.info(f"[Delete Account] Removed {mongo_deleted} MongoDB chunk(s) for document ID {doc_id}.")
+    except Exception as e:
+      logger.warning(f"[Delete Account] Could not remove MongoDB chunks for document ID {doc_id}: {e}")
+
+  return {"message": "User successfully deleted", "person_id": person_id}
 
 
 @app.put("/userProfile/{person_id}")
@@ -1537,14 +1656,14 @@ _CATEGORY_GROUP_LABELS = {
   "Q3":              "Business Expense",
   "Q4":              "Personal Relief",
   "DONATIONS":       "Donations & Contributions",
-  "TAX_INSTALMENTS": "Tax Instalments Already Paid",
+  "TAX_INSTALLMENTS": "Tax Installments Already Paid",
   "REBATES":         "Tax Rebates",
   "REFERENCE":       "Reference & Reconciliation",
   "NON_TAX":         "Non-Tax Document",
   "REVIEW":          "Needs Review",
 }
 _CATEGORY_GROUP_ORDER = [
-  "Q1", "Q2", "Q3", "Q4", "DONATIONS", "TAX_INSTALMENTS", "REBATES",
+  "Q1", "Q2", "Q3", "Q4", "DONATIONS", "TAX_INSTALLMENTS", "REBATES",
   "REFERENCE", "NON_TAX", "REVIEW",
 ]
 _CATEGORY_LABEL_PREFIX_RE = re.compile(r"^Q[1-4] — (.+)$")
@@ -2113,7 +2232,7 @@ def reclassify_document(
   # A user-confirmed correction is, by definition, resolved — unless they're
   # explicitly re-flagging it as mixed/relief-non-deductible/etc., in which
   # case the derived state above already reflects that.
-  if new_status and new_status not in ("mixed", "not_applicable", "non_deductible", "tax_instalment") and ed["aggregation_state"] != "reference_only":
+  if new_status and new_status not in ("mixed", "not_applicable", "non_deductible", "tax_installment") and ed["aggregation_state"] != "reference_only":
     ed["aggregation_state"] = "resolved"
 
   # Apportioned Q3 categories (client entertainment, gifts, mixed-use vehicle,
@@ -3010,7 +3129,7 @@ def get_tax_profile_summary(
       # view in CukaiAccount.jsx) — kept exactly as before; it is NOT where
       # B33's actual figure comes from (see total_cp500 below, computed
       # from the full multi-year CP500Record registry via cp500.py).
-      if doc.category == "Q3 — CP500 Instalment Notice" and ed.get("total_scheduled_amount") is not None:
+      if doc.category == "Q3 — CP500 Installment Notice" and ed.get("total_scheduled_amount") is not None:
         cp500_installments.append({
           **entry,
           "recordType":     "notice",
@@ -3190,17 +3309,21 @@ def get_tax_profile_summary(
     total_q3    = sum(d["deductibleNumeric"] for d in deductions_q3)
     # Bug fix (15 Jul 2026): total_cp500 used to be summed straight from
     # cp500_installments — every CP500-classified document in THIS year's
-    # docs, regardless of whether it was an unpaid instalment NOTICE or an
+    # docs, regardless of whether it was an unpaid installment NOTICE or an
     # actual PAYMENT receipt. That silently counted scheduled-but-unpaid
     # amounts as if paid, corrupting B33 and (via B31/B32) the tax
     # payable/refund figure. compute_cp500_for_year() re-derives the
     # correct figure from the FULL CP500Record registry (every notice and
     # payment on file across all years, not just this year's documents),
     # counting ONLY payments, and correctly attributing each payment to
-    # the YA its instalment scheme was actually for — see cp500.py.
+    # the YA its installment scheme was actually for — see cp500.py.
     cp500_records = db.query(CP500Record).filter(CP500Record.user_id == user_id).all()
     cp500_result  = compute_cp500_for_year(cp500_records, target_year)
     total_cp500   = cp500_result["totalPaidMyr"]
+    # Purely informational "next installment due" tracker for the Overview
+    # dashboard — separate from cp500_result above and never feeds into
+    # B33/B31/B32 (see compute_cp500_schedule_status's own docstring).
+    cp500_schedule_status = compute_cp500_schedule_status(cp500_records, target_year)
 
     # B33ii — Section 107D withholding: economically the same role as MTD
     # or CP500 — a payment already made on the proprietor's behalf, reducing
@@ -3257,8 +3380,8 @@ def get_tax_profile_summary(
       mixed_pending.append({
         "documentId":    None,
         "entityId":      None,
-        "fileName":      "CP500 Self-Instalments (B33iii)",
-        "documentType":  "CP500 Instalment Reconciliation",
+        "fileName":      "CP500 Self-Installments (B33iii)",
+        "documentType":  "CP500 Installment Reconciliation",
         "category":      "Q3 — CP500 Payment Receipt",
         "amount":        str(cp500_result["totalPaidMyr"]),
         "amountNumeric": cp500_result["totalPaidMyr"],
@@ -4123,6 +4246,20 @@ def get_tax_profile_summary(
         "lowIncomeRebate":           low_income_rebate_applied,
         "spouseRebate":              spouse_rebate_applied,
         "cp500Paid":                 money(total_cp500),
+        # The correct denominator for "% of CP500 paid" is the NOTICE's own
+        # total scheduled amount — LHDN fixes this from last year's actual
+        # tax payable and splits it into 6 equal installments; it has no
+        # relationship to this year's still-fluctuating estimatedTaxPayable
+        # (which can legitimately be RM0 mid-year even with installments
+        # already paid). Comparing CP500 coverage against estimatedTaxPayable
+        # was the root cause of both the earlier 0%-despite-payment bug and
+        # the 1923%-overpaid bug.
+        "cp500ScheduledMyr":               cp500_result["totalScheduledMyr"],
+        "cp500NextInstallmentNo":           cp500_schedule_status["nextInstallmentNo"],
+        "cp500NextInstallmentDueDate":      cp500_schedule_status["nextInstallmentDueDate"],
+        "cp500NextInstallmentAmountDueMyr": cp500_schedule_status["nextInstallmentAmountDueMyr"],
+        "cp500InstallmentsCoveredCount":    cp500_schedule_status["installmentsCoveredCount"],
+        "cp500TotalInstallments":           cp500_schedule_status["totalInstallments"],
         "estimatedChargeableIncome": money(est_chargeable),
         "taxChargedMyr":             money(tax_charged),
         "bracketBreakdown": {

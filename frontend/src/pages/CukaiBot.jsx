@@ -635,6 +635,43 @@ function AttachmentChip({ attachment, onRemove, onPreview }) {
   );
 }
 
+// Shown above the input (and inside the sent message bubble) whenever the
+// conversation is grounded in an insight card — any of relief_headroom's
+// "How to claim these", provision's "Plan year-end moves", or digest's
+// "Ask CukaiBot about this" deep-links (see InsightsInbox.jsx's runAction).
+// Deliberately styled with the same amber/"ai-highlight" tokens
+// InsightsInbox.jsx's own AiChip/digest badge already use, rather than
+// AttachmentChip's neutral slate, so it reads immediately as "this reply is
+// grounded in an insight card", not "a file is attached" — the two are
+// visually distinct at a glance.
+function InsightContextChip({ meta, onRemove }) {
+  const content = (
+    <>
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-ai-highlight text-warning">
+        <SparkleIcon className="h-3.5 w-3.5" />
+      </span>
+      <span className="min-w-0 max-w-[200px] truncate text-[11px] font-medium text-headings">
+        {meta.label}
+      </span>
+    </>
+  );
+  return (
+    <div className="flex items-center gap-1.5 rounded-lg border border-warning/30 bg-ai-highlight py-1 pl-1.5 pr-2 shadow-sm">
+      {content}
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          title="Remove insight context"
+          className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-warning/70 hover:bg-warning/10 hover:text-warning transition-colors"
+        >
+          <XIcon className="h-3 w-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 const ImageIcon = ({ className = 'h-4 w-4' }) => (
   <svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -823,6 +860,11 @@ function UserMessage({ message, isActive, onSelectCitations, onPreviewAttachment
   const attachments = message.attachments || [];
   return (
     <div className="flex flex-col items-end gap-1.5">
+      {message.insightContext && (
+        <div className="flex max-w-[75%] flex-wrap justify-end gap-1.5">
+          <InsightContextChip meta={message.insightContext} />
+        </div>
+      )}
       {attachments.length > 0 && (
         <div className="flex max-w-[75%] flex-wrap justify-end gap-1.5">
           {attachments.map((a) => (
@@ -1750,6 +1792,17 @@ function CukaiBot({ embed = false }) {
   // consumed (see the mount effect below) so a later refresh doesn't try to
   // re-attach it to an unrelated message.
   const [pendingInsightId, setPendingInsightId] = useState(null);
+  // Set alongside pendingInsightId for ANY insight deep-link that carries
+  // askContext=1 (see InsightsInbox.jsx's runAction) — { label } drives the
+  // amber "insight context" chip shown above the input (and inside the sent
+  // message bubble once it goes out), visually distinct from a regular file
+  // attachment chip. Covers every insight whose action lands on this page:
+  // relief_headroom, provision, and digest cards alike.
+  const [pendingInsightMeta, setPendingInsightMeta] = useState(null);
+  // Guards the auto-send effect below so an insight deep-link is only ever
+  // auto-sent once per arrival, even if this effect's dependencies
+  // re-fire (e.g. activeEntity resolving after the initial mount).
+  const autoSentInsightRef = useRef(null);
 
   // ── Chat history sidebar state ─────────────────────────────────────────
   const SESSIONS_PAGE_SIZE = 20;
@@ -1845,16 +1898,20 @@ function CukaiBot({ embed = false }) {
     const params = new URLSearchParams(window.location.search);
     const paramSessionId = params.get('session');
     const paramInsightId = params.get('insightId');
+    const paramAskContext = params.get('askContext') === '1';
+    const paramTitle = params.get('title');
     const userId = localStorage.getItem('userId');
     const entityId = activeEntity?.id ?? null;
 
-    // An insightId (from InsightsInbox's "Ask CukaiBot about this" card
-    // action — see runAction there) always starts a brand-new conversation
-    // grounded in that specific card, rather than silently resuming whatever
-    // session was last open, which may be about something unrelated. Stripped
-    // from the URL immediately so a later refresh/back doesn't re-trigger it.
+    // An insightId (from InsightsInbox's "Ask CukaiBot about this" /
+    // "How to claim these" / "Plan year-end moves" card actions — see
+    // runAction there) always starts a brand-new conversation grounded in
+    // that specific card, rather than silently resuming whatever session
+    // was last open, which may be about something unrelated. Stripped from
+    // the URL immediately so a later refresh/back doesn't re-trigger it.
     if (paramInsightId) {
       setPendingInsightId(paramInsightId);
+      setPendingInsightMeta(paramAskContext ? { label: paramTitle || 'Insight context' } : null);
       setInputValue('Tell me more about this and what I should do next.');
       setMessages([]);
       setDismissedFollowupIds(new Set());
@@ -1863,6 +1920,8 @@ function CukaiBot({ embed = false }) {
       setSessionId(null);
       const nextParams = new URLSearchParams(window.location.search);
       nextParams.delete('insightId');
+      nextParams.delete('askContext');
+      nextParams.delete('title');
       const qs = nextParams.toString();
       window.history.replaceState(null, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
       return;
@@ -1922,6 +1981,26 @@ function CukaiBot({ embed = false }) {
     // should re-trigger (that would re-fetch/resume mid-staged-insight).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEntity?.id]);
+
+  // Auto-send an insight deep-link's staged prompt (relief_headroom,
+  // provision, and digest cards alike — anything that passed askContext=1)
+  // — the whole point of these cards' CukaiBot buttons is a one-tap handoff,
+  // not "pre-fill the box and make the person click Send again". Waits on
+  // activeEntity so the very first send already carries the right entity
+  // context, same as a normal manually-sent message would. The ref guard
+  // means this only ever fires once per arrival, even if activeEntity
+  // resolves a moment after the initial mount and re-runs this effect. A
+  // short delay lets the pre-filled prompt + context chip actually paint for
+  // a moment first, rather than jumping straight to "already sent" with
+  // nothing visible in between.
+  useEffect(() => {
+    if (pendingInsightMeta && pendingInsightId && autoSentInsightRef.current !== pendingInsightId) {
+      autoSentInsightRef.current = pendingInsightId;
+      const t = setTimeout(() => { handleSend(); }, 400);
+      return () => clearTimeout(t);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingInsightMeta, pendingInsightId, activeEntity]);
 
   // Load the sidebar's session list for the active entity, and reload it
   // whenever the entity changes — mirrors the message-history effect above,
@@ -2028,7 +2107,10 @@ function CukaiBot({ embed = false }) {
     const userId = localStorage.getItem('userId');
     if (!userId) return;
 
-    const userMsg = { id: Date.now(), role: 'user', text: trimmed, attachments: readyAttachments };
+    const userMsg = {
+      id: Date.now(), role: 'user', text: trimmed, attachments: readyAttachments,
+      insightContext: pendingInsightMeta,
+    };
     setMessages((prev) => [...prev, userMsg]);
     setInputValue('');
     setPendingAttachments([]);
@@ -2037,6 +2119,7 @@ function CukaiBot({ embed = false }) {
     // keep re-attaching a stale insight id.
     const insightIdForThisSend = pendingInsightId;
     setPendingInsightId(null);
+    setPendingInsightMeta(null);
     setIsTyping(true);
     setActiveCitations([]);
     setActiveCitationsMessageId(null);
@@ -2559,8 +2642,21 @@ function CukaiBot({ embed = false }) {
 
             {/* Locked Footer Action/Input Tray */}
             <div className="border-t border-border p-4 shrink-0">
-              {pendingAttachments.length > 0 && (
+              {(pendingInsightMeta || pendingAttachments.length > 0) && (
                 <div className="mb-2 flex flex-wrap gap-1.5">
+                  {pendingInsightMeta && (
+                    <InsightContextChip
+                      meta={pendingInsightMeta}
+                      onRemove={() => {
+                        // Also mark this insight as "already handled" for the
+                        // auto-send effect, in case removal happens in the
+                        // brief window before the 400ms auto-send timer fires.
+                        autoSentInsightRef.current = pendingInsightId;
+                        setPendingInsightMeta(null);
+                        setPendingInsightId(null);
+                      }}
+                    />
+                  )}
                   {pendingAttachments.map((a) => (
                     <AttachmentChip
                       key={a.id}
@@ -2657,11 +2753,6 @@ function CukaiBot({ embed = false }) {
 
           </div>
         </div>
-
-        {/* ── Footer disclaimer ── */}
-        <p className="shrink-0 text-center text-[10px] text-muted">
-          AI-generated chat responses are for advisory purposes only. Always verify with a licensed tax agent or LHDN resources before taking action.
-        </p>
 
       </div>
 

@@ -48,7 +48,7 @@ from insights.engine import (
     get_locked_year_pairs, is_assessment_year_locked, queue_insight_run,
     run_insight_engine,
 )
-from insights.models import Insight, InsightRun, InsightRunChange
+from insights.insight_models import Insight, InsightRun, InsightRunChange
 from insights.schemas import (
     InsightFeedOut, InsightOut, InsightRunOut, InsightRunRequestOut, InsightStateUpdate,
     serialize_insight, serialize_run,

@@ -79,11 +79,13 @@ MAX_FILE_SIZE_MB = 20
 # ITA s.4(a) — core trade / commerce / vocation
 # ITA s.4(aa) — capital gains on disposal of unlisted shares / foreign assets (from 1 Jan 2024)
 Q1_BUSINESS_INCOME_CATEGORIES = [
-  "Q1 — Sales & Service Revenue",          # invoices issued, platform payouts, POS receipts
-  "Q1 — Business Bank Interest",           # interest credited to a dedicated business account
+  "Q1 — Sales & Service Revenue",          # invoices issued, platform payouts, POS receipts —
+                                            # also covers MyInvois/Peppol-validated e-invoices
+                                            # the proprietor ISSUES; an e-Invoice is a format,
+                                            # not a separate income event (see s.82C guidance
+                                            # further down in this prompt).
   "Q1 — Capital Gains (s.4aa)",            # disposal of unlisted shares / foreign capital assets
   "Q1 — SST-02 Sales Tax Return",          # SST collected from customers; remittance to Kastam
-  "Q1 — e-Invoice / LHDN Validated",       # MyInvois / Peppol-validated e-invoices received
 ]
 
 # Reference / summary documents that sit structurally in the income quadrant but
@@ -117,6 +119,12 @@ Q2_PERSONAL_INCOME_CATEGORIES = [
   "Q2 — Royalty Income (s.4d)",            # royalties from IP, publications, patents
   "Q2 — Dividend Income (s.4c)",           # taxable dividends (foreign equities, co-ops)
   "Q2 — Investment Interest (s.4c)",       # taxable fixed deposit interest, P2P financing returns
+  # Interest credited to a dedicated BUSINESS bank account. Bank interest is
+  # s.4(c) personal income regardless of which account it lands in (unless
+  # the business's core activity IS deposit-taking/lending), so this is Q2
+  # like every other interest category — never Q1, even though the account
+  # itself is used for business purposes.
+  "Q2 — Business Bank Interest (s.4c)",
   "Q2 — Pension & Annuity (s.4e)",         # pension payouts, annuity statements
   "Q2 — Casual & Other Income (s.4f)",     # one-off referral fees, finder's fees, sundry gains
   "Q2 — Foreign-Source Income (FSI)",      # foreign consulting fees, overseas business income, foreign rental
@@ -142,12 +150,12 @@ Q3_BUSINESS_EXPENSE_CATEGORIES = [
   "Q3 — Revenue Repairs & Maintenance",    # restores asset to original condition; fully deductible
   "Q3 — CP58 Agent Commission",            # commissions >RM5,000 to agents/dealers (s.83A)
   # Was a single "Q3 — CP500 / Tax Installment" category (split 15 Jul 2026):
-  # conflating LHDN's instalment NOTICE (a schedule of what's due) with a
-  # PAYMENT RECEIPT (proof an instalment was actually paid) meant both were
+  # conflating LHDN's installment NOTICE (a schedule of what's due) with a
+  # PAYMENT RECEIPT (proof an installment was actually paid) meant both were
   # summed together into B33 — silently counting scheduled-but-unpaid
   # amounts as if paid. See cp500.py and SCHEDULE_SOURCE_CATEGORIES below.
-  "Q3 — CP500 Instalment Notice",          # LHDN's schedule of what's due — NEVER counts as paid
-  "Q3 — CP500 Payment Receipt",            # proof an instalment was actually paid — feeds B33
+  "Q3 — CP500 Installment Notice",          # LHDN's schedule of what's due — NEVER counts as paid
+  "Q3 — CP500 Payment Receipt",            # proof an installment was actually paid — feeds B33
 
   # ── Partially deductible / subject to caps (s.39(1)) ──
   "Q3 — Client Entertainment (50% cap)",   # client meals, events; 50% rule under s.39(1)(l)
@@ -359,7 +367,7 @@ ALL_Q4 = Q4_PERSONAL_RELIEF_CATEGORIES
 #                bucket so the frontend never lumps it in with genuinely non-applicable documents
 # not_applicable — non-financial / non-deductible supporting document with no standalone
 #                  deductibility (e.g. CP500 installment notice, generic non-tax document)
-VALID_STATUSES = {"income", "deductible", "mixed", "relief", "non_deductible", "not_applicable", "capital", "donation", "tax_instalment"}
+VALID_STATUSES = {"income", "deductible", "mixed", "relief", "non_deductible", "not_applicable", "capital", "donation", "tax_installment"}
 
 # Default status per category
 CATEGORY_STATUS_MAP: dict[str, str] = {}
@@ -376,7 +384,7 @@ CATEGORY_STATUS_MAP["Q3 — Mixed-Use Vehicle Expenses"]      = "mixed"
 CATEGORY_STATUS_MAP["Q3 — Capital Assets & Equipment"]      = "capital"         # via Schedule 3 IA+AA
 CATEGORY_STATUS_MAP["Q3 — Capital Renovation & Fit-Out"]    = "capital"         # via Schedule 3 / IBA
 CATEGORY_STATUS_MAP["Q3 — Hire Purchase & Leased Assets"]   = "mixed"           # interest deductible; principal not
-CATEGORY_STATUS_MAP["Q3 — CP500 Instalment Notice"]         = "not_applicable"  # schedule of what's due; not a deductible expense
+CATEGORY_STATUS_MAP["Q3 — CP500 Installment Notice"]         = "not_applicable"  # schedule of what's due; not a deductible expense
 CATEGORY_STATUS_MAP["Q3 — CP500 Payment Receipt"]           = "not_applicable"  # advance tax payment; not a deductible expense
 # Q4 relief items
 _Q4_RELIEF_CATS = {
@@ -530,11 +538,11 @@ SCHEDULE_SOURCE_CATEGORIES = {
   "Q4 — Breastfeeding Equipment",
   # CP500 needs claim history across years for a different but related
   # reason (15 Jul 2026): B33 for year Y must count ONLY payments, never
-  # notices, and must attribute each payment to the YA its instalment
+  # notices, and must attribute each payment to the YA its installment
   # scheme was actually FOR — not just the calendar date it was uploaded
   # or paid. See cp500.py and sync_cp500_registry below, same "recompute
   # fresh from full history" pattern as capital assets / H11.
-  "Q3 — CP500 Instalment Notice",
+  "Q3 — CP500 Installment Notice",
   "Q3 — CP500 Payment Receipt",
   # Finance Act 2025 (Act 874) s.6(a)(vi): each of these may be claimed only
   # ONCE across its own multi-year window — a genuine claim-history problem
@@ -591,7 +599,7 @@ def derive_aggregation_state(category: str, status: str) -> str:
     return "needs_user_confirmation"
   if status == "mixed":
     return "needs_apportionment"
-  if status in ("not_applicable", "non_deductible", "tax_instalment"):
+  if status in ("not_applicable", "non_deductible", "tax_installment"):
     return "excluded_by_rule"
   return "resolved"
 
@@ -868,7 +876,11 @@ Identify the document type precisely from content headers, vendor names, and fil
   Sales Invoice / Tax Invoice (issued by the proprietor to a customer)
     → keywords: invois cukai, tax invoice, e-invoice, e-invois, MyInvois, Peppol,
       invois konsolidasi, recipient-created invoice, proforma invoice, self-billed invoice
-    → Q1 — Sales & Service Revenue or Q1 — e-Invoice / LHDN Validated
+    NOTE: whether this is a plain invoice or a MyInvois/Peppol-validated e-invoice, it is
+      the SAME sale — an e-invoice is a compliance format, not a second income event. This
+      only applies to invoices the proprietor ISSUED to a customer; see the s.82C guidance
+      further down for a PURCHASE document that happens to carry a MyInvois UUID.
+    → Q1 — Sales & Service Revenue
 
   Official Receipt / Payment Receipt (received from a customer)
     → keywords: resit rasmi, official receipt, O/R, payment receipt, bukti bayaran
@@ -947,6 +959,17 @@ Identify the document type precisely from content headers, vendor names, and fil
       Interest from P2P platforms, foreign bank accounts, or unlicensed entities is taxable.
       Flag exemption status in the note.
     → Q2 — Investment Interest (s.4c)
+
+  Business Current/Savings Account Interest Statement
+    → keywords: interest credited to a BUSINESS current/checking/savings account (not a
+      personal FD/savings account) — e.g. a business bank statement line showing "interest
+      credited", or a bank's year-end interest advice addressed to the business/sole-prop
+      name rather than the individual personally.
+    NOTE: Interest on a bank account is s.4(c) personal income regardless of whether the
+      account is used for business purposes — it is NEVER Q1 business income, even though
+      the account itself is a "business" account. Same s.127 exemption reasoning as ordinary
+      FD/savings interest applies if the paying institution is a Malaysian licensed bank.
+    → Q2 — Business Bank Interest (s.4c)
 
   Pension / Annuity Statement
     → keywords: pencen, pension, annuity, EPF withdrawal (post-retirement), PRS payout,
@@ -1250,21 +1273,21 @@ Identify the document type precisely from content headers, vendor names, and fil
         Two genuinely different documents share the CP500 name — distinguish them carefully,
         since conflating them silently overstates B33 (a notice is NOT proof of payment):
 
-        (a) CP500 Instalment Notice — LHDN's SCHEDULE of what's due across the year, not a
+        (a) CP500 Installment Notice — LHDN's SCHEDULE of what's due across the year, not a
             receipt. Look for: a table of SEVERAL future-dated amounts, no payment
             confirmation, no bank/transaction reference, keywords "Notis Ansuran Cukai
             Pendapatan", "notis ansuran", "jadual bayaran ansuran". Extract:
               ya_year                : year of assessment this schedule is FOR (integer)
-              total_scheduled_amount : the year's total scheduled instalments (string amount)
-            → Q3 — CP500 Instalment Notice; status: not_applicable.
+              total_scheduled_amount : the year's total scheduled installments (string amount)
+            → Q3 — CP500 Installment Notice; status: not_applicable.
 
-        (b) CP500 Payment Receipt — proof an instalment was ACTUALLY PAID. Look for: a
+        (b) CP500 Payment Receipt — proof an installment was ACTUALLY PAID. Look for: a
             specific payment DATE that has already occurred, a bank/transaction reference or
             LHDNM bill number, exactly ONE amount tied to ONE payment event (not a schedule),
             keywords "ByrHASiL", "bill number", "no. bil", "resit bayaran", "e-TT", "Virtual
             Account", "LHDNM e-Billing". Extract:
               ya_year        : the YA this payment is FOR — this may NOT be the same as the
-                               calendar year the payment date falls in (e.g. a late instalment
+                               calendar year the payment date falls in (e.g. a late installment
                                for YA2024 paid in January 2025 is still FOR YA2024). If the
                                document doesn't make the target YA clear, leave this null
                                rather than guessing from the payment date.
@@ -1894,7 +1917,7 @@ Identify the document type precisely from content headers, vendor names, and fil
       dealer withholding, distributor withholding, potongan cukai 2%, CP107D
     NOTE — CRITICAL DISTINCTION: this is a PAYMENT already made on the proprietor's behalf
       (the 2% a payer company withholds when paying its agents/dealers/distributors in cash),
-      economically the same role as MTD or a CP500 instalment — it reduces the final BALANCE
+      economically the same role as MTD or a CP500 installment — it reduces the final BALANCE
       of tax payable (B33/B34), not tax payable itself (unlike B29/Zakat above, which reduce
       tax payable directly). Mainly relevant to direct-sales/MLM-style businesses receiving
       commission income. Extract the withheld amount and the paying company's name.
@@ -2294,13 +2317,22 @@ CROSS-CUTTING COMPLIANCE CHECKS
     This allows a document management system to track when documents may be safely purged.
 
   s.82C — e-Invoice Compliance:
+    A MyInvois UUID / QR code on a document is a COMPLIANCE FORMAT, not a category signal on
+    its own — it appears on invoices the proprietor ISSUES and on invoices the proprietor
+    RECEIVES from an e-Invoice-mandated supplier, and these two directions are never the same
+    category:
+      - ISSUED to a customer (this is the proprietor's own sale) → Q1 — Sales & Service
+        Revenue, same as any other sales invoice. Never a separate "e-Invoice" category —
+        the e-Invoice format doesn't change that this is ordinary business income.
+      - RECEIVED from a supplier (this is a purchase/expense) → classify normally by WHAT
+        WAS PURCHASED (the relevant Q3 expense category, e.g. Cost of Goods Sold, Office &
+        Admin Supplies) — NEVER Q1. A supplier's own e-Invoice compliance has no bearing on
+        how the proprietor's purchase is classified.
     If gross annual business revenue appears to exceed RM1,000,000, note in the note field
     that the proprietor may be required to issue LHDN-validated e-invoices (MyInvois / Peppol).
-    Flag the document as a Q1 — e-Invoice / LHDN Validated if it carries a MyInvois UUID
-    or QR code linked to the LHDN portal.
 
   s.107B — CP500 Tax Installments:
-    Distinguish an instalment NOTICE (extract ya_year, total_scheduled_amount) from a
+    Distinguish an installment NOTICE (extract ya_year, total_scheduled_amount) from a
     PAYMENT RECEIPT (extract ya_year, amount, reference_no) — see the CP500 section above
     for the full distinguishing criteria. Never extract a notice's schedule into `amount`.
     Note: CP502 must be filed before 30 June if estimated income drops by >30%.
@@ -2380,8 +2412,8 @@ OUTPUT FORMAT — return ONLY valid JSON, no markdown fences, no preamble
   "cgt_disposal_consideration": "<ONLY for s.4(aa) CGT documents: disposal/sale price as string e.g. RM 50,000.00, else null>",
   "cgt_acquisition_cost": "<ONLY for s.4(aa) CGT documents: original acquisition cost as string, else null>",
   "cgt_gain_loss": "<ONLY for s.4(aa) CGT documents: computed gain or loss as string e.g. Gain RM 12,000.00, else null>",
-  "ya_year": "<ONLY for CP500/CP204 notice or receipt: the year of assessment the instalment scheme is FOR — may differ from tax_year/date if this is a late payment for a prior YA, as integer e.g. 2024, else null>",
-  "total_scheduled_amount": "<ONLY for a CP500/CP204 INSTALMENT NOTICE (schedule of what's due, not a receipt): the year's total scheduled amount as string, else null>",
+  "ya_year": "<ONLY for CP500/CP204 notice or receipt: the year of assessment the installment scheme is FOR — may differ from tax_year/date if this is a late payment for a prior YA, as integer e.g. 2024, else null>",
+  "total_scheduled_amount": "<ONLY for a CP500/CP204 INSTALLMENT NOTICE (schedule of what's due, not a receipt): the year's total scheduled amount as string, else null>",
   "reference_no": "<ONLY for a CP500/CP204 PAYMENT RECEIPT: bank/transaction reference or LHDN bill number, else null>",
   "relief_cap_myr": <ONLY for Q4 relief items: applicable annual cap as integer e.g. 3000, or null if no cap (Zakat, Approved Donations — see the Q4 rules above for why)>,
   "zakat_amount": "<ONLY for Q4 — Zakat documents: total zakat paid as string e.g. RM 1,200.00, else null>",
@@ -2893,7 +2925,7 @@ def validate_llm_result(llm_result: dict, filename: str) -> dict:
   are ALWAYS derived from CATEGORY_REGISTRY by category name alone, with no
   exceptions and no override chain to have a missing branch — this is what
   eliminates (not patches) the original override-gap bug: a category like
-  "Q4 — Donation: Library Facilities" or "Q3 — CP500 Instalment Notice" can
+  "Q4 — Donation: Library Facilities" or "Q3 — CP500 Installment Notice" can
   no longer be silently mis-tagged just because the model guessed a
   different status than the canonical one.
   """
@@ -3064,7 +3096,7 @@ def build_extracted_data(
     "cgt_acquisition_cost":       llm_result.get("cgt_acquisition_cost"),
     "cgt_gain_loss":              llm_result.get("cgt_gain_loss"),
 
-    # CP500 / CP204 instalment notice vs. payment receipt (15 Jul 2026 split)
+    # CP500 / CP204 installment notice vs. payment receipt (15 Jul 2026 split)
     "ya_year":                   llm_result.get("ya_year"),
     "total_scheduled_amount":    llm_result.get("total_scheduled_amount"),
     "reference_no":              llm_result.get("reference_no"),
@@ -3393,12 +3425,12 @@ def sync_cp500_registry(db, document, category: str, ya_int, extracted_data: dic
   `ya_int` here is the document's fully-resolved year of assessment (see
   the ya_raw chain above, which already prefers CP500's own extracted
   ya_year over the document's date) — NOT necessarily the calendar year
-  the document was uploaded or dated, which matters for a late instalment
+  the document was uploaded or dated, which matters for a late installment
   paid in a different calendar year than the YA it's for.
   """
   existing = db.query(CP500Record).filter(CP500Record.source_document_id == document.id).first()
 
-  is_notice  = category == "Q3 — CP500 Instalment Notice"
+  is_notice  = category == "Q3 — CP500 Installment Notice"
   is_receipt = category == "Q3 — CP500 Payment Receipt"
 
   if not (is_notice or is_receipt) or not ya_int:
@@ -3422,7 +3454,7 @@ def sync_cp500_registry(db, document, category: str, ya_int, extracted_data: dic
       logger.warning(
         f"[Pipeline] Document ID {doc_id} classified as {category} but no positive amount "
         "was extracted — skipping CP500Record registry entry. This document will need "
-        "manual review to enter the instalment figure."
+        "manual review to enter the installment figure."
       )
       return
 
@@ -3762,11 +3794,11 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
     # both CP500 categories to "not_applicable", which read as a dead-end
     # "no financial content" document instead of what it actually is — an
     # advance tax payment/schedule. CATEGORY_TAX_TREATMENT (category_registry.py)
-    # already has the correct value ("tax_instalment") for these, so status is
+    # already has the correct value ("tax_installment") for these, so status is
     # now read from there instead. The one not-yet-migrated consumer of this
     # persisted value, main.py's _business_totals_for_year (used by the
     # carryforward engine), and this module's own derive_aggregation_state
-    # (below) have both been updated to treat "tax_instalment" the same way
+    # (below) have both been updated to treat "tax_installment" the same way
     # they already treated "not_applicable"/"non_deductible" — excluded from
     # direct summing — so this cutover can't leak a CP500 amount into Q3
     # deductions. Bundled with the category_registry.py fix to "Mixed /
@@ -3892,12 +3924,12 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
       extracted_data.get("form_ea") or {}
     ).get("ya_year") or (
       # CP500 notices/receipts extract a top-level ya_year (the YA the
-      # instalment scheme is FOR), which may differ from the document's own
-      # date — e.g. a late instalment for YA2024 paid in January 2025 is
+      # installment scheme is FOR), which may differ from the document's own
+      # date — e.g. a late installment for YA2024 paid in January 2025 is
       # still FOR YA2024. Must be checked before the date[:4] fallback below,
       # or a late payment would be silently misattributed to the wrong year.
       extracted_data.get("ya_year") if category in (
-        "Q3 — CP500 Instalment Notice", "Q3 — CP500 Payment Receipt",
+        "Q3 — CP500 Installment Notice", "Q3 — CP500 Payment Receipt",
       ) else None
     ) or (
       extracted_data.get("date")[:4] if extracted_data.get("date") else None

@@ -40,6 +40,17 @@ export const updateProfile = async (personId, payload) => {
   return data;
 };
 
+/**
+ * Permanently delete a person's account and every row of data linked to
+ * them (documents, entities, chat history, insights, capital assets, etc.)
+ * — the Danger Zone action at the bottom of the Personal Profile panel.
+ * This cannot be undone.
+ */
+export const deleteUser = async (personId) => {
+  const { data } = await api.delete(`/userDelete/${personId}`);
+  return data;
+};
+
 // ── Children (Form B H16 relief records) ──────────────────────────────────────
 // Phase 3 (14 Jul 2026): per-child records driving real H16a/b/c tiering,
 // replacing the flat numberOfChildren count. See models.py's Child model

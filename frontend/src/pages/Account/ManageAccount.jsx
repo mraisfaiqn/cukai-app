@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import ManageProfile from './ManageProfile';
-import { getPersonalDetails, updateProfile, getAllEntities, createEntity, updateEntity, deleteEntity, getTaxProfileSummary, getChildren, createChild, updateChild, deleteChild } from '../../services/api';
+import { getPersonalDetails, updateProfile, getAllEntities, createEntity, updateEntity, deleteEntity, getTaxProfileSummary, getChildren, createChild, updateChild, deleteChild, deleteUser } from '../../services/api';
 import { currentFilingYear } from '../../data/formB';
 
 /**
@@ -366,6 +366,49 @@ function ManageAccount() {
   };
 
   /**
+   * Permanently delete the logged-in user's account and everything linked
+   * to it (documents, entities, chat history, insights, etc. — see the
+   * backend's /userDelete endpoint for the full scope). Triggered from the
+   * Danger Zone at the bottom of the Personal Profile panel.
+   *
+   * On success: clears every localStorage key PageHeader's own logout
+   * clears, then does a HARD reload to '/' rather than a client-side
+   * navigate(). A plain navigate('/') + onLogout() raced against
+   * ProtectedLayout/PublicLayout's own isAuthenticated guards (both
+   * re-check on every render) — confirmed via testing that even batching
+   * the two calls together, the browser could still end up bounced to
+   * /overview and then /login before '/' ever settled. A hard reload
+   * sidesteps that class of bug entirely: the whole app boots fresh at
+   * '/', with isAuthenticated computed straight from the (already-cleared)
+   * localStorage on the very first render — there's no in-between render
+   * for either guard to misfire on. sessionStorage (not React Router
+   * state, which doesn't survive a hard reload) carries the goodbye flag
+   * for Home.jsx to pick up.
+   */
+  const handleDeleteAccount = async () => {
+    const userId = localStorage.getItem('userId');
+    if (!userId) return false;
+    try {
+      await deleteUser(userId);
+
+      localStorage.removeItem('userId');
+      localStorage.removeItem('userFullName');
+      localStorage.removeItem('userEmail');
+      localStorage.removeItem('activeEntityId');
+      for (const key of Object.keys(localStorage)) {
+        if (key.startsWith('cukaiActiveSessionId:')) localStorage.removeItem(key);
+      }
+
+      sessionStorage.setItem('cukaiAccountDeleted', '1');
+      window.location.href = '/';
+      return true;
+    } catch (err) {
+      console.error('Error deleting account:', err);
+      return false;
+    }
+  };
+
+  /**
    * Persist the active entity selection and notify all mounted pages to
    * re-fetch their entity-scoped data via a custom browser event.
    */
@@ -460,6 +503,7 @@ function ManageAccount() {
             onCreateChild={handleCreateChild}
             onSaveChild={handleSaveChild}
             onDeleteChild={handleDeleteChild}
+            onDeleteAccount={handleDeleteAccount}
           />
         </div>
       </div>

@@ -307,7 +307,7 @@ class Document(Base):
             name="ck_document_status",
         ),
         CheckConstraint(
-            "tax_status IS NULL OR tax_status IN ('income', 'deductible', 'mixed', 'not_applicable', 'relief', 'non_deductible', 'capital', 'donation', 'tax_instalment')",
+            "tax_status IS NULL OR tax_status IN ('income', 'deductible', 'mixed', 'not_applicable', 'relief', 'non_deductible', 'capital', 'donation', 'tax_installment', 'reference', 'rebate')",
             name="ck_document_tax_status",
         ),
         CheckConstraint(
@@ -422,11 +422,11 @@ class CP500Record(Base):
     payments. One row per source document, mirroring CapitalAsset /
     BreastfeedingEquipmentClaim's upsert-by-source-document pattern.
 
-    Added 15 Jul 2026 to fix a real bug: B33's "Self-Instalments / CP500"
+    Added 15 Jul 2026 to fix a real bug: B33's "Self-Installments / CP500"
     figure was previously computed by summing EVERY CP500-classified
-    document's amount, with no distinction between LHDN's instalment
+    document's amount, with no distinction between LHDN's installment
     NOTICE (a schedule of what's due — not proof of payment) and a
-    PAYMENT RECEIPT (proof an instalment was actually paid). A user who
+    PAYMENT RECEIPT (proof an installment was actually paid). A user who
     uploaded only the notice had that scheduled-but-unpaid amount silently
     counted as if paid.
 
@@ -438,7 +438,7 @@ class CP500Record(Base):
     history, so a correction to a misclassified/misattributed document
     automatically corrects every affected year's figure.
 
-    Deliberately NOT entity-scoped: a sole proprietor's CP500 instalment
+    Deliberately NOT entity-scoped: a sole proprietor's CP500 installment
     scheme covers their aggregate estimated tax as an individual, not any
     single business — same reasoning Phase 1 already established for B1
     multi-entity aggregation.
@@ -453,9 +453,9 @@ class CP500Record(Base):
     source_document_id = Column(Integer, ForeignKey("documents.id", ondelete="SET NULL"), nullable=True, unique=True)
 
     record_type = Column(String(16), nullable=False)  # 'notice' | 'payment'
-    # The YA this notice/payment's instalment scheme is FOR — NOT
+    # The YA this notice/payment's installment scheme is FOR — NOT
     # necessarily the calendar year a payment date falls in (a late
-    # instalment for YA2024 paid in January 2025 is still FOR YA2024).
+    # installment for YA2024 paid in January 2025 is still FOR YA2024).
     year_of_assessment = Column(Integer, nullable=False, index=True)
     amount             = Column(Numeric, nullable=False)
     event_date         = Column(Date, nullable=True)         # due date (notice) or payment date (payment)

@@ -811,8 +811,29 @@ function ChildrenEditor({ children, onAdd, onUpdate, onDelete }) {
   );
 }
 
-const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, onUpdateChild, onDeleteChild, taxSummary, gapsOnly = false }) => {
+const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, onUpdateChild, onDeleteChild, taxSummary, gapsOnly = false, onDeleteAccount }) => {
   const [draft, setDraft] = useState(profile);
+  // Danger Zone — Delete Account. Mirrors EntityPreviewPanel's own
+  // confirmingDelete pattern exactly, plus a `deletingAccount` loading flag
+  // since this one is a real async call the user should get feedback on
+  // (deleting an entire account's data can take a moment).
+  const [confirmingDeleteAccount, setConfirmingDeleteAccount] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const [deleteAccountError, setDeleteAccountError] = useState('');
+
+  const handleDeleteAccountClick = async () => {
+    console.log('[DeleteAccount] Confirm Delete clicked. onDeleteAccount is', typeof onDeleteAccount);
+    setDeletingAccount(true);
+    setDeleteAccountError('');
+    const ok = await onDeleteAccount();
+    console.log('[DeleteAccount] onDeleteAccount() resolved with:', ok);
+    if (!ok) {
+      setDeletingAccount(false);
+      setDeleteAccountError("Something went wrong deleting your account. Please try again.");
+    }
+    // On success, onDeleteAccount itself navigates away (to the home page) —
+    // no further state update needed here, and this component will unmount.
+  };
   const childrenList = children || [];
   const legacyChildCount = parseInt(draft.numberOfChildren || '0', 10) || 0;
 
@@ -1353,6 +1374,64 @@ const PersonalProfilePanel = ({ profile, onClose, onSave, children, onAddChild, 
           </div>
           </>
           )}
+
+          {/* Danger zone — hidden while filtering to just the Form B gaps, same
+              as EntityPreviewPanel's own Danger Zone, styled identically. */}
+          {!filtering && onDeleteAccount && <div className="mt-4 pt-4 border-t border-slate-100">
+            <SectionLabel><span className="text-[#D85A30]">Danger Zone</span></SectionLabel>
+            {!confirmingDeleteAccount ? (
+              <button
+                onClick={() => setConfirmingDeleteAccount(true)}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#D85A30] hover:text-[#993C1D] transition-colors duration-150"
+              >
+                <TrashIcon />Delete my account
+              </button>
+            ) : (
+              <div className="rounded-lg border border-[#F0997B] bg-[#FAECE7] p-3">
+                <div className="flex gap-2.5">
+                  <AlertTriangleIcon />
+                  <div className="flex-1">
+                    <p className="text-xs font-semibold text-[#712B13]">
+                      Delete your account?
+                    </p>
+                    <p className="text-[11px] text-[#993C1D] mt-0.5 leading-relaxed">
+                      This permanently removes your profile, every business entity, all uploaded
+                      documents, chat history, and saved insights. This cannot be undone.
+                    </p>
+                    {deleteAccountError && (
+                      <p className="text-[11px] font-semibold text-[#993C1D] mt-1.5">{deleteAccountError}</p>
+                    )}
+                    <div className="flex gap-2 mt-2.5">
+                      <button
+                        onClick={() => { setConfirmingDeleteAccount(false); setDeleteAccountError(''); }}
+                        disabled={deletingAccount}
+                        className="py-1.5 px-3 text-xs border border-slate-200 rounded-lg font-medium text-headings hover:bg-slate-50 transition-colors duration-150 disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleDeleteAccountClick}
+                        disabled={deletingAccount}
+                        className="py-1.5 px-3 text-xs bg-[#D85A30] text-white rounded-lg font-semibold hover:bg-[#993C1D] transition-colors duration-150 disabled:opacity-70 disabled:cursor-wait flex items-center gap-1.5"
+                      >
+                        {deletingAccount ? (
+                          <>
+                            <svg className="animate-spin h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none">
+                              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
+                              <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="opacity-90" />
+                            </svg>
+                            Deleting…
+                          </>
+                        ) : (
+                          'Confirm Delete'
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>}
         </div>
 
         <div className="shrink-0 flex gap-2 px-5 py-4 border-t border-slate-100">
@@ -3178,7 +3257,7 @@ const GenerateFormsPanel = ({ profile, entities, taxSummary, taxSummaryLoading }
    MAIN COMPONENT
    ========================================================================= */
 
-export default function ManageProfile({ initialProfile, initialEntities, activeEntityId, onSavePersonal, onCreateEntity, onSaveEntity, onDeleteEntity, onSwitchEntity, taxSummary, taxSummaryLoading, initialChildren, onCreateChild, onSaveChild, onDeleteChild }) {
+export default function ManageProfile({ initialProfile, initialEntities, activeEntityId, onSavePersonal, onCreateEntity, onSaveEntity, onDeleteEntity, onSwitchEntity, taxSummary, taxSummaryLoading, initialChildren, onCreateChild, onSaveChild, onDeleteChild, onDeleteAccount }) {
   // Use initialProfile if available, otherwise fall back to your static BLANK_PERSONAL_PROFILE structure
   const [personalProfile, setPersonalProfile] = useState(initialProfile || BLANK_PERSONAL_PROFILE);
   const [entities, setEntities] = useState(initialEntities || []);
@@ -3500,6 +3579,7 @@ export default function ManageProfile({ initialProfile, initialEntities, activeE
           onUpdateChild={handleUpdateChild}
           onDeleteChild={handleDeleteChildRecord}
           taxSummary={taxSummary}
+          onDeleteAccount={onDeleteAccount}
         />
       )}
 

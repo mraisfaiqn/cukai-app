@@ -130,12 +130,12 @@ const STATUS_META = {
   non_deductible: { label: 'Personal',        color: '#DC2626', bg: '#FEF2F2', dot: '#DC2626' },
   capital:        { label: 'Capital Asset',   color: '#9A3412', bg: '#FFEDD5', dot: '#F97316' },
   not_applicable: { label: 'Not Applicable',  color: '#64748B', bg: '#F1F5F9', dot: '#94A3B8' },
-  // CP500 instalment notices/receipts — money already paid/scheduled toward
+  // CP500 installment notices/receipts — money already paid/scheduled toward
   // this year's tax bill, not a deductible expense and not "not applicable"
   // to the return the way a genuinely non-tax document is. Distinct blue-ish
   // tone so it doesn't read as either "Deductible" (teal) or the old gray
   // "Not Applicable" pill it used to incorrectly share (Ticket 1, 23 Jul 2026).
-  tax_instalment: { label: 'Tax Instalment',  color: '#1D4ED8', bg: '#EFF6FF', dot: '#1D4ED8' },
+  tax_installment: { label: 'Tax Installment',  color: '#1D4ED8', bg: '#EFF6FF', dot: '#1D4ED8' },
   reference:      { label: 'Reference',       color: '#0E7490', bg: '#ECFEFF', dot: '#06B6D4' },
   pending:        { label: 'Uploading…',      color: '#64748B', bg: '#F8FAFC', dot: '#CBD5E1' },
   processing:     { label: 'Classifying…',   color: '#0369A1', bg: '#EFF6FF', dot: '#0369A1' },
@@ -1509,7 +1509,7 @@ function UploadTab({ docs, uploads, categoryGroups, onFileDrop, onRemove, onArch
     { value: 'Q4R',     label: 'Personal Relief' },
     { value: 'Q4D',     label: 'Donations (Part G)' },
     { value: 'Q4P',     label: 'Personal Expense (Non-deductible)' },
-    { value: 'TAXPAID', label: 'Tax Instalments Already Paid' },
+    { value: 'TAXPAID', label: 'Tax Installments Already Paid' },
     { value: 'REBATE',  label: 'Tax Rebates' },
     { value: 'REF',     label: 'Reference & Reconciliation' },
   ];
@@ -1548,7 +1548,7 @@ function UploadTab({ docs, uploads, categoryGroups, onFileDrop, onRemove, onArch
       if (categoryFilter === 'Q4R' && !(bucket === 'Q4' && getCategoryStatus(cat) === 'relief')) return false;
       if (categoryFilter === 'Q4D' && bucket !== 'DONATIONS') return false;
       if (categoryFilter === 'Q4P' && !(bucket === 'Q4' && getCategoryStatus(cat) === 'non_deductible')) return false;
-      if (categoryFilter === 'TAXPAID' && bucket !== 'TAX_INSTALMENTS') return false;
+      if (categoryFilter === 'TAXPAID' && bucket !== 'TAX_INSTALLMENTS') return false;
       if (categoryFilter === 'REBATE'  && bucket !== 'REBATES') return false;
       if (categoryFilter === 'REF' && bucket !== 'REFERENCE') return false;
     }
@@ -2413,11 +2413,6 @@ function CukaiAccount() {
             )}
           </div>
         </div>
-
-        {/* ── Footer disclaimer ── */}
-        <p className="shrink-0 text-center text-[10px] text-muted">
-          AI-generated data extraction is for advisory purposes only. Always verify with a licensed tax agent or LHDN resources before taking action.
-        </p>
 
       </div>
     </main>

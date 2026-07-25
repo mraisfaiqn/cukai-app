@@ -32,10 +32,18 @@ from utils import money
 #   general plant & machinery          IA 20% / AA 14%
 #   office equipment, furniture, fit.  IA 20% / AA 10%
 #   industrial building                IA 10% / AA  3%
-# Accelerated regimes (ICT/computers, green tech, SME small-value) and the
-# private motor-vehicle QE cap (RM50k/RM100k) are NOT modelled here and still
-# need manual/agent review. Verify against the current LHDN Public Ruling before
-# relying on these for a filing.
+#   ICT equipment & computer software  IA 40% / AA 20%  — Income Tax
+#     (Accelerated Capital Allowance) (Information and Communication
+#     Technology Equipment) Rules 2024 [P.U.(A) ...], effective YA2024
+#     onward. Confirmed against multiple independent sources (Wolters
+#     Kluwer, ClearTax, EY, Moore) since the specific IA/AA split isn't in
+#     any of the LHDN Explanatory Notes / Form B skeleton on file here —
+#     those only say "the applicable rate depends on the type of asset" and
+#     point to Working Sheet HK-1.2, which wasn't available to verify
+#     against directly.
+# Green tech and the private motor-vehicle QE cap (RM50k/RM100k) are NOT
+# modelled here and still need manual/agent review. Verify against the
+# current LHDN Public Ruling before relying on these for a filing.
 SCHEDULE_3_STANDARD_RATES = {
   "heavy_machinery":     {"ia": 20, "aa": 20},
   "motor_vehicle":       {"ia": 20, "aa": 20},
@@ -43,15 +51,22 @@ SCHEDULE_3_STANDARD_RATES = {
   "office_equipment":    {"ia": 20, "aa": 10},
   "furniture":           {"ia": 20, "aa": 10},
   "industrial_building": {"ia": 10, "aa":  3},
+  "ict_equipment":       {"ia": 40, "aa": 20},
 }
 
 # Keyword → canonical class. First match wins, so order matters: the more
 # specific classes are checked before the generic "plant_machinery" catch-all.
+# ict_equipment MUST be checked before plant_machinery — a description like
+# "IT Equipment" or "Computer Equipment" would otherwise false-positive-match
+# plant_machinery's bare "equipment" keyword and silently fall back to the
+# wrong (lower) 20%/14% rate instead of the correct accelerated 40%/20% one.
 _ASSET_CLASS_ALIASES = [
   (("heavy machinery", "excavator", "bulldozer", "crane", "tractor", "loader", "forklift", "roller"), "heavy_machinery"),
   (("motor vehicle", "vehicle", "lorry", "truck", "van", "car", "motorcycle", "motorbike"), "motor_vehicle"),
   (("industrial building", "factory", "warehouse", "industrial"), "industrial_building"),
-  (("office equipment", "printer", "photocopier", "scanner", "telephone"), "office_equipment"),
+  (("laptop", "notebook", "desktop", "computer", "macbook", "workstation",
+    "ict equipment", "computer software", "server", "tablet"), "ict_equipment"),
+  (("office equipment", "printer", "photocopier", "scanner", "telephone", "monitor"), "office_equipment"),
   (("furniture", "fitting", "fixture", "fit-out", "fit out"), "furniture"),
   (("plant", "machinery", "machine", "equipment", "compressor", "air cond", "aircond", "lift", "oven"), "plant_machinery"),
 ]

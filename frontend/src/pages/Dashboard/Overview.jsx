@@ -332,12 +332,18 @@ function DeadlineBanner({ deadlines, onViewAll }) {
 }
 //CP500 card
 // ── Cp500Card ──────────────────────────────────────────────────────────────────
-// Shows what fraction of the estimated tax liability has been prepaid via CP500
-// instalments. Reads cp500Paid and estimatedTaxPayable straight from the summary.
+// Shows what fraction of the CP500 notice's TOTAL SCHEDULED installments for
+// the year has actually been paid. Deliberately measured against the
+// notice's own total (cp500ScheduledMyr) rather than estimatedTaxPayable —
+// those are two unrelated figures (a partial-year tax estimate that's often
+// near-zero mid-year vs. LHDN's fixed RM600 installment schedule), and
+// comparing paid CP500 against the wrong one either pins the bar at a
+// meaningless 0%/100% or produces a distorted ratio. Comparing paid against
+// the schedule itself gives an ordinary, gradually-moving progress bar.
 function Cp500Card({ totals, assessmentYear }) {
   const paid = Number(totals?.cp500Paid) || 0;
-  const liability = Number(totals?.estimatedTaxPayable) || 0;
-  const pct = liability > 0 ? Math.round((paid / liability) * 100) : 0;
+  const scheduled = Number(totals?.cp500ScheduledMyr) || 0;
+  const pct = scheduled > 0 ? Math.min(100, Math.round((paid / scheduled) * 100)) : 0;
   const color = pct > 0 ? '#0D9488' : '#DC2626';
 
   return (
@@ -354,8 +360,26 @@ function Cp500Card({ totals, assessmentYear }) {
             <div className="h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
           </div>
           <p className="text-[11px] text-muted mt-1.5">
-            {fmtRM(paid)} of {fmtRM(liability)} estimated liability prepaid via CP500
+            {fmtRM(paid)} of {fmtRM(scheduled)} CP500 installments paid
           </p>
+
+          {/* Next-installment-due row — same font/size treatment as
+              HeadroomSlide's floor/ceiling row below the bracket bar, so
+              the two "upcoming" trackers read consistently. Only rendered
+              once a notice is on file (cp500TotalInstallments is null
+              otherwise, since there's no schedule to allocate against). */}
+          {totals?.cp500TotalInstallments != null && (
+            <div className="mt-1.5 flex justify-between text-[10px] text-muted">
+              <span>
+                {totals.cp500InstallmentsCoveredCount} of {totals.cp500TotalInstallments} installments covered
+              </span>
+              <span>
+                {totals.cp500NextInstallmentNo != null
+                  ? `Next due: Installment ${totals.cp500NextInstallmentNo} — ${fmtDueDate(totals.cp500NextInstallmentDueDate)} (${fmtRM(totals.cp500NextInstallmentAmountDueMyr)})`
+                  : 'All installments covered for the year'}
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </section>
@@ -413,8 +437,17 @@ function DeadlineSlide({ deadlines, onViewAll }) {
 
 function Cp500Slide({ totals, assessmentYear }) {
   const paid = Number(totals?.cp500Paid) || 0;
-  const liability = Number(totals?.estimatedTaxPayable) || 0;
-  const coverage = liability > 0 ? Math.round((paid / liability) * 100) : 0;
+  // Same fix as Cp500Card: the correct denominator is the CP500 NOTICE's own
+  // fixed total (cp500ScheduledMyr — set once from last year's tax payable,
+  // split into 6 equal installments), never estimatedTaxPayable — that figure
+  // is this YEAR's still-in-progress estimate, unrelated to the notice, and
+  // is often RM0 mid-year even with installments already paid. Comparing paid
+  // against it either pins the bar at a meaningless 0%/100% (when it's
+  // exactly 0) or produces a distorted ratio like 1923% (when it's a tiny
+  // nonzero residual) — using the notice's own total gives an ordinary,
+  // gradually-moving percentage instead.
+  const scheduled = Number(totals?.cp500ScheduledMyr) || 0;
+  const coverage = scheduled > 0 ? Math.min(100, Math.round((paid / scheduled) * 100)) : 0;
   const color = coverage > 0 ? '#0D9488' : '#DC2626';
   return (
     <div className="flex flex-1 flex-col">
@@ -429,8 +462,23 @@ function Cp500Slide({ totals, assessmentYear }) {
             <div className="h-full rounded-full" style={{ width: `${coverage}%`, background: color }} />
           </div>
           <p className="text-[10px] text-muted mt-1.5">
-            {fmtRM(paid)} of {fmtRM(liability)} estimated liability prepaid via CP500
+            {fmtRM(paid)} of {fmtRM(scheduled)} CP500 installments paid
           </p>
+
+          {/* Next-installment-due row — same font/size/layout as
+              HeadroomSlide's floor/ceiling row below the bracket bar. */}
+          {totals?.cp500TotalInstallments != null && (
+            <div className="mt-1.5 flex justify-between text-[10px] text-muted">
+              <span>
+                {totals.cp500InstallmentsCoveredCount} of {totals.cp500TotalInstallments} covered
+              </span>
+              <span>
+                {totals.cp500NextInstallmentNo != null
+                  ? `Next due: #${totals.cp500NextInstallmentNo} — ${fmtDueDate(totals.cp500NextInstallmentDueDate)}`
+                  : 'All installments covered'}
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -581,6 +629,9 @@ function niceCeil(v) {
 const fmtAxis = (v) => (v >= 1000 ? v / 1000 + 'K' : String(v));
 const fmtBar = (v) => Number(v).toLocaleString('en-MY', { maximumFractionDigits: 0 });
 const fmtRM = (v) => 'RM ' + Number(v).toLocaleString('en-MY', { maximumFractionDigits: 0 });
+const fmtDueDate = (iso) => iso
+  ? new Date(iso).toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' })
+  : '';
 const pct = (v, t) => t ? ((v / t) * 100).toFixed(1) + '%' : '0%';
 
 // Color palette cycled across categories so charts stay readable regardless
@@ -707,7 +758,7 @@ function PieSlide({ chart }) {
   const { slices, total } = buildSlices(chart.segments, CX, CY, R, INNER);
 
   return (
-    <div className="grid flex-1 min-h-0 grid-rows-[2fr_1fr] gap-2">
+    <div className="grid flex-1 min-h-0 grid-rows-[2fr_auto_1fr] gap-2">
       {/* Tooltip portal */}
       {hovered && (
         <div
@@ -758,19 +809,33 @@ function PieSlide({ chart }) {
         )}
       </div>
 
-      {/* Bottom row (1 part) — dot legend, centered below the donut.
-          Categories are dynamic (grow as the user uploads documents into new
-          ones), so it still scrolls horizontally if there are more than fit,
-          but centers when there's room. */}
-      <div className="min-h-0 flex items-center justify-center gap-3 overflow-x-auto">
+      {/* Chart title — identifies which of the 4 donut charts this is
+          (Business Income / Personal Income / Deductible Expenses /
+          Personal Reliefs), sourced straight from chart.title so it can
+          never drift out of sync with the data it labels. Styled to match
+          the carousel tab header titles (text-sm font-bold). */}
+      {chart.title && (
+        <p className="min-h-0 shrink-0 text-center text-xs font-bold text-headings underline">
+          {chart.title}
+        </p>
+      )}
+
+      {/* Bottom row (1 part) — dot legend, one category per row, below the
+          donut. Categories are dynamic (grow as the user uploads documents
+          into new ones), so the list scrolls VERTICALLY (single column) once
+          there are more than fit. Each row is a compact, centered group
+          (dot + label + %) rather than a full-width stretched row — keeps
+          the label and its percentage sitting close together in the middle
+          instead of pinned to opposite edges of the card. */}
+      <div className="min-h-0 flex flex-col items-center justify-start gap-1.5 overflow-y-auto overflow-x-hidden px-1">
         {slices.length === 0 ? (
-          <p className="text-xs text-muted whitespace-nowrap">No data yet</p>
+          <p className="text-xs text-muted whitespace-nowrap text-center">No data yet</p>
         ) : (
           slices.map(sl => (
-            <div key={sl.label} className="flex items-center gap-1 shrink-0">
+            <div key={sl.label} className="flex items-center gap-1.5 shrink-0 max-w-full">
               <span className="h-1.5 w-1.5 shrink-0 rounded-sm" style={{ background: sl.color }} />
-              <span className="text-xs leading-tight text-muted whitespace-nowrap">{sl.label}</span>
-              <span className="text-xs font-semibold leading-tight text-headings whitespace-nowrap">{pct(sl.value, total)}</span>
+              <span className="max-w-[130px] truncate text-xs leading-tight text-muted">{sl.label}</span>
+              <span className="shrink-0 text-xs font-semibold leading-tight text-headings whitespace-nowrap">{pct(sl.value, total)}</span>
             </div>
           ))
         )}
@@ -1086,8 +1151,25 @@ export default function Overview() {
           const good  = (delta > 0) === (favorable === 'up');
           return { change: `${fmtDelta(delta)} vs YA ${priorLabel}`, trend, tone: good ? 'success' : 'danger' };
         };
+        // Total Income = NET business income (after Q3 deductions & capital
+        // allowance are already subtracted) + Q2 personal income — it is
+        // NOT gross Q1 revenue. Previously this reconciled only against raw
+        // Q1 entries, dumping both the real Q2 income AND the already-netted
+        // Q3/CA effect into one confusing (and often negative) "Other
+        // income" bucket. Deriving net business income by subtracting the
+        // REAL Q2 total from totals.totalIncome guarantees the two
+        // components shown always sum exactly back to it — no more
+        // unexplained negative "income" line.
+        const q2Components = detailFromEntries(cy?.q2PersonalIncome);
+        const q2Total = q2Components.reduce((s, c) => s + (c.raw || 0), 0);
+        const netBusinessIncome = (Number(totals.totalIncome) || 0) - q2Total;
         const incomeComponents = reconcileComponents(
-          detailFromEntries(cy?.q1BusinessIncome), totals.totalIncome, 'Other income');
+          [
+            { label: 'Business Income (net of expenses)', amount: fmtRM(netBusinessIncome), raw: netBusinessIncome,
+              count: 'After business expenses & capital allowance — see Total Deductions' },
+            ...q2Components,
+          ],
+          totals.totalIncome, 'Unclassified income adjustment');
        // Deductions popover = running expenses + capital allowance, matching
         // how the backend composes q3TotalDeductions. The raw Q3 entries list
         // can contain capital documents (e.g. hire purchase) at face value,
@@ -1112,7 +1194,7 @@ export default function Overview() {
             ...yoy(totals.totalIncome, priorTotals?.totalIncome, 'up'),
             detail: {
               formula: 'This consist of all the money earned this year and added together — from your business and anywhere else  (e.g., freelance work, investments, rental).',
-              formula2: 'Business Income + Other Income = Total Income',
+              formula2: 'Business Income (net) + Personal Income = Total Income',
               components: incomeComponents,
               equation: equationFromComponents(incomeComponents, totals.totalIncome),
             } },
@@ -1130,14 +1212,23 @@ export default function Overview() {
             ...yoy(totals.estimatedChargeableIncome, priorTotals?.estimatedChargeableIncome, 'down'),
             detail: {
               formula: 'This consist of the part of your money that actually gets taxed.',
-              formula2: 'Total Income − Total Deductions − Reliefs = Chargeable Income',
+              // Total Income already has Q3 deductions/capital allowance
+              // netted out of it (see the Total Income card above) — the
+              // next thing subtracted on the way to Chargeable Income is
+              // APPROVED DONATIONS (Part G), not deductions again. The
+              // previous version of this equation subtracted
+              // q3TotalDeductions here, double-counting it and producing an
+              // equation whose own arithmetic didn't match the displayed
+              // Chargeable Income figure.
+              formula2: 'Total Income − Donations − Reliefs = Chargeable Income',
               equation: fmtRM(totals.totalIncome || 0)
-                + ' − ' + fmtRM(totals.q3TotalDeductions || 0)
+                + ' − ' + fmtRM(totals.approvedDonationsMyr || 0)
                 + ' − ' + fmtRM(reliefsApplied)
                 + ' = ' + fmtRM(totals.estimatedChargeableIncome || 0),
               components: [
                 { label: 'Total income', amount: fmtRM(totals.totalIncome || 0) },
-                { label: 'Business costs', amount: '− ' + fmtRM(totals.q3TotalDeductions || 0) },
+                { label: 'Approved donations', amount: '− ' + fmtRM(totals.approvedDonationsMyr || 0),
+                  count: 'Gifts to approved institutions, capped at 10% of aggregate income' },
                 { label: 'Self relief', amount: '− ' + fmtRM(selfRelief),
                   count: 'Automatic — every resident gets this' },
                 { label: 'Other reliefs', amount: '− ' + fmtRM(q4Reliefs),
@@ -1150,6 +1241,7 @@ export default function Overview() {
             ...yoy(totals.estimatedTaxPayable, priorTotals?.estimatedTaxPayable, 'down'),
             detail: {
               formula: 'Your chargeable income is split into slices, and each slice is taxed at its own rate — from 0% on the first RM5,000 up to 30% at the top. Rebates are then subtracted directly from the tax.',
+              formula2: 'Tax on Chargeable Income − Rebates = Est. Tax Payable',
               equation: (Number(totals.lowIncomeRebate) || Number(totals.zakatRebate))
                 ? fmtRM(totals.taxChargedMyr || 0)
                   + (Number(totals.lowIncomeRebate) ? ' − ' + fmtRM(totals.lowIncomeRebate) : '')
@@ -1166,7 +1258,7 @@ export default function Overview() {
                   amount: '− ' + fmtRM(totals.zakatRebate) }] : []),
                 ...(Number(totals.cp500Paid) ? [{ label: 'Already prepaid via CP500',
                   amount: fmtRM(totals.cp500Paid),
-                  count: 'Instalments paid — reduces what is left to settle, not the tax itself' }] : []),
+                  count: 'Installments paid — reduces what is left to settle, not the tax itself' }] : []),
               ],
               note: Number(totals.cp500Paid)
                 ? 'After your CP500 prepayments, the balance left to settle is '

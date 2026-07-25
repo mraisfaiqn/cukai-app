@@ -5,7 +5,6 @@ import Home from './pages/Landing/Home'
 import Login from './pages/Landing/Login'
 import GetStarted from './pages/Landing/GetStarted'
 import Overview from './pages/Dashboard/Overview'
-import OpportunityDetail from './pages/Dashboard/OpportunityDetail'
 import CukaiAccount from './pages/CukaiAccount'
 import CukaiBot from './pages/CukaiBot'
 import InsightsInbox from './pages/InsightsInbox'
@@ -26,7 +25,11 @@ function ProtectedLayout({ isAuthenticated, onLogout }) {
       {/* FIX: Passed the 'onLogout' prop down to the PageHeader component */}
       <PageHeader onLogout={onLogout} />
       <main className="app-content"> {/* Optional wrapper for your CSS styling */}
-        <Outlet /> {/* This renders whatever sub-route the user is on */}
+        {/* onLogout is also exposed via Outlet context (useOutletContext()) so any
+            nested protected page — e.g. ManageAccount's Delete Account flow — can
+            flip isAuthenticated to false after a successful account deletion,
+            without every route needing it prop-drilled in individually. */}
+        <Outlet context={{ onLogout }} />
       </main>
     </>
   )
@@ -89,7 +92,6 @@ function App() {
           <Route path="/insightsinbox" element={<InsightsInbox />} />
           <Route path="/documentation" element={<Documentation />} />
           <Route path="/manageaccount" element={<ManageAccount />} />
-          <Route path="/opportunities/:id" element={<OpportunityDetail />} />
           <Route path="/termsconditions" element={<TermsConditions />} />
         </Route>
 
