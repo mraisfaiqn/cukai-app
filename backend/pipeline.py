@@ -3941,6 +3941,30 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
     except (TypeError, ValueError):
       ya_int = None
 
+    # Guard against a delete-while-processing race: OCR + LLM classification
+    # above can easily take many seconds, which is more than enough time for
+    # a DELETE /api/documents/{doc_id} or DELETE /userDelete/{person_id}
+    # request to remove this exact row from Postgres while this background
+    # job is still mid-flight. The `document` object above was fetched once,
+    # at the very top of this function — it has no way of knowing the row
+    # is already gone. Writing status/extracted_data back would silently
+    # resurrect a ghost record (harmless — an UPDATE matching zero rows is a
+    # no-op), but proceeding to embed_document_for_rag() below is NOT
+    # harmless: it would insert fresh MongoDB chunks for a doc_id that no
+    # longer has (and now never again WILL have) a Document row to trigger
+    # their cleanup via mongo.delete_chunks_for_document() — a permanently
+    # orphaned chunk with nothing left to ever delete it (see
+    # reconcile_mongo_chunks.py, built specifically to clean up exactly this
+    # class of leftover). Re-checking existence right here, immediately
+    # before the one truly unrecoverable step, closes that window.
+    if not db.query(Document.id).filter(Document.id == doc_id).first():
+      logger.warning(
+        f"[Pipeline] Document ID {doc_id} was deleted while this background job was "
+        "still processing it — discarding the classification result and skipping "
+        "RAG embedding so no orphaned MongoDB chunks are created for it."
+      )
+      return
+
     document.status             = "completed"
     document.document_type      = llm_result.get("document_type", "Unclassified")
     document.category           = category
