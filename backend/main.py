@@ -716,7 +716,7 @@ async def delete_user(person_id: int = Path(gt=0), db: Session = Depends(get_db)
       if mongo_deleted:
         logger.info(f"[Delete Account] Removed {mongo_deleted} MongoDB chunk(s) for document ID {doc_id}.")
     except Exception as e:
-      logger.warning(f"[Delete Account] Could not remove MongoDB chunks for document ID {doc_id}: {e}")
+      logger.error(f"[Delete Account] Could not remove MongoDB chunks for document ID {doc_id}: {e}")
 
   return {"message": "User successfully deleted", "person_id": person_id}
 
@@ -1942,7 +1942,7 @@ def delete_document(
     if mongo_deleted:
       logger.info(f"[Delete] Removed {mongo_deleted} MongoDB chunk(s) for document ID {doc_id}.")
   except Exception as e:
-    logger.warning(f"[Delete] Could not remove MongoDB chunks for document ID {doc_id}: {e}")
+    logger.error(f"[Delete] Could not remove MongoDB chunks for document ID {doc_id}: {e}")
 
   return {"message": f"Document ID {doc_id} deleted.", "document_id": doc_id}
 
