@@ -763,7 +763,62 @@ function EmptyCitationsPlaceholder() {
   );
 }
 
-function AssistantMessage({ message, isActive, onSelectCitations, showFollowups = false, onSelectFollowup }) {
+// ─── Compact citations (embed mode only) ─────────────────────────────────────
+// The full-width page shows sources in the rich right-hand CitationCard panel,
+// but that panel is `hidden lg:flex` — so at the extension side panel's width
+// it never appears, leaving no way to see or open a source. This renders each
+// citation as a small chip instead: only its type tag + title + a navigation
+// button (plus a verified ✓ when gazette-checked) — no snippets or excerpts.
+// Opening is smart: a user's own uploaded document (isInternal) opens the
+// in-app preview modal; an external law/ruling opens in a new tab.
+function CompactCitations({ citations, onPreview }) {
+  if (!citations || citations.length === 0) return null;
+  const openSource = (c) => {
+    if (c.isInternal) { onPreview?.(c); return; }
+    if (c.sourceUrl) window.open(c.sourceUrl, '_blank', 'noopener,noreferrer');
+  };
+  return (
+    <div className="mt-2 space-y-1.5">
+      <div className="flex items-center gap-1.5">
+        <BookIcon className="h-3.5 w-3.5 text-primary" />
+        <span className="text-[10px] font-bold uppercase tracking-wider text-muted">
+          {citations.length} source{citations.length === 1 ? '' : 's'}
+        </span>
+      </div>
+      {citations.map((c, i) => (
+        <button
+          key={i}
+          type="button"
+          onClick={() => openSource(c)}
+          title={c.isInternal ? 'Preview document' : (c.sourceUrl ? 'Open source' : undefined)}
+          disabled={!c.isInternal && !c.sourceUrl}
+          className="group flex w-full items-center gap-2 rounded-lg border border-border bg-slate-50 px-2.5 py-1.5 text-left transition-colors hover:border-primary hover:bg-primary-tint disabled:cursor-default disabled:hover:border-border disabled:hover:bg-slate-50"
+        >
+          {c.tag && (
+            <span className="inline-flex shrink-0 items-center rounded bg-headings px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-white">
+              {c.tag}
+            </span>
+          )}
+          <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-headings">
+            {c.title || 'Untitled source'}
+          </span>
+          {c.verified && (
+            <span className="shrink-0" title={typeof c.verified === 'string' ? c.verified : 'Verified'}>
+              <CheckCircleIcon />
+            </span>
+          )}
+          {(c.isInternal || c.sourceUrl) && (
+            <span className="shrink-0 text-slate-300 transition-colors group-hover:text-primary">
+              {c.isInternal ? <EyeIcon /> : <ExternalLinkIcon />}
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AssistantMessage({ message, isActive, onSelectCitations, showFollowups = false, onSelectFollowup, embed = false, onPreview }) {
   const citationCount = message.citations?.length || 0;
   const followups = showFollowups ? (message.followups || []).slice(0, 3) : [];
   return (
@@ -783,13 +838,22 @@ function AssistantMessage({ message, isActive, onSelectCitations, showFollowups 
           }`}
         >
           <MarkdownText text={message.text} className="select-text text-xs leading-relaxed text-[#334155]" />
-          {citationCount > 0 && (
+          {/* In embed mode the count is replaced by the CompactCitations chips
+              below (which have their own header), so this label is hidden to
+              avoid showing "N sources" twice. */}
+          {citationCount > 0 && !embed && (
             <span className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-medium text-muted">
               <FileTextIcon className="h-3 w-3" />
               {citationCount} source{citationCount === 1 ? '' : 's'}
             </span>
           )}
         </button>
+
+        {/* Compact, tappable sources — embed (side panel) only, since the rich
+            right-hand citation panel is hidden at panel width. */}
+        {embed && citationCount > 0 && (
+          <CompactCitations citations={message.citations} onPreview={onPreview} />
+        )}
 
         {message.structured && (
           <div className="rounded-xl border border-border bg-surface shadow-sm overflow-hidden">
@@ -2644,6 +2708,8 @@ function CukaiBot({ embed = false }) {
                     message={msg}
                     isActive={msg.id === activeCitationsMessageId}
                     onSelectCitations={handleSelectCitations}
+                    embed={embed}
+                    onPreview={setPreviewCitation}
                     showFollowups={msg.id === lastAssistantMessageId && !dismissedFollowupIds.has(msg.id)}
                     onSelectFollowup={(prompt) => {
                       // Dismiss THIS message's follow-ups the moment one is
