@@ -7,11 +7,17 @@
 //   • tab switching (Chat / Form B)
 //   • lazy-loading the Form B iframe the first time its tab is opened
 
-// Defaults to the deployed app: its bundle is minified and browser-cached, so
-// the iframe boots far faster than a localhost dev server (which recompiles on
-// demand) — a big win on the "slow first open". Point it at http://localhost:5173
-// via Settings when developing locally.
-const DEFAULT_APP_URL = 'https://cukai-my.web.app';
+// Default app origin the iframes point at (override in ⚙️ Settings).
+//
+// Set to localhost for now because the /embed/* routes this panel needs only
+// exist on THIS branch — the deployed site (cukai-my.web.app) is built from
+// `main`, which doesn't have them yet, so pointing there would just hit the
+// app's catch-all redirect and show /overview instead of the panel.
+//
+// ▶ TO SHIP TO REAL USERS: once this branch is merged and deployed, switch this
+//   back to 'https://cukai-my.web.app' — the deployed bundle is minified and
+//   browser-cached, so it boots much faster than a dev server.
+const DEFAULT_APP_URL = 'http://localhost:5173';
 
 const el = (id) => document.getElementById(id);
 const frames = {
@@ -38,6 +44,11 @@ init();
 function keepAliveConnection() {
   try {
     const port = chrome.runtime.connect({ name: 'cukai-sidepanel' });
+    // Tell the worker which window this panel belongs to, so open/close state
+    // is tracked per-window (see background.js) rather than one global flag.
+    chrome.windows.getCurrent()
+      .then((w) => { try { port.postMessage({ windowId: w.id }); } catch (_) {} })
+      .catch(() => {});
     port.onDisconnect.addListener(() => setTimeout(keepAliveConnection, 500));
   } catch (_) { /* worker momentarily unavailable — retried on next tick */ }
 }
@@ -103,13 +114,15 @@ function loadFrame(tab) {
 
   // Grace period: if the frame still hasn't fired a real `load` event, the app
   // is likely unreachable (wrong URL / server down) — swap the spinner for the
-  // settings hint instead of spinning forever.
+  // settings hint instead of spinning forever. 15s (not 8s) so a cold
+  // `npm run dev` first-compile doesn't flash the error before it finishes.
+  // If the frame DOES load later, its load handler clears the error anyway.
   setTimeout(() => {
     if (activeTab === tab && !ready[tab]) {
       hideLoading();
       el('loadError').classList.remove('hidden');
     }
-  }, 8000);
+  }, 15000);
 }
 
 async function saveSettings() {

@@ -76,7 +76,11 @@ function legacyCopy(text) {
 function CopyRow({ code, label, value, money }) {
   // 'idle' | 'copied' | 'failed'
   const [status, setStatus] = useState('idle');
-  const has = value !== null && value !== undefined && value !== '—' && !(money && Number(value) === 0);
+  // A genuine 0 (e.g. B27 rebate = RM 0) IS a real, copyable figure — only
+  // null/undefined/'—'/blank count as "no value". (Previously a 0 was treated
+  // as empty, so its Copy button was disabled and it showed a dash.)
+  const has = value !== null && value !== undefined && value !== '—'
+    && !(typeof value === 'string' && value.trim() === '');
   const display = money ? (has ? `RM ${fmtAmt(value)}` : '—') : (has ? String(value) : '—');
   // What actually lands on the clipboard: the bare number for money fields
   // (LHDN inputs reject "RM"/commas), the plain string otherwise.

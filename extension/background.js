@@ -21,25 +21,34 @@ function enableActionClickToOpen() {
 chrome.runtime.onInstalled.addListener(enableActionClickToOpen);
 chrome.runtime.onStartup.addListener(enableActionClickToOpen);
 
-// ── Track open/closed state via the panel's live port ──────────────────────
-let panelOpen = false;
+// ── Track which WINDOWS have the panel open, via each panel's live port ──────
+// Per-window (a Set of windowIds), not a single global boolean: the side panel
+// is a per-window surface, so with two browser windows open, tracking one flag
+// would let a toggle in window A desync window B. Each panel reports its own
+// windowId over the port when it connects (see sidepanel.js).
+const openWindows = new Set();
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'cukai-sidepanel') return;
-  panelOpen = true;
-  port.onDisconnect.addListener(() => { panelOpen = false; });
+  let winId = null;
+  port.onMessage.addListener((m) => {
+    if (m && typeof m.windowId === 'number') { winId = m.windowId; openWindows.add(winId); }
+  });
+  port.onDisconnect.addListener(() => { if (winId != null) openWindows.delete(winId); });
 });
 
 // ── Floating-button toggle ──────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender) => {
   const tabId = sender.tab?.id;
+  const winId = sender.tab?.windowId;
   if (msg?.type !== 'CUKAI_TOGGLE_PANEL' || tabId == null) return;
 
-  if (panelOpen) {
+  const isOpen = winId != null && openWindows.has(winId);
+  if (isOpen) {
     // Close: disabling the panel for this tab dismisses it, then re-enable so
     // it can be opened again on the next click.
     chrome.sidePanel.setOptions({ tabId, enabled: false }, () => {
-      panelOpen = false;
+      openWindows.delete(winId);
       setTimeout(() => {
         chrome.sidePanel.setOptions({ tabId, path: 'sidepanel.html', enabled: true });
       }, 200);
