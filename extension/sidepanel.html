@@ -38,9 +38,21 @@
   </section>
 
   <!-- ── Content: two iframes, one per tab ───────────────────────────────── -->
+  <!-- allow="clipboard-write" is REQUIRED for the Form B tab's copy buttons:
+       these iframes are cross-origin (the app) inside the extension page, and
+       browsers block navigator.clipboard.writeText() in a cross-origin iframe
+       unless the parent grants it here. -->
   <main class="content">
-    <iframe id="frame-chat"  class="frame" title="CukaiBot chat"></iframe>
-    <iframe id="frame-formb" class="frame hidden" title="Form B figures"></iframe>
+    <iframe id="frame-chat"  class="frame" title="CukaiBot chat" allow="clipboard-write"></iframe>
+    <iframe id="frame-formb" class="frame hidden" title="Form B figures" allow="clipboard-write"></iframe>
+
+    <!-- Loading overlay — shown while the active iframe cold-boots the app, so
+         the panel never looks blank/frozen on first open. -->
+    <div id="loading" class="loading">
+      <div class="spinner"></div>
+      <p>Loading CukaiBot…</p>
+    </div>
+
     <div id="loadError" class="load-error hidden">
       <p class="load-error-title">Can't reach the Cukai app</p>
       <p>Check the app URL in Settings (⚙️) and make sure the app is running and you're logged in.</p>

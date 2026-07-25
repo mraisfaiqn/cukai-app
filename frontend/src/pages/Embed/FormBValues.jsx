@@ -49,21 +49,57 @@ const SECTIONS = [
   },
 ];
 
+// Legacy clipboard path: a hidden <textarea> + document.execCommand('copy').
+// This runs INSIDE the same iframe on a genuine user gesture, so it works even
+// when the async Clipboard API is refused — which happens in a cross-origin
+// iframe unless the parent grants allow="clipboard-write" (see the extension's
+// sidepanel.html). Returns true on success.
+function legacyCopy(text) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (_) {
+    return false;
+  }
+}
+
 function CopyRow({ code, label, value, money }) {
-  const [copied, setCopied] = useState(false);
+  // 'idle' | 'copied' | 'failed'
+  const [status, setStatus] = useState('idle');
   const has = value !== null && value !== undefined && value !== '—' && !(money && Number(value) === 0);
   const display = money ? (has ? `RM ${fmtAmt(value)}` : '—') : (has ? String(value) : '—');
   // What actually lands on the clipboard: the bare number for money fields
   // (LHDN inputs reject "RM"/commas), the plain string otherwise.
   const clip = money ? String(Math.round(Number(value) || 0)) : String(value ?? '');
 
+  const flash = (s) => { setStatus(s); setTimeout(() => setStatus('idle'), 1400); };
+
   const copy = () => {
     if (!has) return;
-    navigator.clipboard.writeText(clip).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1400);
-    });
+    // Try the modern async API first; on rejection (or if it's unavailable),
+    // fall back to the legacy execCommand path. Only show "Failed" if BOTH
+    // paths fail — so the button never silently does nothing again.
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(clip)
+        .then(() => flash('copied'))
+        .catch(() => flash(legacyCopy(clip) ? 'copied' : 'failed'));
+    } else {
+      flash(legacyCopy(clip) ? 'copied' : 'failed');
+    }
   };
+
+  const btnColor = status === 'copied' ? '#0D9488' : status === 'failed' ? '#DC2626' : '#64748B';
+  const btnLabel = status === 'copied' ? 'Copied' : status === 'failed' ? 'Failed' : 'Copy';
 
   return (
     <div style={S.row}>
@@ -77,10 +113,10 @@ function CopyRow({ code, label, value, money }) {
       <button
         onClick={copy}
         disabled={!has}
-        style={{ ...S.copyBtn, opacity: has ? 1 : 0.4, cursor: has ? 'pointer' : 'not-allowed', color: copied ? '#0D9488' : '#64748B' }}
+        style={{ ...S.copyBtn, opacity: has ? 1 : 0.4, cursor: has ? 'pointer' : 'not-allowed', color: btnColor }}
         title={has ? 'Copy value' : 'No value yet'}
       >
-        {copied ? 'Copied' : 'Copy'}
+        {btnLabel}
       </button>
     </div>
   );

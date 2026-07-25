@@ -2516,6 +2516,27 @@ function CukaiBot({ embed = false }) {
           </div>
         )}
 
+        {/* ── Embed-mode compact bar ──
+            In the extension side panel the full chat-history sidebar is hidden
+            (it's `hidden lg:flex`, and the panel is far narrower than lg), so
+            there's no visible way to start a fresh thread. This slim bar gives
+            embed users the one control they'd actually miss — "New chat" —
+            without dragging the whole sidebar into a 400px panel. */}
+        {embed && (
+          <div className="shrink-0 flex items-center justify-between">
+            <span className="text-xs font-semibold text-muted">
+              {activeEntity ? activeEntity.name : 'CukaiBot'}
+            </span>
+            <button
+              onClick={handleNewChat}
+              className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-semibold text-muted transition-colors hover:border-primary hover:text-primary"
+            >
+              <PlusIcon className="h-3.5 w-3.5" />
+              New chat
+            </button>
+          </div>
+        )}
+
         {/* ── Master Split Layout Area ── */}
         <div className="flex flex-1 gap-6 min-h-0 overflow-hidden">
 

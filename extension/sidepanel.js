@@ -7,7 +7,11 @@
 //   • tab switching (Chat / Form B)
 //   • lazy-loading the Form B iframe the first time its tab is opened
 
-const DEFAULT_APP_URL = 'http://localhost:5173';
+// Defaults to the deployed app: its bundle is minified and browser-cached, so
+// the iframe boots far faster than a localhost dev server (which recompiles on
+// demand) — a big win on the "slow first open". Point it at http://localhost:5173
+// via Settings when developing locally.
+const DEFAULT_APP_URL = 'https://cukai-my.web.app';
 
 const el = (id) => document.getElementById(id);
 const frames = {
@@ -21,7 +25,8 @@ const ROUTES = {
 
 let appUrl = DEFAULT_APP_URL;
 let activeTab = 'chat';
-const loaded = { chat: false, formb: false };
+const loaded = { chat: false, formb: false }; // src assigned
+const ready  = { chat: false, formb: false }; // 'load' event actually fired
 
 init();
 
@@ -58,12 +63,21 @@ function wireEvents() {
 
   el('saveSettings').addEventListener('click', saveSettings);
 
-  // If an iframe fails to load (wrong URL / app down), the onload never marks
-  // it loaded; surface a hint after a short grace period on the active tab.
-  Object.values(frames).forEach((f) => {
-    f.addEventListener('load', () => { el('loadError').classList.add('hidden'); });
+  // When a frame finishes loading, clear the error hint and — if it's the
+  // frame the user is currently looking at — hide the loading spinner.
+  Object.entries(frames).forEach(([name, f]) => {
+    f.addEventListener('load', () => {
+      // Ignore the initial about:blank load — only a real app URL counts.
+      if (!f.src || f.src === 'about:blank') return;
+      ready[name] = true;
+      el('loadError').classList.add('hidden');
+      if (name === activeTab) hideLoading();
+    });
   });
 }
+
+function showLoading() { el('loading').classList.remove('hidden'); }
+function hideLoading() { el('loading').classList.add('hidden'); }
 
 function switchTab(tab) {
   if (tab === activeTab) return;
@@ -75,28 +89,27 @@ function switchTab(tab) {
   Object.entries(frames).forEach(([name, f]) =>
     f.classList.toggle('hidden', name !== tab));
 
+  // Already-loaded tab → no spinner; otherwise loadFrame shows it.
+  if (loaded[tab]) hideLoading();
   loadFrame(tab); // lazy-load on first visit
 }
 
 function loadFrame(tab) {
   if (loaded[tab]) return;
+  showLoading();
+  ready[tab] = false;
   frames[tab].src = `${appUrl}${ROUTES[tab]}`;
   loaded[tab] = true;
 
-  // Grace period: if the frame hasn't fired `load` shortly, assume it's
-  // unreachable and show the settings hint.
+  // Grace period: if the frame still hasn't fired a real `load` event, the app
+  // is likely unreachable (wrong URL / server down) — swap the spinner for the
+  // settings hint instead of spinning forever.
   setTimeout(() => {
-    if (activeTab === tab && !frameReachable(frames[tab])) {
+    if (activeTab === tab && !ready[tab]) {
+      hideLoading();
       el('loadError').classList.remove('hidden');
     }
-  }, 4000);
-}
-
-// A cross-origin iframe won't let us read its document, but a successful load
-// still leaves `contentWindow` populated. This is a best-effort reachability
-// hint, not a hard check.
-function frameReachable(frame) {
-  try { return !!frame.contentWindow; } catch (_) { return true; }
+  }, 8000);
 }
 
 async function saveSettings() {
@@ -105,8 +118,8 @@ async function saveSettings() {
   await chrome.storage.local.set({ cukaiExtSettings: { appUrl: next } });
 
   // Reset and reload both frames against the new URL.
-  loaded.chat = false;
-  loaded.formb = false;
+  loaded.chat = false;  loaded.formb = false;
+  ready.chat = false;   ready.formb = false;
   frames.chat.src = 'about:blank';
   frames.formb.src = 'about:blank';
   el('loadError').classList.add('hidden');
