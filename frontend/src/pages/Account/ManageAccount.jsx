@@ -103,6 +103,23 @@ function ManageAccount() {
     try {
       const data = await getTaxProfileSummary(currentFilingYear(), userId, null);
       setTaxSummary(data);
+      // Extension side panel fix: pulse a localStorage marker so the
+      // extension's /embed/formb tab — a same-origin <iframe> in the
+      // browser extension's side panel, running in a separate window/
+      // document from this tab — knows its Form B figures are stale and
+      // refetches. Every mutating handler in this file (profile save,
+      // entity create/save/delete, child create/save/delete) already calls
+      // this one function after a successful change, so this single write
+      // covers all of them without instrumenting each handler separately.
+      // Same native `storage`-event mechanism as the entity-switch fix (see
+      // CukaiBot.jsx / FormBValues.jsx's own storage listeners): it fires
+      // automatically in every OTHER same-origin browsing context, which is
+      // exactly the main-tab → extension-iframe direction needed here, with
+      // no postMessage plumbing. The stored value itself is never read —
+      // only its CHANGE matters — so a timestamp is used simply to
+      // guarantee each write is distinct and reliably triggers a fresh
+      // 'storage' event, even for two saves in quick succession.
+      localStorage.setItem('cukaiFormBDataUpdatedAt', String(Date.now()));
     } catch (err) {
       console.error('Error fetching tax profile summary:', err);
       setTaxSummary(null);
@@ -304,6 +321,23 @@ function ManageAccount() {
         const newEntity = remapEntityFromApi(created);
         setEntityData((prev) => [...prev, newEntity]);
         refetchTaxSummary(); // new entity's income/opening balances affect the aggregate
+
+        // Make the newly created entity the active one — same pattern as
+        // handleSwitchEntity/the delete-active-entity fallback below (write
+        // localStorage, update local state, dispatch entitySwitch). Without
+        // this, a freshly created entity never became active anywhere: not
+        // in this tab's other pages (Overview/InsightsInbox/CukaiBot all
+        // listen for entitySwitch, which never fired), and not in the
+        // extension side panel either (no localStorage write meant no
+        // 'storage' event for its same-origin iframes to react to — see
+        // CukaiBot.jsx/FormBValues.jsx's storage listeners). A person who
+        // just created a new business reasonably expects to now be working
+        // IN that business, not still looking at whichever one was active
+        // before.
+        localStorage.setItem('activeEntityId', String(newEntity.id));
+        setActiveEntityId(newEntity.id);
+        window.dispatchEvent(new CustomEvent('entitySwitch', { detail: { entityId: newEntity.id } }));
+
         return newEntity;
       }
       return false;

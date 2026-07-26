@@ -1831,6 +1831,21 @@ function CukaiBot({ embed = false }) {
   // citation-bearing message, same as the old default behavior).
   const [activeCitationsMessageId, setActiveCitationsMessageId] = useState(null);
   const [activeEntity, setActiveEntity] = useState(null);
+  // Extension side panel fix: whether a user is currently logged in, kept in
+  // sync with localStorage the same way activeEntity is below (see the
+  // storage listener in the entity-loading effect). Needed because — same
+  // root cause as the entity-switch bug — /embed/cukaibot's App.jsx
+  // isAuthenticated state is set ONCE on mount and never re-checked
+  // afterward; there's no storage listener at that layer. That's normally
+  // invisible in a normal browser tab (logging out there navigates away
+  // immediately in the SAME window), but the extension's iframe is a
+  // separate window that just keeps rendering the stale "logged in" chat
+  // UI after a logout in the main app tab, with no indication anything
+  // changed. FormBValues.jsx doesn't have this problem because it does its
+  // own fresh localStorage check on every fetch rather than trusting a
+  // mount-time auth flag — this mirrors that same independent-check pattern
+  // for the chat tab instead of relying on App.jsx's (stale) gate.
+  const [loggedIn, setLoggedIn] = useState(() => !!localStorage.getItem('userId'));
   // Which citation's document is currently open in the in-page preview
   // modal (see DocumentPreviewModal below) — null when closed. Only ever
   // set for citations with isInternal:true (a user's own uploaded document
@@ -1892,8 +1907,14 @@ function CukaiBot({ embed = false }) {
   async function refreshFolders() {
     const userId = localStorage.getItem('userId');
     if (!userId) { setFolders([]); return; }
+    const entityIdForThisFetch = activeEntity?.id ?? null;
     try {
-      const res = await getChatFolders(userId, activeEntity?.id ?? null);
+      const res = await getChatFolders(userId, entityIdForThisFetch);
+      // The active entity may have changed again while this request was in
+      // flight (responses aren't guaranteed to arrive in the order they
+      // were sent) — applying a stale response here would silently
+      // overwrite a NEWER, correct one with a DIFFERENT entity's folders.
+      if (entityIdForThisFetch !== latestRef.current.activeEntityId) return;
       setFolders(res?.folders || []);
     } catch (_) {
       // Leave the existing folder list as-is on failure — worst case the
@@ -1923,19 +1944,219 @@ function CukaiBot({ embed = false }) {
 
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
+  // Chat card container — measured (via ResizeObserver below) so the
+  // composer's auto-grow max-height can be exactly half of it, matching
+  // Claude's own chat input behavior: grows with the typed text up to half
+  // the available chat area, then becomes internally scrollable beyond
+  // that instead of continuing to push the message history upward.
+  const chatCardRef = useRef(null);
+  const [maxInputHeight, setMaxInputHeight] = useState(96);
+
+  useEffect(() => {
+    const el = chatCardRef.current;
+    if (!el) return;
+    const recompute = () => setMaxInputHeight(Math.max(96, Math.floor(el.clientHeight / 2)));
+    recompute();
+    // ResizeObserver (not just a window 'resize' listener) so this also
+    // reacts to layout-only changes that don't fire a window resize event —
+    // e.g. the extension side panel's iframe being resized independently
+    // of the browser window, or this card's own height changing when the
+    // embed-mode compact bar above it mounts/unmounts.
+    const ro = new ResizeObserver(recompute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Auto-grow the composer as the user types, same pattern as Claude's own
+  // chat input: reset to 'auto' first so shrinking (e.g. after deleting a
+  // line, or after a send clears the field) is measured correctly rather
+  // than only ever growing — scrollHeight only reports accurately against
+  // an 'auto' baseline, not against whatever fixed height was set last time.
+  // Capped at maxInputHeight (half the chat card, from above); the browser
+  // then shows its own internal scrollbar automatically once the content's
+  // scrollHeight exceeds that cap, so no separate "switch to scrollable"
+  // logic is needed beyond that cap itself.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, maxInputHeight) + 'px';
+  }, [inputValue, maxInputHeight]);
+
+  // ── Two-way live sync between the main app tab and the extension's iframe ──
+  // BroadcastChannel (not the `storage` event used elsewhere in this app) is
+  // the right tool here: `storage` fires on plain key/value changes and
+  // isn't built for streaming a live sequence of chat events, while
+  // BroadcastChannel is a native browser API purpose-built for exactly
+  // this — any same-origin tab/iframe subscribed to the same channel name
+  // gets every message posted by any OTHER subscriber in real time (per
+  // spec it never delivers a message back to the sender's own channel
+  // object, so there's no self-echo to guard against here).
+  //
+  // Three kinds of event are synced, matching what was actually asked for:
+  //   - 'sessionSwitch' — sent whenever a NEW CHAT is started, a session is
+  //     explicitly picked from the sidebar, or a message is sent (which may
+  //     implicitly create or continue a session) — so switching sessions on
+  //     either side always brings the other side along to the same one.
+  //   - 'message' / 'messageUpdate' — sent for every message appended or
+  //     patched locally WHILE CONTINUING an already-shared session, so the
+  //     other side's view updates live without waiting on (or triggering) a
+  //     network refetch. A brand-new session's very first exchange instead
+  //     relies purely on the 'sessionSwitch' fetch below, since the other
+  //     side wasn't viewing that session yet anyway and a fresh history
+  //     fetch already returns the complete exchange with no race.
+  //   - 'typing' — mirrors the assistant "is typing" indicator live, same
+  //     scoping (only while continuing an already-shared session).
+  const chatSyncChannelRef = useRef(null);
+  // Always holds the LATEST sessionId/entity/user — read from inside the
+  // channel's onmessage handler, which is created once on mount and would
+  // otherwise close over stale values from that first render. Updated after
+  // every render (no dependency array), which is the standard fix for this.
+  const latestRef = useRef({});
+  useEffect(() => {
+    latestRef.current = {
+      sessionId,
+      activeEntityId: activeEntity?.id ?? null,
+      userId: localStorage.getItem('userId'),
+    };
+  });
+
+  // Applies a REMOTE session switch (never called for a locally-initiated
+  // one — those go through handleNewChat/handleSelectSession directly).
+  // Mirrors handleSelectSession's own fetch-and-apply logic but never
+  // re-broadcasts, since this IS the receiving side of a broadcast.
+  async function loadRemoteSession(targetSessionId) {
+    if (targetSessionId == null) {
+      // Mirrors a remote "New chat".
+      setMessages([]);
+      setSessionId(null);
+      setDismissedFollowupIds(new Set());
+      setActiveCitations([]);
+      setActiveCitationsMessageId(null);
+      setPendingAttachments([]);
+      return;
+    }
+    const userId = localStorage.getItem('userId');
+    if (!userId) return;
+    try {
+      const history = await getChatHistory(targetSessionId, userId);
+      setSessionId(history.sessionId);
+      setMessages(history.messages || []);
+      setDismissedFollowupIds(new Set());
+      setPendingAttachments([]);
+      const lastWithCitations = [...(history.messages || [])].reverse().find((m) => m.citations?.length);
+      setActiveCitations(lastWithCitations?.citations || []);
+      setActiveCitationsMessageId(lastWithCitations?.id ?? null);
+      setPersistedSessionId(latestRef.current.activeEntityId, history.sessionId);
+    } catch (_) {
+      // Fetch failed (e.g. stale/deleted session) — stay on whatever this
+      // side was already viewing rather than showing a broken empty state.
+    }
+  }
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const channel = new BroadcastChannel('cukai-chat-sync');
+    chatSyncChannelRef.current = channel;
+    channel.onmessage = (event) => {
+      const data = event.data || {};
+      const { sessionId: curSessionId, activeEntityId: curEntityId, userId: curUserId } = latestRef.current;
+      // Strict user + entity scoping on EVERY event kind, not just
+      // sessionSwitch — message/messageUpdate/typing previously validated
+      // sessionId alone, with no check at all that the receiving side is
+      // even looking at the same entity (let alone the same user). Strict
+      // equality (not "only block when both sides already resolved") also
+      // closes a real race: right after an entity switch, this side's own
+      // activeEntity can briefly still be resolving (curEntityId/curUserId
+      // momentarily null or stale) — the old loose check let a broadcast
+      // through in exactly that window instead of dropping it, which is the
+      // likely cause of a session from the PREVIOUS entity bleeding into
+      // the newly switched-to one.
+      if (data.userId !== curUserId || data.entityId !== curEntityId) return;
+      switch (data.kind) {
+        case 'sessionSwitch':
+          if (data.sessionId === curSessionId) return; // already there
+          loadRemoteSession(data.sessionId);
+          break;
+        case 'message':
+          if (data.sessionId === curSessionId) setMessages((prev) => [...prev, data.message]);
+          break;
+        case 'messageUpdate':
+          if (data.sessionId === curSessionId) {
+            setMessages((prev) => prev.map((m) => (m.id === data.id ? { ...m, ...data.patch } : m)));
+          }
+          break;
+        case 'typing':
+          if (data.sessionId === curSessionId) setIsTyping(data.isTyping);
+          break;
+        default:
+          break;
+      }
+    };
+    return () => channel.close();
+  }, []);
+
+  // Every broadcast carries BOTH the sending side's userId and entityId —
+  // required for the strict scoping check in onmessage above. Read fresh
+  // from localStorage/activeEntity at call time (these are called
+  // synchronously from this render's own event handlers, so there's no
+  // staleness risk the way there is inside the once-created onmessage
+  // handler above).
+  function syncEnvelope() {
+    return { userId: localStorage.getItem('userId'), entityId: activeEntity?.id ?? null };
+  }
+  function broadcastSessionSwitch(forSessionId) {
+    chatSyncChannelRef.current?.postMessage({
+      kind: 'sessionSwitch', sessionId: forSessionId ?? null, ...syncEnvelope(),
+    });
+  }
+  function broadcastMessage(forSessionId, message) {
+    if (!forSessionId) return;
+    chatSyncChannelRef.current?.postMessage({ kind: 'message', sessionId: forSessionId, message, ...syncEnvelope() });
+  }
+  function broadcastMessageUpdate(forSessionId, id, patch) {
+    if (!forSessionId) return;
+    chatSyncChannelRef.current?.postMessage({ kind: 'messageUpdate', sessionId: forSessionId, id, patch, ...syncEnvelope() });
+  }
+  function broadcastTyping(forSessionId, isTypingValue) {
+    if (!forSessionId) return;
+    chatSyncChannelRef.current?.postMessage({ kind: 'typing', sessionId: forSessionId, isTyping: isTypingValue, ...syncEnvelope() });
+  }
 
   // Load active entity for context and listen for entity switches
   useEffect(() => {
     const loadEntity = async () => {
       const userId = localStorage.getItem('userId');
-      if (!userId) return;
+      setLoggedIn(!!userId);
+      if (!userId) {
+        setActiveEntity(null);
+        return;
+      }
       try {
         // Don't assume activeEntityId already exists — this page can be the
         // first one a user lands on right after login. Resolve a default
         // entity here too, the same way Overview and ManageAccount do.
-        const entities = await getAllEntities(userId).catch(() => []);
+        let entities = await getAllEntities(userId).catch(() => []);
         const storedId = parseInt(localStorage.getItem('activeEntityId') || '0');
         let entity = entities.find((e) => e.id === storedId);
+        // A brand-new entity can briefly not appear in THIS PARTICULAR
+        // getAllEntities response yet (a real read-after-write timing gap
+        // right after ManageAccount's create-entity call — a switch between
+        // two already-existing entities never hits this, since neither one
+        // is new). Retry once, after a short pause, before concluding the
+        // persisted id is genuinely stale/invalid — this used to fall
+        // straight through to the entities[0] fallback below, which ALSO
+        // overwrites localStorage's activeEntityId back to entities[0]'s id,
+        // silently undoing the just-created entity's switch for every other
+        // tab/listener, not just this one. That's what made a brand-new
+        // entity's chat show some other entity's history until something
+        // else (e.g. sending a message) happened to trigger a later,
+        // by-then-successful loadEntity() call.
+        if (!entity && storedId) {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          entities = await getAllEntities(userId).catch(() => []);
+          entity = entities.find((e) => e.id === storedId);
+        }
         if (!entity && entities.length > 0) {
           entity = entities[0];
           localStorage.setItem('activeEntityId', String(entity.id));
@@ -1945,7 +2166,45 @@ function CukaiBot({ embed = false }) {
     };
     loadEntity();
     window.addEventListener('entitySwitch', loadEntity);
-    return () => window.removeEventListener('entitySwitch', loadEntity);
+
+    // Extension side panel fix: /embed/cukaibot renders inside a same-origin
+    // <iframe> in the browser extension's side panel — a separate window/
+    // document from the main app tab where ManageAccount.jsx actually
+    // switches entities, and where PageHeader.jsx's logout writes/removes
+    // localStorage. A CustomEvent dispatched on `window` there
+    // ('entitySwitch', above) is scoped to that window alone and never
+    // reaches this iframe, so without this the panel kept showing the old
+    // entity's chat until the user closed and reopened it (which force-
+    // reloads the iframe and re-reads localStorage fresh) — and, for the
+    // logged-in/out case specifically, kept showing the previous session's
+    // chat with no indication the user had logged out at all, unlike the
+    // Form B tab (FormBValues.jsx does its own fresh localStorage check on
+    // every fetch, so it already surfaced a "Not logged in" state; this had
+    // no equivalent check anywhere, so it just silently no-op'd instead).
+    //
+    // The native `storage` event is the right tool here instead of e.g.
+    // postMessage: it fires automatically, with zero extra plumbing, in
+    // every OTHER same-origin browsing context (other tabs, and same-origin
+    // iframes like this one) whenever localStorage is written elsewhere —
+    // exactly the main-tab → iframe direction this needs. It deliberately
+    // does NOT fire in the tab that made the write, which is fine since
+    // that tab already gets 'entitySwitch' above (or, for logout, navigates
+    // itself away). Watched keys:
+    //   - activeEntityId — entity switch (handleSwitchEntity, and the
+    //     delete-active-entity fallback both write this before dispatching
+    //     entitySwitch, so this always has something to react to).
+    //   - userId — set on login, removed on logout (PageHeader.jsx's
+    //     handleLogout) — the signal loadEntity uses above to flip
+    //     `loggedIn` and clear activeEntity.
+    const handleStorage = (e) => {
+      if (e.key === 'activeEntityId' || e.key === 'userId') loadEntity();
+    };
+    window.addEventListener('storage', handleStorage);
+
+    return () => {
+      window.removeEventListener('entitySwitch', loadEntity);
+      window.removeEventListener('storage', handleStorage);
+    };
   }, []);
 
   // Load the conversation for the active entity whenever it changes, so
@@ -1958,14 +2217,45 @@ function CukaiBot({ embed = false }) {
   // resetting to the empty/welcome state. If neither is present (or the
   // person explicitly started a new chat — see handleNewChat/handleClear,
   // which clear the persisted id), this falls through to the empty state.
+  // Tracks the entity this effect last resolved a session for — undefined
+  // means "hasn't run yet" (the very first resolution, e.g. on page load or
+  // right after a deep link), which is deliberately distinct from an actual
+  // SWITCH (a defined previous value that's now different). Only a real
+  // switch strips a leftover ?session= param below; the first resolution
+  // must still honor one (that's the whole point of the deep-link/embed
+  // insight flow).
+  const prevEntityIdForSessionRef = useRef(undefined);
+
   useEffect(() => {
+    const entityId = activeEntity?.id ?? null;
+    const isRealEntitySwitch = prevEntityIdForSessionRef.current !== undefined
+      && prevEntityIdForSessionRef.current !== entityId;
+    prevEntityIdForSessionRef.current = entityId;
+
     const params = new URLSearchParams(window.location.search);
-    const paramSessionId = params.get('session');
+    if (isRealEntitySwitch && params.has('session')) {
+      // A `?session=` param only ever makes sense for whichever entity was
+      // active when it was set (e.g. from a shared link, or simply left in
+      // the address bar from browsing this entity's chat). Carrying it over
+      // into a genuine entity switch — including switching to a BRAND NEW
+      // entity, which has no persisted session of its own yet — was
+      // silently resuming the PREVIOUS entity's conversation under the new
+      // entity's banner: the header/title updated correctly (they read
+      // activeEntity directly), but the chat itself stayed on the old
+      // session, and asking it a question answered from the old entity's
+      // context. Stripping it here means a switch always falls through to
+      // getPersistedSessionId(entityId) below instead — this entity's own
+      // last-active session, or the empty/new-chat state if it has none.
+      params.delete('session');
+      const qs = params.toString();
+      window.history.replaceState(null, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`);
+    }
+
+    const paramSessionId = isRealEntitySwitch ? null : params.get('session');
     const paramInsightId = params.get('insightId');
     const paramAskContext = params.get('askContext') === '1';
     const paramTitle = params.get('title');
     const userId = localStorage.getItem('userId');
-    const entityId = activeEntity?.id ?? null;
 
     // An insightId (from InsightsInbox's "Ask CukaiBot about this" /
     // "How to claim these" / "Plan year-end moves" card actions — see
@@ -2005,6 +2295,10 @@ function CukaiBot({ embed = false }) {
       setActiveCitations([]);
       setActiveCitationsMessageId(null);
       setSessionId(null);
+      // This entity has no session to resume — explicitly tell the other
+      // side too, so it shows the same empty/new-chat state for this entity
+      // instead of continuing to show whatever it had for the PREVIOUS one.
+      broadcastSessionSwitch(null);
       return;
     }
 
@@ -2023,6 +2317,7 @@ function CukaiBot({ embed = false }) {
         // resolved — covers both "resumed from localStorage, URL didn't
         // have it yet" and "resumed from URL, localStorage was stale/unset".
         setPersistedSessionId(entityId, history.sessionId);
+        broadcastSessionSwitch(history.sessionId);
         const nextParams = new URLSearchParams(window.location.search);
         nextParams.set('session', history.sessionId);
         window.history.replaceState(null, '', `${window.location.pathname}?${nextParams}`);
@@ -2037,6 +2332,7 @@ function CukaiBot({ embed = false }) {
         setActiveCitationsMessageId(null);
         setSessionId(null);
         clearPersistedSessionId(entityId);
+        broadcastSessionSwitch(null);
       }
     })();
     return () => { cancelled = true; };
@@ -2079,12 +2375,18 @@ function CukaiBot({ embed = false }) {
   async function refreshSessions() {
     const userId = localStorage.getItem('userId');
     if (!userId) { setSessions([]); setSessionsHasMore(false); return; }
+    const entityIdForThisFetch = activeEntity?.id ?? null;
     setSessionsLoading(true);
     try {
-      const page = await getChatSessions(userId, activeEntity?.id ?? null, SESSIONS_PAGE_SIZE, 0);
+      const page = await getChatSessions(userId, entityIdForThisFetch, SESSIONS_PAGE_SIZE, 0);
+      // See refreshFolders' own comment on this same check — a slower,
+      // now-stale response for a PREVIOUS entity landing after a newer one
+      // was already correctly applied must never overwrite it.
+      if (entityIdForThisFetch !== latestRef.current.activeEntityId) return;
       setSessions(page?.sessions || []);
       setSessionsHasMore(!!page?.hasMore);
     } catch (_) {
+      if (entityIdForThisFetch !== latestRef.current.activeEntityId) return;
       setSessions([]);
       setSessionsHasMore(false);
     } finally {
@@ -2101,9 +2403,11 @@ function CukaiBot({ embed = false }) {
     if (sessionsLoadingMore || sessionsLoading || !sessionsHasMore) return;
     const userId = localStorage.getItem('userId');
     if (!userId) return;
+    const entityIdForThisFetch = activeEntity?.id ?? null;
     setSessionsLoadingMore(true);
     try {
-      const page = await getChatSessions(userId, activeEntity?.id ?? null, SESSIONS_PAGE_SIZE, sessions.length);
+      const page = await getChatSessions(userId, entityIdForThisFetch, SESSIONS_PAGE_SIZE, sessions.length);
+      if (entityIdForThisFetch !== latestRef.current.activeEntityId) return;
       setSessions((prev) => [...prev, ...(page?.sessions || [])]);
       setSessionsHasMore(!!page?.hasMore);
     } catch (_) {
@@ -2171,11 +2475,21 @@ function CukaiBot({ embed = false }) {
     const userId = localStorage.getItem('userId');
     if (!userId) return;
 
+    // Captured BEFORE any local mutation below: whether this send continues
+    // an already-established session. A brand-new session's first exchange
+    // is synced purely via the sessionSwitch+fetch path further down (the
+    // other side wasn't viewing it yet anyway, and a fresh fetch already
+    // returns the complete exchange with no race against the backend); an
+    // ongoing session's messages/typing state are instead live-mirrored
+    // directly, message by message, with no network round trip.
+    const wasExistingSession = !!sessionId;
+
     const userMsg = {
       id: Date.now(), role: 'user', text: trimmed, attachments: readyAttachments,
       insightContext: pendingInsightMeta,
     };
     setMessages((prev) => [...prev, userMsg]);
+    if (wasExistingSession) broadcastMessage(sessionId, userMsg);
     setInputValue('');
     setPendingAttachments([]);
     // Only the message that actually carries it should — clear now so a
@@ -2185,6 +2499,7 @@ function CukaiBot({ embed = false }) {
     setPendingInsightId(null);
     setPendingInsightMeta(null);
     setIsTyping(true);
+    if (wasExistingSession) broadcastTyping(sessionId, true);
     setActiveCitations([]);
     setActiveCitationsMessageId(null);
 
@@ -2205,17 +2520,22 @@ function CukaiBot({ embed = false }) {
         params.set('session', res.sessionId);
         window.history.replaceState(null, '', `${window.location.pathname}?${params}`);
       }
+      // Always broadcast the definitive session — brand new or continuing.
+      // The receiving side no-ops if it's already viewing this session, so
+      // this is harmless to send unconditionally rather than only when the
+      // session just changed.
+      broadcastSessionSwitch(res.sessionId);
       // Swap the optimistic user bubble for the server-echoed one (see
       // main.py's post_chat_message) — same client-side id, so this
       // replaces rather than duplicates it. Only needed when there were
       // attachments: the server's version carries real /files/ preview
       // URLs the optimistic bubble couldn't have had yet.
       if (res.userMessage && readyAttachments.length > 0) {
+        const patch = { id: res.userMessage.id, attachments: res.userMessage.attachments || [] };
         setMessages((prev) => prev.map((m) => (
-          m.id === userMsg.id
-            ? { ...m, id: res.userMessage.id, attachments: res.userMessage.attachments || [] }
-            : m
+          m.id === userMsg.id ? { ...m, ...patch } : m
         )));
+        if (wasExistingSession) broadcastMessageUpdate(res.sessionId, userMsg.id, patch);
       }
       const botMsg = {
         id: res.message.id,
@@ -2225,6 +2545,7 @@ function CukaiBot({ embed = false }) {
         followups: res.message.followups || [],
       };
       setMessages((prev) => [...prev, botMsg]);
+      if (wasExistingSession) broadcastMessage(res.sessionId, botMsg);
       setActiveCitations(botMsg.citations);
       setActiveCitationsMessageId(botMsg.id);
       // Sidebar list needs refreshing either way: a brand-new session must
@@ -2241,8 +2562,10 @@ function CukaiBot({ embed = false }) {
         text: "Sorry, something went wrong reaching Cukai Bot. Please try again in a moment.",
       };
       setMessages((prev) => [...prev, errMsg]);
+      if (wasExistingSession) broadcastMessage(sessionId, errMsg);
     } finally {
       setIsTyping(false);
+      if (wasExistingSession) broadcastTyping(sessionId, false);
     }
   }
 
@@ -2319,6 +2642,7 @@ function CukaiBot({ embed = false }) {
     setPendingAttachments([]);
     setSessionId(null);
     clearPersistedSessionId(activeEntity?.id ?? null);
+    broadcastSessionSwitch(null);
     const params = new URLSearchParams(window.location.search);
     params.delete('session');
     const qs = params.toString();
@@ -2349,6 +2673,7 @@ function CukaiBot({ embed = false }) {
       setActiveCitations(lastWithCitations?.citations || []);
       setActiveCitationsMessageId(lastWithCitations?.id ?? null);
       setPersistedSessionId(activeEntity?.id ?? null, history.sessionId);
+      broadcastSessionSwitch(history.sessionId);
       const params = new URLSearchParams(window.location.search);
       params.set('session', history.sessionId);
       window.history.replaceState(null, '', `${window.location.pathname}?${params}`);
@@ -2562,9 +2887,45 @@ function CukaiBot({ embed = false }) {
   // conversation has moved on.
   const lastAssistantMessageId = [...messages].reverse().find((m) => m.role === 'assistant')?.id ?? null;
 
+  // Extension side panel fix: when the user logs out in the main app tab,
+  // this iframe's own App.jsx `isAuthenticated` has no way to find out (see
+  // the `loggedIn` state's own comment above — it's set once on mount and
+  // never re-checked), so without this the panel just kept rendering the
+  // previous session's chat as if nothing had happened. `loggedIn` itself
+  // was already being tracked correctly via the storage listener above —
+  // this is the piece that was missing: actually reading it in the render.
+  //
+  // Gated to embed mode only: in a normal browser tab, logging out
+  // immediately unmounts this page via ProtectedLayout's redirect (App.jsx),
+  // so there's never a "still on this page but logged out" moment to show a
+  // message for — this situation is unique to the extension's separate
+  // iframe window.
+  //
+  // Copy, layout, and colors are a deliberate exact match for App.jsx's own
+  // EmbedLayout "Please log in first" gate (navy background, neon teal
+  // heading) — that gate is what the Form B tab shows when it's opened
+  // fresh while already logged out, but its `isAuthenticated` flag can go
+  // stale (same root cause as above) and fail to fire for a logout that
+  // happens while this tab is already open. Matching it here means the
+  // Chat tab looks identical to Form B's logged-out state either way,
+  // regardless of which of the two code paths actually catches it. Also
+  // matches FormBValues.jsx's own "Not logged in" branch (see there) — this
+  // exact heading/subtext pairing is now the one standardized message shown
+  // across both extension tabs, however a logout is actually detected.
+  if (embed && !loggedIn) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#0F172A] px-6 text-center font-sans text-[13px] leading-relaxed text-[#94A3B8]">
+        <div>
+          <p className="mb-1.5 text-sm font-bold text-[#39FFD6]">Please log in first</p>
+          Open the Cukai app in a browser tab and sign in to view your profile extension.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <main className={`${embed ? 'h-screen' : 'h-[calc(100vh-4.1rem)]'} bg-background font-body flex flex-col overflow-hidden`}>
-      <div className={`mx-auto w-full flex flex-col h-full overflow-hidden ${embed ? 'gap-2 px-3 py-3' : 'max-w-7xl gap-4 px-6 py-4'}`}>
+      <div className={`mx-auto w-full flex flex-col h-full overflow-hidden ${embed ? 'gap-2 px-3 pt-3 pb-4' : 'max-w-7xl gap-4 px-6 py-4'}`}>
 
         {/* ── Page Header (shrink-0 prevents it from squishing) ──
             Hidden in embed mode: the side panel already has its own header, and
@@ -2574,7 +2935,7 @@ function CukaiBot({ embed = false }) {
             <h1 className="font-headings text-2xl font-bold tracking-tight text-headings">Cukai Bot</h1>
             {activeEntity &&
               <p className="mt-1 text-xs text-muted">
-                Ask anything about Malaysian tax regulations, deductions, or {activeEntity.name} — powered by LHDN 2024 Guidelines.
+                Ask anything about Malaysian tax regulations, deductions, or {activeEntity.name} — powered by LHDN Guidelines.
               </p>
             }
           </div>
@@ -2587,13 +2948,21 @@ function CukaiBot({ embed = false }) {
             embed users the one control they'd actually miss — "New chat" —
             without dragging the whole sidebar into a 400px panel. */}
         {embed && (
-          <div className="shrink-0 flex items-center justify-between">
-            <span className="text-xs font-semibold text-muted">
+          <div className="shrink-0 flex items-center gap-2">
+            {/* min-w-0 is required here: a flex child's default min-width is
+                'auto' (its content's natural width), which overrides
+                `truncate` and lets a long entity name force this whole row
+                (and the New chat button inside it) to wrap onto two lines
+                instead of ellipsizing on one — that's what was stretching
+                the button's height for long entity names. flex-1 lets this
+                span take all the leftover space so the button (shrink-0)
+                always keeps its own fixed, single-line height. */}
+            <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-muted">
               {activeEntity ? activeEntity.name : 'CukaiBot'}
             </span>
             <button
               onClick={handleNewChat}
-              className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-semibold text-muted transition-colors hover:border-primary hover:text-primary"
+              className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-semibold text-muted transition-colors hover:border-primary hover:text-primary"
             >
               <PlusIcon className="h-3.5 w-3.5" />
               New chat
@@ -2632,7 +3001,7 @@ function CukaiBot({ embed = false }) {
           />
 
           {/* ── Left Column: Interactive Chat Stream Area ── */}
-          <div className="flex-1 flex flex-col h-full min-w-0 rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
+          <div ref={chatCardRef} className="flex-1 flex flex-col h-full min-w-0 rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
             
             {/* ── RE-ADDED CHAT HEADER (shrink-0 captures correct layout boundary) ── */}
             <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-4 shrink-0">
@@ -2646,7 +3015,7 @@ function CukaiBot({ embed = false }) {
                     sessionId={sessionId}
                     onRename={handleRenameSession}
                   />
-                  <p className="text-xs text-muted">Powered by LHDN 2024 Guidelines</p>
+                  <p className="text-xs text-muted">Powered by LHDN Guidelines</p>
                 </div>
               </div>
             </div>
@@ -2759,10 +3128,10 @@ function CukaiBot({ embed = false }) {
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Ask about deductions, regulations, or upload a notice..."
+                  placeholder={embed ? 'Ask about deductions or tax rules…' : 'Ask about deductions, regulations, or upload a notice...'}
                   rows={1}
                   className="flex-1 resize-none bg-transparent text-xs text-headings placeholder-[#94A3B8] outline-none py-2 align-middle"
-                  style={{ maxHeight: '96px' }}
+                  style={{ overflowY: 'auto' }}
                 />
                 <div className="flex shrink-0 items-center gap-1 pb-0.5">
                   <input

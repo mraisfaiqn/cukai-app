@@ -31,27 +31,45 @@ body {
 }
 .hidden { display: none !important; }
 
-/* ── Header ── */
+/* ── Header ──
+   Height (64px) matches the web app's PageHeader (Tailwind h-16), and the
+   logo/title/tab sizing below mirrors PageHeader's own scale (text-xl
+   font-bold for the brand, text-base font-medium for nav-style items) so
+   the extension's header reads as the same design, not a shrunk-down copy. */
 .header {
   display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px; background: var(--surface);
+  height: 64px; padding: 0 12px; background: var(--surface);
   border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
-.brand { display: flex; align-items: center; gap: 7px; }
-.brand-logo { width: 24px; height: 24px; border-radius: 6px; object-fit: contain; }
-.brand-title { font-weight: 700; color: var(--headings); font-size: 13px; }
+.brand { display: flex; align-items: center; gap: 8px; }
+.brand-logo { width: 40px; height: 40px; border-radius: 6px; object-fit: contain; }
+/* Matches PageHeader's brand text exactly (text-xl font-bold tracking-tight,
+   "ai" in font-light/muted) — except "cuk" is hardcoded white here, the same
+   override the homepage footer uses on its own dark background, rather than
+   PageHeader's --headings color. Note: on the light theme this header's
+   background is white (--surface), so "cuk" in white needs a dark header
+   background to actually be visible — matching the footer's own dark
+   (#131b2e) backdrop, not just its text color, would be needed for parity. */
+.brand-title { font-weight: 700; color: #FFFFFF; font-size: 20px; letter-spacing: -0.025em; line-height: 1; margin-top: -2px; }
+.brand-title-ai { font-weight: 300; color: var(--muted); }
 
-.tabs { display: flex; gap: 3px; margin-left: 4px; flex: 1; }
+.tabs { display: flex; align-items: center; gap: 3px; margin-left: 4px; flex: 1; }
 .tab {
+  display: inline-flex; align-items: center; gap: 5px;
   border: none; background: transparent; color: var(--muted);
-  font-size: 12px; font-weight: 600; padding: 5px 11px; border-radius: 8px; cursor: pointer;
+  font-size: 16px; font-weight: 500; padding: 7px 13px; border-radius: 8px; cursor: pointer;
 }
 .tab:hover { background: var(--bg); color: var(--headings); }
 .tab.active { background: var(--primary-tint); color: var(--primary); }
+/* Mirrors PageHeader's own "Cukai Bot" nav link, which pairs this exact
+   icon with this exact label — object-fit avoids any distortion regardless
+   of the source PNG's native aspect ratio. */
+.tab-icon { width: 18px; height: 18px; object-fit: contain; flex-shrink: 0; }
 
 .icon-btn {
   border: none; background: transparent; color: var(--muted);
-  cursor: pointer; padding: 5px; border-radius: 8px; display: flex; flex-shrink: 0;
+  cursor: pointer; padding: 7px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 .icon-btn:hover { background: var(--bg); color: var(--headings); }
 

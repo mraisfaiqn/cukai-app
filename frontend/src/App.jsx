@@ -53,10 +53,10 @@ function PublicLayout({ isAuthenticated }) {
 function EmbedLayout({ isAuthenticated }) {
   if (!isAuthenticated) {
     return (
-      <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 24, fontFamily: 'system-ui, sans-serif', color: '#64748B', fontSize: 13, lineHeight: 1.6 }}>
+      <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 24, fontFamily: 'system-ui, sans-serif', color: '#94A3B8', fontSize: 13, lineHeight: 1.6, background: '#0F172A' }}>
         <div>
-          <p style={{ fontWeight: 700, color: '#0F172A', marginBottom: 6 }}>Please log in first</p>
-          Open the Cukai app in a browser tab and sign in — then reopen this panel.
+          <p style={{ fontWeight: 700, color: '#39FFD6', marginBottom: 6, fontSize: 14 }}>Please log in first</p>
+          Open the Cukai app in a browser tab and sign in to view your profile extension.
         </div>
       </div>
     )
