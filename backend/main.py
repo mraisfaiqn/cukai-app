@@ -902,14 +902,17 @@ async def delete_entity(
   """
   Delete an entity and, persistently, everything scoped to it.
 
-  entity_id is an ondelete=SET NULL foreign key on documents, capital_assets and
-  form_b_profiles, so a bare `db.delete(entity)` would leave those rows behind
-  with a null entity_id — their figures would keep driving the summary / prior-
-  year charts and their uploaded files would linger on disk. Mirroring the
+  entity_id is an ondelete=SET NULL foreign key on documents, capital_assets,
+  form_b_profiles, AND chat_sessions, so a bare `db.delete(entity)` would
+  leave those rows behind with a null entity_id — their figures would keep
+  driving the summary / prior-year charts, their uploaded files would linger
+  on disk, and (the gap this fix closes) this entity's CukaiBot conversations
+  would persist forever, invisible in the UI (nothing queries entity_id IS
+  NULL for chat) but never actually removed from the database. Mirroring the
   explicit-cleanup pattern used in delete_document(), we remove all of this
   entity's data in the same transaction (documents + their files, capital
-  assets, filed Form B profiles) before deleting the entity itself, so nothing
-  is orphaned.
+  assets, filed Form B profiles, and chat sessions) before deleting the
+  entity itself, so nothing is orphaned.
 
   Refuses to delete a person's only remaining entity.
   """
@@ -964,6 +967,18 @@ async def delete_entity(
     .delete(synchronize_session=False)
   )
 
+  # This entity's CukaiBot conversations. A bulk delete here is enough on its
+  # own — ChatMessage.session_id and ChatAttachment.session_id both carry a
+  # real database-level ondelete="CASCADE" foreign key back to
+  # chat_sessions.session_id (see models.py), so the database itself removes
+  # every message and attachment belonging to these sessions as soon as the
+  # session rows are gone, with no separate query needed for either table.
+  chat_sessions_deleted = (
+    db.query(ChatSession)
+    .filter(ChatSession.entity_id == entity_id)
+    .delete(synchronize_session=False)
+  )
+
   db.delete(entity)
   db.commit()
 
@@ -980,8 +995,8 @@ async def delete_entity(
 
   logger.info(
     f"[DeleteEntity] Entity {entity_id} deleted with {doc_deleted} document(s), "
-    f"{ca_deleted} capital asset(s), {fb_deleted} Form B profile(s); "
-    f"{removed_files} file(s) removed from disk."
+    f"{ca_deleted} capital asset(s), {fb_deleted} Form B profile(s), "
+    f"{chat_sessions_deleted} chat session(s); {removed_files} file(s) removed from disk."
   )
   return {
     "deleted": True,
@@ -989,6 +1004,7 @@ async def delete_entity(
     "documentsDeleted": doc_deleted,
     "capitalAssetsDeleted": ca_deleted,
     "formBProfilesDeleted": fb_deleted,
+    "chatSessionsDeleted": chat_sessions_deleted,
   }
 
 
@@ -6411,6 +6427,24 @@ def post_chat_message(
     ).first()
     if not session:
       raise HTTPException(status_code=404, detail="Chat session not found.")
+    # A session belongs to exactly one entity for its entire lifetime
+    # (entity_id is only ever set once, at creation, below) — if the caller
+    # also sends an entity_id for this turn, it must match. Both sides are
+    # only compared when NEITHER is null: a null entity_id on either side
+    # means there's nothing meaningful to cross-check (a sole-proprietor
+    # session with no entity context, or an older caller that never sent
+    # one), not a genuine mismatch to reject. This is a second line of
+    # defense against exactly the class of frontend bug already fixed in
+    # CukaiBot.jsx (a stale/out-of-sync session_id being sent alongside the
+    # wrong entity_id) — the database was never ambiguous about which
+    # entity a session belongs to, but nothing previously stopped a client
+    # from asking to continue one entity's session while claiming a
+    # different active entity.
+    if entity_id is not None and session.entity_id is not None and session.entity_id != entity_id:
+      raise HTTPException(
+        status_code=409,
+        detail="This chat session belongs to a different business entity.",
+      )
   is_new_session = session is None
   if session is None:
     session_id = uuid.uuid4().hex
