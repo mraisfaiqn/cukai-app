@@ -203,8 +203,8 @@ function PageHeader({ onLogout }) {
             navLinks
             items={accountItems}
             trigger={(open) => (
-              <button className={`flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-[#64748B] transition-colors duration-150 hover:text-primary ${open ? 'text-primary' : ''}`}>
-                <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#0F172A] text-primary">
+              <button className={`group flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-[#64748B] transition-colors duration-150 hover:text-primary ${open ? 'text-primary' : ''}`}>
+                <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#0F172A] text-primary transition-colors duration-150 group-hover:text-[#39FFD6]">
                   <UserIcon />
                 </div>
                 <ChevronDown />
