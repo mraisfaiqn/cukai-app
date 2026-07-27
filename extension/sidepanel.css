@@ -44,13 +44,12 @@ body {
 .brand { display: flex; align-items: center; gap: 8px; }
 .brand-logo { width: 40px; height: 40px; border-radius: 6px; object-fit: contain; }
 /* Matches PageHeader's brand text exactly (text-xl font-bold tracking-tight,
-   "ai" in font-light/muted) — except "cuk" is hardcoded white here, the same
-   override the homepage footer uses on its own dark background, rather than
-   PageHeader's --headings color. Note: on the light theme this header's
-   background is white (--surface), so "cuk" in white needs a dark header
-   background to actually be visible — matching the footer's own dark
-   (#131b2e) backdrop, not just its text color, would be needed for parity. */
-.brand-title { font-weight: 700; color: #FFFFFF; font-size: 20px; letter-spacing: -0.025em; line-height: 1; margin-top: -2px; }
+   "ai" in font-light/muted), including its color: "cuk" uses --headings,
+   the same token PageHeader uses (text-[#0F172A] in light mode). --headings
+   already flips to a light color in dark mode (#F1F5F9), so this reads
+   correctly against both the white (light mode) and navy (dark mode)
+   --surface header background. */
+.brand-title { font-weight: 700; color: var(--headings); font-size: 20px; letter-spacing: -0.025em; line-height: 1; margin-top: -2px; }
 .brand-title-ai { font-weight: 300; color: var(--muted); }
 
 .tabs { display: flex; align-items: center; gap: 3px; margin-left: 4px; flex: 1; }
