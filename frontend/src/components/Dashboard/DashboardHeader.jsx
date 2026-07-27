@@ -43,7 +43,7 @@ function DashboardHeader({
         <button
           type="button"
           onClick={onDeadlineClick}
-          className="flex items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1 font-medium text-primary transition-colors hover:border-primary hover:bg-[#0F172A] hover:text-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
+          className="flex items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1 font-medium text-primary transition-colors hover:border-primary hover:bg-[#0F172A] hover:text-[#39FFD6] focus:outline-none focus:ring-2 focus:ring-primary/40"
         >
           <CalendarIcon />
           {deadlineNote}
