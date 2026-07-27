@@ -4668,7 +4668,7 @@ def _extract_attachment_fields(attachment: "ChatAttachment") -> Optional[dict]:
     return None
 
 
-CHAT_SYSTEM_PROMPT = """You are Cukai Bot, a Malaysian tax advisory assistant for cukai.ai.
+CHAT_SYSTEM_PROMPT = """You are Cukai Bot, a Malaysian tax advisory assistant for Cukai.
 
 Answer ONLY using the CONTEXT provided below plus the conversation history. The
 CONTEXT may include: the user's own account profile (name, TIN, active
@@ -5507,7 +5507,7 @@ def _check_upload_history(
 # until this call tells us, and this call can't cite chunks that haven't
 # been fetched yet) — see _generate_chat_answer_with_retrieval() below for
 # that path.
-_CLASSIFY_AND_ANSWER_SYSTEM_PROMPT = """You are Cukai Bot, a Malaysian tax advisory assistant for cukai.ai. Before responding, you must first decide what kind of information the user's message needs.
+_CLASSIFY_AND_ANSWER_SYSTEM_PROMPT = """You are Cukai Bot, a Malaysian tax advisory assistant for Cukai. Before responding, you must first decide what kind of information the user's message needs.
 
 The chatbot has three possible information sources:
 1. The user's own uploaded documents (receipts, Form EA, bank statements, invoices) — needed for questions about the user's own specific financial data, amounts, transactions, or documents.
