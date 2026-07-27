@@ -173,6 +173,7 @@ AUDIT_RATIO_GROUPS = [
 RELIEF_HEADROOM_MIN_CATEGORY_MYR = 100    # ignore trivial per-category slivers
 RELIEF_HEADROOM_MIN_TOTAL_MYR = 500       # emit the card only above this total
 RELIEF_HEADROOM_MAX_SIGNAL_LINES = 6
+DIGEST_PENDING_MAX_SIGNAL_LINES = 5
 
 REVIEW_PENDING_MAX_CARDS = 8
 
@@ -263,6 +264,57 @@ def get_locked_year_pairs(db: Session, user_id,
         if ent is None or ent in filed_entities:
             locked.add((ent, ya))
     return locked
+
+
+YEAR_LOCKED_ARCHIVE_NOTE = (
+    "Resolved automatically — this assessment year was marked as filed and "
+    "its records are now frozen."
+)
+
+
+def archive_cards_for_locked_year(db: Session, doc_user_id, entity_id: Optional[int],
+                                   assessment_year: int) -> int:
+    """
+    Called exactly once, at the moment a (user, entity, assessment_year)
+    scope transitions from UNLOCKED to locked — i.e. right after a NEW
+    FormBProfile row is recorded for it (see pipeline.py's FormBProfile
+    upsert, which only calls this on first creation, never on update of an
+    already-existing row).
+
+    Once a year is locked, is_assessment_year_locked makes every future
+    engine run for that scope a no-op (skipped before any rule runs) — so
+    without this sweep, any card that fired BEFORE the lock existed would
+    sit in the active feed forever with no future run ever able to reach and
+    resolve it again. The most common case: a year-agnostic rule (e.g.
+    profile completeness) that runs identically no matter which YA happens
+    to be in scope, so it leaves a card behind under every YA the engine
+    ever touched — including one that's since been closed and has nothing
+    left to act on.
+
+    Only touches currently-active (new/read) rows of engine-managed,
+    non-digest types (AUTO_RESOLVE_TYPES) — a digest is deliberately left
+    alone (it's history, not a nagging action item), and anything the user
+    already dismissed or marked done is left alone too, same as the regular
+    auto-resolve pass. Returns the number of rows archived.
+    """
+    uid = int(doc_user_id)
+    q = db.query(Insight).filter(
+        Insight.user_id == uid,
+        Insight.assessment_year == assessment_year,
+        Insight.state.in_(["new", "read"]),
+        Insight.insight_type.in_(AUTO_RESOLVE_TYPES),
+    )
+    q = q.filter(Insight.entity_id.is_(None)) if entity_id is None else q.filter(Insight.entity_id == entity_id)
+    rows = q.all()
+    if not rows:
+        return 0
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        row.state = "actioned"
+        row.resolved_note = YEAR_LOCKED_ARCHIVE_NOTE
+        row.updated_at = now
+    db.commit()
+    return len(rows)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -738,7 +790,10 @@ class TaxInsightEngine:
                 "body": (
                     f"We do not have your filed YA {prior_ya} Form B. Uploading it gives "
                     "the AI your official prior-year baseline — enabling carry-forward "
-                    "tracking, year-on-year comparisons, and more accurate relief suggestions."
+                    "tracking, year-on-year comparisons, and more accurate relief suggestions. "
+                    f"Note: this marks YA {prior_ya} as filed, so its records freeze — no further "
+                    "insight cards will be generated for that year afterward (matching how a "
+                    "filed return is closed pending a formal LHDN amendment)."
                 ),
                 "rm_impact": None,
                 "deadline_date": None,
@@ -746,6 +801,7 @@ class TaxInsightEngine:
                 "signals": [
                     {"label": "Prior-year Form B on file", "value": f"None found for YA {prior_ya}"},
                     {"label": "Unlocks", "value": "Carry-forward losses · YoY gaps · relief history"},
+                    {"label": "After upload", "value": f"YA {prior_ya} is marked filed and frozen — no new insights for it"},
                 ],
                 "source_document_ids": [],
                 "action": {"label": "Upload Form B", "to": "/account"},
@@ -1065,9 +1121,14 @@ class TaxInsightEngine:
         totals = cy.get("totals") or {}
         if float(totals.get("totalIncome") or 0) <= 0:
             return []
-        marginal = self._marginal_rate_pct(cy)
-        if not marginal or marginal <= 0:
-            return []
+        # A 0% marginal rate means there's no tax to save RIGHT NOW, but the
+        # headroom itself (unclaimed relief categories) is a separate fact
+        # that doesn't stop being true just because this year's rate is
+        # currently zero — it stays live for record-keeping and reappears
+        # with a real number the moment the rate moves. Only genuinely empty
+        # headroom (the total_headroom check below) should make this card
+        # disappear; a zero marginal rate downgrades the framing instead.
+        marginal = self._marginal_rate_pct(cy) or 0.0
 
         claimed_by_cat = {
             b["category"]: float(b.get("cappedTotal") or 0)
@@ -1076,44 +1137,136 @@ class TaxInsightEngine:
 
         lines = []
         total_headroom = 0.0
-        for cat, cap in main_module.RELIEF_CAPS_FALLBACK_MYR.items():
-            claimed = claimed_by_cat.get(cat, 0.0)
-            headroom = round(float(cap) - claimed, 2)
+
+        def _add_line(label, claimed, cap):
+            nonlocal total_headroom
+            headroom = round(cap - claimed, 2)
             if headroom < RELIEF_HEADROOM_MIN_CATEGORY_MYR:
-                continue
+                return
             total_headroom += headroom
-            lines.append((cat.replace("Q4 — ", ""), claimed, float(cap), headroom))
+            lines.append((label, claimed, cap, headroom))
+
+        # ── Standalone flat-cap categories ───────────────────────────────
+        # Three of these are time-boxed by specific Finance Act provisions —
+        # mirror the exact year gates main.py's _cap_reliefs already applies
+        # when it builds q4ReliefsBreakdown, so a lapsed/not-yet-eligible
+        # relief never shows fake headroom here just because this static
+        # dict doesn't itself know about the lapse. If more of
+        # RELIEF_CAPS_FALLBACK_MYR's entries pick up their own year gates in
+        # future, main.py is the source of truth to check against — this is
+        # a known duplication, not a promise this list is exhaustive.
+        pooled_this_year = (
+            main_module.EV_HOME_IMPROVEMENT_POOL_FIRST_YA <= self.ya <= main_module.EV_HOME_IMPROVEMENT_POOL_LAST_YA
+        )
+        for cat, cap in main_module.RELIEF_CAPS_FALLBACK_MYR.items():
+            if cat == "Q4 — Domestic Tourism Relief" and self.ya > main_module.DOMESTIC_TOURISM_LAST_ELIGIBLE_YA:
+                continue
+            if cat == "Q4 — Private Retirement Scheme (PRS)" and self.ya > main_module.H18_PRS_LAST_ELIGIBLE_YA:
+                continue
+            if cat == "Q4 — Tourist Attraction & Cultural Programme" and self.ya != main_module.TOURIST_ATTRACTION_ELIGIBLE_YA:
+                continue
+            if cat == "Q4 — EV Charging Equipment":
+                if pooled_this_year:
+                    continue  # folded into the shared pool line below instead
+                if not (main_module.EV_CHARGING_FIRST_YA <= self.ya <= main_module.EV_CHARGING_LAST_YA):
+                    continue  # outside its own eligible years entirely
+            _add_line(cat.replace("Q4 — ", ""), claimed_by_cat.get(cat, 0.0), float(cap))
+
+        # ── Shared-pool GROUPS (Lifestyle, Sports & Fitness, Parent Medical,
+        # Education, Self/Spouse/Child Medical) — each counted ONCE at its
+        # combined group cap. RELIEF_CAPS_FALLBACK_MYR deliberately excludes
+        # every category that belongs to one of these groups (a flat
+        # per-category cap can't express a shared pool — see that dict's own
+        # comments), and until this fix NOTHING here ever substituted
+        # RELIEF_CAP_GROUPS in their place. That made up to RM28,500 of real
+        # relief categories entirely invisible to this card — including an
+        # already-resolved, already-counted-elsewhere document (e.g. a
+        # laptop/phone purchase under Lifestyle) showing zero effect here no
+        # matter how much of the pool it actually used.
+        for group in main_module.RELIEF_CAP_GROUPS:
+            claimed = sum(claimed_by_cat.get(c, 0.0) for c in group["categories"])
+            label = group["display_category"].replace("Q4 — ", "").replace(" (Group)", "")
+            _add_line(label, claimed, float(group["group_cap"]))
+
+        # ── EV charging / home-improvement pool — membership is itself
+        # year-conditional (only pooled for YA2026-2027; see main.py's own
+        # EV_HOME_IMPROVEMENT_POOL_FIRST_YA/LAST_YA), so it can't be a static
+        # RELIEF_CAP_GROUPS entry and is handled explicitly here instead.
+        if pooled_this_year:
+            home_improvement_categories = (
+                "Q4 — EV Charging Equipment", "Q4 — Food Waste Compost Machine",
+                "Q4 — Food Waste Grinder Machine", "Q4 — Home CCTV",
+            )
+            claimed = sum(claimed_by_cat.get(c, 0.0) for c in home_improvement_categories)
+            _add_line("EV Charging & Home Improvement", claimed, 2500.0)
+
         total_headroom = round(total_headroom, 2)
         if total_headroom < RELIEF_HEADROOM_MIN_TOTAL_MYR:
             return []
 
+        # Sorted by headroom (biggest gap first) — this order drives "your
+        # largest gap" in the body text below, which is deliberately about
+        # the biggest OPPORTUNITY regardless of activity.
         lines.sort(key=lambda l: l[3], reverse=True)
-        saving = round(total_headroom * marginal / 100, 2)
+        no_tax_benefit_yet = marginal <= 0
+        saving = round(total_headroom * marginal / 100, 2) if not no_tax_benefit_yet else None
         window_close = date(self.ya, 12, 31) if self.is_current_ya else None
+
+        # Signals use a SEPARATE order from `lines`: any category with a real
+        # claim already on file (claimed > 0) is always shown, never
+        # truncated into "+N more" just because untouched categories happen
+        # to have bigger raw caps. Sorting the display purely by headroom (as
+        # this used to do) means a fully-unclaimed RM10,000 category always
+        # outranks a category where the user has genuinely claimed
+        # something — so every visible line could read "RM 0.00 claimed"
+        # while the ONLY categories with real activity sit hidden in the
+        # "+N more" bucket. That's not a hypothetical: it happened with this
+        # exact card before this fix.
+        with_activity = sorted((l for l in lines if l[1] > 0), key=lambda l: l[3], reverse=True)
+        without_activity = sorted((l for l in lines if l[1] == 0), key=lambda l: l[3], reverse=True)
+        display_lines = with_activity + without_activity
 
         signals = [
             {
                 "label": short,
                 "value": f"{_fmt_rm(claimed)} of {_fmt_rm(cap)} claimed — {_fmt_rm(headroom)} left",
             }
-            for short, claimed, cap, headroom in lines[:RELIEF_HEADROOM_MAX_SIGNAL_LINES]
+            for short, claimed, cap, headroom in display_lines[:RELIEF_HEADROOM_MAX_SIGNAL_LINES]
         ]
-        if len(lines) > RELIEF_HEADROOM_MAX_SIGNAL_LINES:
-            rest = round(sum(l[3] for l in lines[RELIEF_HEADROOM_MAX_SIGNAL_LINES:]), 2)
+        if len(display_lines) > RELIEF_HEADROOM_MAX_SIGNAL_LINES:
+            rest = round(sum(l[3] for l in display_lines[RELIEF_HEADROOM_MAX_SIGNAL_LINES:]), 2)
             signals.append({
-                "label": f"+{len(lines) - RELIEF_HEADROOM_MAX_SIGNAL_LINES} more categories",
+                "label": f"+{len(display_lines) - RELIEF_HEADROOM_MAX_SIGNAL_LINES} more categories",
                 "value": f"{_fmt_rm(rest)} additional headroom",
             })
-        signals.append({"label": "Your marginal tax rate", "value": f"{marginal:.0f}%"})
         signals.append({
-            "label": "Tax saved if fully used",
-            "value": f"{_fmt_rm(total_headroom)} × {marginal:.0f}% = {_fmt_rm(saving)}",
+            "label": "Your marginal tax rate",
+            "value": f"{marginal:.0f}%" if not no_tax_benefit_yet else "0% (no tax payable yet)",
         })
+        if no_tax_benefit_yet:
+            signals.append({
+                "label": "Tax saved if fully used",
+                "value": "RM 0.00 at your current 0% bracket — revisit once you owe tax",
+            })
+        else:
+            signals.append({
+                "label": "Tax saved if fully used",
+                "value": f"{_fmt_rm(total_headroom)} × {marginal:.0f}% = {_fmt_rm(saving)}",
+            })
         if window_close:
             signals.append({"label": "Window closes", "value": window_close.strftime("%d %b %Y")})
 
         top = lines[0]
-        if self.is_current_ya:
+        if no_tax_benefit_yet:
+            body = (
+                f"Across {len(lines)} personal relief categor{'ies' if len(lines) != 1 else 'y'}, "
+                f"{_fmt_rm(total_headroom)} of headroom is still unclaimed for YA {self.ya} — "
+                f"your largest gap is {top[0]} with {_fmt_rm(top[3])} unused. Your current "
+                "marginal rate is 0%, so claiming these wouldn't save you tax right now — but "
+                "the headroom is still real and worth tracking, since it will translate into "
+                "savings as soon as your chargeable income moves into a taxed bracket."
+            )
+        elif self.is_current_ya:
             body = (
                 f"Across {len(lines)} personal relief categor{'ies' if len(lines) != 1 else 'y'}, "
                 f"{_fmt_rm(total_headroom)} of headroom is still unclaimed for YA {self.ya} — "
@@ -1130,12 +1283,18 @@ class TaxInsightEngine:
                 f"{_fmt_rm(saving)} at your {marginal:.0f}% marginal rate for that year."
             )
 
+        title = (
+            f"{_fmt_rm(total_headroom)} of personal relief headroom — no tax benefit at your current 0% bracket"
+            if no_tax_benefit_yet else
+            f"{_fmt_rm(total_headroom)} of personal relief headroom — up to {_fmt_rm(saving)} in tax savings"
+        )
+
         return [{
             "insight_type": "relief_headroom",
-            "severity": "suggested",
+            "severity": "info" if no_tax_benefit_yet else "suggested",
             "generated_by": "rule_template",
             "dedupe_key": self._key("relief_headroom", "q4-aggregate"),
-            "title": f"{_fmt_rm(total_headroom)} of personal relief headroom — up to {_fmt_rm(saving)} in tax savings",
+            "title": title,
             "body": body,
             "rm_impact": saving,
             "deadline_date": window_close,
@@ -1334,9 +1493,15 @@ class TaxInsightEngine:
     # Reuses the SAME bracket lookup as everything else — the year summary's
     # currentMarginalRatePct / nextMarginalRatePct / headroomToNextBracketMyr
     # come from main._bracket_headroom; no bracket math is reimplemented.
-    # Sub-key = (current_bracket, next_bracket): the card recomputes in place
-    # as net profit moves, and rolls to a new card only when the bracket
-    # state itself changes (the old one then auto-resolves).
+    # Sub-key is the constant "bracket-warning" — deliberately NOT the
+    # current/next bracket pair. An earlier version keyed on the pair itself,
+    # which meant crossing a bracket boundary didn't update this card, it
+    # abandoned the old dedupe_key's row (auto-resolved into the Resolved tab)
+    # and created a brand-new row under the new pair's key — leaving two
+    # "actioned" cards with contradictory chargeable-income figures for the
+    # same YA sitting side by side. A stable key means the SAME row is
+    # upserted every run regardless of which bracket pair is currently
+    # relevant, exactly like relief_headroom's "q4-aggregate" key above.
     # ══════════════════════════════════════════════════════════════════════
     def _rule_bracket_warning(self, summary: dict, cy: dict) -> list[dict]:
         totals = cy.get("totals") or {}
@@ -1411,7 +1576,7 @@ class TaxInsightEngine:
             "insight_type": "provision",
             "severity": "action_required" if projected_to_cross else "suggested",
             "generated_by": "rule_template",
-            "dedupe_key": self._key("provision", f"bracket:{float(cur_rate):g}-{float(next_rate):g}"),
+            "dedupe_key": self._key("provision", "bracket-warning"),
             "title": headline,
             "body": body,
             "rm_impact": rm_impact,
@@ -1426,11 +1591,25 @@ class TaxInsightEngine:
     def _build_digest(self, summary: dict, cy: dict, other_cards: list[dict]) -> list[dict]:
         totals = cy.get("totals") or {}
         income = float(totals.get("totalIncome") or 0)
-        if income <= 0 and not other_cards:
+        # Gate on real per-YEAR data (documentCount), not on whether ANY card
+        # exists in other_cards. _rule_profile_incomplete runs identically
+        # regardless of which YA is in scope (it never reads cy at all), so a
+        # completely empty year could still produce a non-empty other_cards
+        # list and trick this guard into generating a degenerate "RM 0.00
+        # income, 1 review question" digest for a year with nothing in it.
+        if income <= 0 and (cy.get("documentCount") or 0) == 0:
             return []
 
-        pending = [c for c in other_cards if c["insight_type"] == "review_pending"]
-        pending_value = round(sum(c["rm_impact"] or 0 for c in pending), 2)
+        # Count actual stuck DOCUMENTS (cy's own authoritative counters —
+        # same ones _rule_review_pending_docs reads from cy["mixedPendingReview"]
+        # and main.py computes as len(mixed_pending)/total_pending_review),
+        # NOT sibling review_pending insight CARDS. Three different review_pending
+        # cards can exist for entirely different reasons (a stuck document, an
+        # incomplete profile, a Form-B-incomplete summary of that SAME stuck
+        # document) — counting cards there previously over-reported "3 items"
+        # when only 1 document was actually pending review.
+        pending_count = int(cy.get("pendingReviewCount") or 0)
+        pending_value = round(float(cy.get("pendingReviewAmountMyr") or 0), 2)
         reliefs = [c for c in other_cards if c["insight_type"] == "relief_headroom"]
         top_relief = reliefs[0] if reliefs else None
         deadlines = sorted(
@@ -1499,7 +1678,7 @@ class TaxInsightEngine:
             "income_ytd_myr": round(income, 2),
             "prior_full_year_income_myr": prior_income,
             "year_progress_pct": year_progress_pct,
-            "pending_review_count": len(pending),
+            "pending_review_count": pending_count,
             "pending_review_blocked_myr": pending_value,
             "top_unclaimed_relief": top_relief["title"] if top_relief else None,
             "top_relief_potential_saving_myr": (top_relief["rm_impact"] if top_relief else None),
@@ -1535,8 +1714,31 @@ class TaxInsightEngine:
             signals.append({"label": "Income reconciliation", "value": reconciliation_note})
         signals.append({
             "label": "Pending review questions",
-            "value": f"{len(pending)}" + (f" — worth ~{_fmt_rm(pending_value)}" if pending_value else ""),
+            "value": f"{pending_count}" + (f" — worth ~{_fmt_rm(pending_value)}" if pending_value else ""),
         })
+        # Name the actual documents behind that count — a bare "7" with no
+        # way to see what the 7 ARE forces the user to go hunting elsewhere
+        # to find out. Same source _rule_review_pending_docs itself reads
+        # (cy["mixedPendingReview"]), so this can never drift from the real
+        # per-document cards.
+        pending_items = sorted(
+            (cy.get("mixedPendingReview") or []),
+            key=lambda e: float(e.get("amountNumeric") or 0),
+            reverse=True,
+        )
+        for entry in pending_items[:DIGEST_PENDING_MAX_SIGNAL_LINES]:
+            name = entry.get("vendor") or entry.get("fileName") or "Document"
+            amt = float(entry.get("amountNumeric") or 0)
+            signals.append({
+                "label": f"  · {name}",
+                "value": _fmt_rm(amt) if amt else "—",
+            })
+        if len(pending_items) > DIGEST_PENDING_MAX_SIGNAL_LINES:
+            rest = len(pending_items) - DIGEST_PENDING_MAX_SIGNAL_LINES
+            signals.append({
+                "label": f"  · +{rest} more",
+                "value": "",
+            })
         if top_doc_gap:
             signals.append({"label": "Deduction gap", "value": top_doc_gap["title"]})
         if top_relief:

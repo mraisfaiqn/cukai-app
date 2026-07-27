@@ -3769,9 +3769,15 @@ def get_tax_profile_summary(
         "deltaMyr":            delta,
         "flagged":             flagged,
         "note": (
-          f"Your P&L states revenue of RM{stated_revenue:,.2f}, but only "
-          f"RM{total_q1:,.2f} is backed by uploaded income documents — you may be "
-          "missing invoices or other income records."
+          (
+            f"Your P&L states revenue of RM{stated_revenue:,.2f}, but only "
+            f"RM{total_q1:,.2f} is backed by uploaded income documents — you may be "
+            "missing invoices or other income records."
+            if total_q1 < stated_revenue else
+            f"Your uploaded income documents total RM{total_q1:,.2f}, more than the "
+            f"RM{stated_revenue:,.2f} revenue stated on your P&L — the P&L may be outdated, "
+            "or some of this documented income may not belong in this business's figures."
+          )
           if flagged else
           "Uploaded income documents are consistent with your P&L's revenue figure."
         ) + ("" if used_structured_field else " (matched via keyword search on an older extraction — re-upload this document to refresh it.)"),
@@ -4699,6 +4705,20 @@ summary doesn't cover (e.g. whether the largest expense is deductible),
 combine the spending summary's figures with the document/reference search
 results for the rest of the answer.
 
+If the CONTEXT contains a deterministic document-classification count (a line
+starting with "The following is a deterministic document-classification
+count..."), treat its counts as authoritative for any "how many documents
+are X" / "how many reliefs/donations/deductible expenses have I uploaded"
+question — it comes from a direct Postgres COUNT over each document's exact
+tax_status, not from document-search citations, which cannot be relied on to
+surface every matching document. Never re-count documents yourself from
+citations to answer this kind of question. In particular, "Relief" and
+"Donation" are two DIFFERENT classifications, not the same thing — Malaysian
+personal tax reliefs (ITA 1967 s.46) and approved donations (s.44(6)) are
+separate deductions, so a document counted as one must never be included when
+answering a question about the other, even though both reduce the user's tax
+bill.
+
 If the CONTEXT contains a deterministic tax computation (a line starting
 with "The following is a deterministic tax computation..."), treat its
 chargeable income/tax payable/relief/balance-due figures as authoritative
@@ -4986,6 +5006,116 @@ def _get_spending_context(
     "still pending review or apportionment, or marked not-applicable/non-deductible "
     "— the same rule the app's own tax-summary totals use.)"
   )
+
+  return "\n".join(lines)
+
+
+# tax_status -> the exact label shown on the document's status badge in the
+# app (see STATUS_META in frontend/src/pages/CukaiAccount.jsx) — reused here
+# so a count quoted in chat reads as the same word the user sees on their own
+# Documents list, and so "mixed" (a permanent statutory classification, not a
+# workflow state — see STATUS_META's own comment) is described the same way
+# in both places rather than inventing separate wording for chat.
+_TAX_STATUS_LABELS = {
+  "income": "Income",
+  "deductible": "Deductible",
+  "mixed": "Needs Review / Partially Deductible (mixed — only partially deductible by law, e.g. client entertainment)",
+  "relief": "Relief (personal tax relief)",
+  "donation": "Donation (approved donation — a SEPARATE deduction from personal reliefs, not the same thing)",
+  "non_deductible": "Personal (non-deductible, no tax benefit)",
+  "capital": "Capital Asset",
+  "not_applicable": "Not Applicable",
+  "tax_installment": "Tax Installment (CP500)",
+  "reference": "Reference (kept for context, never summed into totals)",
+}
+
+
+def _get_classification_counts_context(
+  db: Session, user_id: str, entity_id: Optional[int], year_of_assessment: Optional[int] = None,
+) -> Optional[str]:
+  """
+  Deterministic count of the user's own Document rows grouped by tax_status
+  (Document.tax_status — the exact same field the app's own status badges
+  read from, see _TAX_STATUS_LABELS above) — folded into person_context
+  exactly like _get_spending_context, so _classify_and_maybe_answer can
+  answer "how many documents are classified as reliefs?" / "how many
+  donations have I uploaded?" directly from a Postgres COUNT/GROUP BY.
+
+  This exists for the same reason _get_spending_context exists, and fixes a
+  real bug that reproduced without it: Mongo's $vectorSearch returns the
+  top-K chunks most SIMILAR to the question's wording, not an exhaustive
+  list of every document matching a classification — it has no way to
+  guarantee completeness, and nothing stops semantically-similar-but-wrong
+  documents (e.g. a donation receipt, which also mentions "tax deduction")
+  from being retrieved and miscounted as a relief by the LLM, since
+  "relief" and "donation" are legally distinct classifications (ITA 1967
+  s.46 vs s.44(6)) that happen to share similar surrounding language. A
+  "how many documents are X" question is a COUNT over an exact Postgres
+  field, not a similarity search, so it needs the same real SQL aggregation
+  _get_spending_context already uses for totals — counting is exactly as
+  unsafe to leave to retrieval+LLM as summing is.
+
+  Deliberately counts EVERY document regardless of aggregation_state
+  (unlike _get_spending_context, which only sums "resolved" amounts) —
+  a document still pending review or apportionment is still real, already
+  classified as e.g. "relief" or "mixed", and a user asking "how many
+  reliefs have I uploaded" wants that document counted; whether its AMOUNT
+  is safe to sum yet is an unrelated question _get_spending_context already
+  answers correctly on its own.
+
+  Scoped the same way _get_spending_context is: always by user_id,
+  additionally by entity_id only when one is supplied, and by
+  year_of_assessment when given.
+
+  Returns None when the user has no documents at all, so the caller can
+  tell "nothing to add" apart from "checked, found nothing" — same contract
+  as _get_spending_context.
+  """
+  q = db.query(Document).filter(Document.user_id == user_id)
+  if entity_id is not None:
+    q = q.filter(Document.entity_id == entity_id)
+  if year_of_assessment is not None:
+    q = q.filter(Document.year_of_assessment == year_of_assessment)
+  docs = q.limit(_SPENDING_CONTEXT_DOC_LIMIT).all()
+  if not docs:
+    return None
+
+  status_counts: dict[str, int] = {}
+  category_counts: dict[str, int] = {}
+  years_seen: set[int] = set()
+  for doc in docs:
+    status = doc.tax_status or "unclassified"
+    status_counts[status] = status_counts.get(status, 0) + 1
+    if doc.category:
+      category_counts[doc.category] = category_counts.get(doc.category, 0) + 1
+    if doc.year_of_assessment:
+      years_seen.add(doc.year_of_assessment)
+
+  year_label = (
+    f"YA{year_of_assessment}" if year_of_assessment is not None
+    else (f"YA{min(years_seen)}-{max(years_seen)}" if len(years_seen) > 1
+          else (f"YA{next(iter(years_seen))}" if years_seen else "unspecified year(s)"))
+  )
+
+  lines = [
+    "The following is a deterministic document-classification count computed "
+    "directly from the user's own stored documents (Postgres COUNT, not a "
+    f"document search) — covering {len(docs)} document(s), {year_label}. Each "
+    "document has exactly ONE tax_status; treat this breakdown as authoritative "
+    "for any \"how many documents are X\" question, and never substitute a count "
+    "derived from document-search citations instead (retrieval is not "
+    "exhaustive and can miscount):",
+  ]
+  for status, count in sorted(status_counts.items(), key=lambda kv: kv[1], reverse=True):
+    label = _TAX_STATUS_LABELS.get(status, status)
+    plural = "document" if count == 1 else "documents"
+    lines.append(f"- {count} {plural} classified as {label}.")
+
+  if len(category_counts) > 1:
+    lines.append("- Breakdown by exact category:")
+    for cat, count in sorted(category_counts.items(), key=lambda kv: kv[1], reverse=True):
+      plural = "document" if count == 1 else "documents"
+      lines.append(f"  - {cat}: {count} {plural}")
 
   return "\n".join(lines)
 
@@ -6514,6 +6644,11 @@ def post_chat_message(
   #      - _person_context_block:  identity/profile facts ("what's my TIN?")
   #      - _get_spending_context:  deterministic totals/rankings over the
   #                                user's documents ("what's my biggest expense?")
+  #      - _get_classification_counts_context: deterministic COUNT of the
+  #                                user's documents grouped by tax_status
+  #                                ("how many documents are reliefs?") — see
+  #                                its own docstring for the retrieval-count
+  #                                bug this specifically exists to fix
   #      - _get_tax_summary_context: the actual tax computation (chargeable
   #                                income, tax payable, reliefs) — reuses
   #                                get_tax_profile_summary()'s own logic, the
@@ -6554,6 +6689,7 @@ def post_chat_message(
 
   _fold_in_context("Person profile", lambda: _person_context_block(db, user_id, entity_id))
   _fold_in_context("Spending aggregation", lambda: _get_spending_context(db, user_id, entity_id))
+  _fold_in_context("Classification counts", lambda: _get_classification_counts_context(db, user_id, entity_id))
   _fold_in_context("Tax summary", lambda: _get_tax_summary_context(db, user_id, entity_id))
   if attachments:
     _fold_in_context("Upload-history", lambda: _check_upload_history(db, user_id, attachments))

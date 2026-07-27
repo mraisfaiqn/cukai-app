@@ -114,6 +114,9 @@ desktop.ini
 /*.md
 !/README.md
 
+# Local scratch docs (bug tracker, design notes) — not part of the shipped app
+/docs/
+
 # Design reference mockups dropped in the project root
 /*.png
 /*.jpg
