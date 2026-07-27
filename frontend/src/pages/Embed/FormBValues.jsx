@@ -480,13 +480,21 @@ const S = {
   // index.css's --color-background theme variable. Kept as a literal value
   // here (not a CSS var) since this page renders standalone with no
   // Tailwind/theme setup of its own.
-  wrap: { height: '100vh', overflowY: 'auto', background: '#F7F6F2', padding: '14px 12px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', boxSizing: 'border-box' },
+  // No top padding here: this is the scrolling container itself, and the
+  // sticky search bar (S.controls) below lives inside it. Top padding on a
+  // sticky element's scroll container never scrolls away — it stays as a
+  // permanent gap above the sticky element for the rest of the scroll,
+  // which is exactly the "space" that kept showing between the extension's
+  // nav bar and the search bar once you scrolled past the header. The
+  // equivalent top spacing is applied as S.header's own marginTop instead,
+  // since a margin on non-sticky, normal-flow content scrolls away cleanly.
+  wrap: { height: '100vh', overflowY: 'auto', background: '#F7F6F2', padding: '0 12px 14px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', boxSizing: 'border-box' },
   center: { display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 24, color: '#64748B', fontSize: 13, lineHeight: 1.5 },
   // Matches App.jsx's EmbedLayout gate / CukaiBot.jsx's equivalent branch
   // exactly — same navy background, neon teal heading, same copy.
   loggedOut: { display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 24, fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', color: '#94A3B8', fontSize: 13, lineHeight: 1.6, background: '#0F172A' },
   loggedOutTitle: { fontWeight: 700, color: '#39FFD6', marginBottom: 6, fontSize: 14 },
-  header: { marginBottom: 10 },
+  header: { marginTop: 14, marginBottom: 10 },
   title: { margin: 0, fontWeight: 700, fontSize: 15, color: '#0F172A' },
   sub: { margin: '3px 0 0', fontSize: 11.5, color: '#64748B', lineHeight: 1.4 },
   controls: { position: 'sticky', top: 0, zIndex: 1, background: '#F7F6F2', display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0 10px' },

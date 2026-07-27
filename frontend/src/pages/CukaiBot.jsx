@@ -1803,6 +1803,80 @@ function ChatHeaderTitle({ title, sessionId, onRename }) {
   );
 }
 
+/**
+ * Embed-mode's stand-in for the (hidden below `lg`) chat-history sidebar —
+ * a compact "recent chats" dropdown so a narrow extension panel still has a
+ * way to switch BACK to an earlier conversation, not just start new ones.
+ * Reuses the same `sessions` list and `onSelectSession` the full sidebar
+ * uses; deliberately has no search/pin/rename/folder controls, since those
+ * only make sense with the room the full sidebar has.
+ */
+function EmbedHistoryMenu({ sessions, activeSessionId, onSelectSession, isLoading }) {
+  const [open, setOpen] = useState(false);
+  const buttonRef = useRef(null);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e) {
+      if (
+        menuRef.current && !menuRef.current.contains(e.target) &&
+        buttonRef.current && !buttonRef.current.contains(e.target)
+      ) {
+        setOpen(false);
+      }
+    }
+    function handleKey(e) { if (e.key === 'Escape') setOpen(false); }
+    document.addEventListener('mousedown', handleClick);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        ref={buttonRef}
+        onClick={() => setOpen((v) => !v)}
+        title="Recent chats"
+        className={`flex h-7 w-7 items-center justify-center rounded-lg border border-border transition-colors ${
+          open ? 'bg-primary-tint text-primary' : 'bg-surface text-muted hover:bg-slate-50 hover:text-headings'
+        }`}
+      >
+        <MessageSquareIcon className="h-3.5 w-3.5" />
+      </button>
+      {open && (
+        <div
+          ref={menuRef}
+          className="absolute right-0 top-full z-50 mt-1.5 max-h-72 w-64 overflow-y-auto rounded-xl border border-border bg-surface py-1.5 shadow-lg"
+        >
+          <p className="px-3 pb-1 pt-0.5 text-[10px] font-bold uppercase tracking-wider text-muted">Recent chats</p>
+          {isLoading ? (
+            <p className="px-3 py-2 text-xs text-muted">Loading…</p>
+          ) : sessions.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-muted">No conversations yet. Ask a question to start one.</p>
+          ) : (
+            sessions.map((s) => (
+              <button
+                key={s.sessionId}
+                onClick={() => { onSelectSession(s.sessionId); setOpen(false); }}
+                className={`flex w-full items-center gap-1.5 px-3 py-2 text-left text-xs font-medium transition-colors ${
+                  s.sessionId === activeSessionId ? 'bg-primary-tint text-primary' : 'text-headings hover:bg-slate-50'
+                }`}
+              >
+                {s.pinned && <PinIcon filled className="h-3 w-3 shrink-0 text-muted" />}
+                <span className="min-w-0 flex-1 truncate">{s.title || 'New conversation'}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Component ───────────────────────────────────────────────────────────
 
 // `embed` (default false) strips the page chrome so this component can be
@@ -2944,9 +3018,11 @@ function CukaiBot({ embed = false }) {
         {/* ── Embed-mode compact bar ──
             In the extension side panel the full chat-history sidebar is hidden
             (it's `hidden lg:flex`, and the panel is far narrower than lg), so
-            there's no visible way to start a fresh thread. This slim bar gives
-            embed users the one control they'd actually miss — "New chat" —
-            without dragging the whole sidebar into a 400px panel. */}
+            there's no visible way to start a fresh thread OR get back to an
+            earlier one. This slim bar gives embed users both controls they'd
+            actually miss — "New chat" and a "Recent chats" dropdown
+            (EmbedHistoryMenu) — without dragging the whole 256px sidebar into
+            a ~400px panel. */}
         {embed && (
           <div className="shrink-0 flex items-center gap-2">
             {/* min-w-0 is required here: a flex child's default min-width is
@@ -2960,6 +3036,12 @@ function CukaiBot({ embed = false }) {
             <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-muted">
               {activeEntity ? activeEntity.name : 'CukaiBot'}
             </span>
+            <EmbedHistoryMenu
+              sessions={sessions}
+              activeSessionId={sessionId}
+              onSelectSession={handleSelectSession}
+              isLoading={sessionsLoading}
+            />
             <button
               onClick={handleNewChat}
               className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs font-semibold text-muted transition-colors hover:border-primary hover:text-primary"

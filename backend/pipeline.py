@@ -4040,6 +4040,7 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
             confidence                   = int(_num(llm_result.get("confidence")) or 0),
           )
 
+          is_new_lock = existing is None
           if existing:
             for k, v in profile_kwargs.items():
               setattr(existing, k, v)
@@ -4049,6 +4050,25 @@ def run_document_pipeline(doc_id: int, file_path: str, db_session_factory):
             logger.info(f"[Pipeline] Created FormBProfile for user={document.user_id} YA={ya_fb} (uploaded while entity={document.entity_id} was active)")
 
           db.commit()
+
+          # This is a genuine unlocked -> locked transition for this
+          # (user, entity, YA) scope — the FIRST time a filed return is
+          # recorded for this year, never on a later re-upload/update of the
+          # same one. Archive any leftover insight cards for that scope now:
+          # a locked year's future engine runs are skipped entirely (see
+          # is_assessment_year_locked), so without this sweep a card that
+          # fired BEFORE the lock existed (most commonly the year-agnostic
+          # profile-completeness check) would sit in the active feed
+          # forever with no run ever able to reach and resolve it again.
+          if is_new_lock:
+            try:
+              from insights.engine import archive_cards_for_locked_year
+              archived = archive_cards_for_locked_year(db, document.user_id, document.entity_id, int(ya_fb))
+              if archived:
+                logger.info(f"[Pipeline] Archived {archived} leftover insight card(s) for now-locked YA={ya_fb}, user={document.user_id}.")
+            except Exception as archive_e:
+              logger.error(f"[Pipeline] Archiving stale insights for newly-locked YA={ya_fb} failed: {archive_e}")
+              db.rollback()  # don't fail the main document record over this
         except Exception as fb_e:
           logger.error(f"[Pipeline] FormBProfile upsert failed for Document ID {doc_id}: {fb_e}")
           db.rollback()  # don't fail the main document record over a profile upsert error
