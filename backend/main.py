@@ -3941,6 +3941,7 @@ def get_tax_profile_summary(
       departure_levy_rebate_applied = None   # B27iii — not recomputed for a filed-Form-B year (bug fix, 17 Jul 2026)
       section110_rebate_applied     = None   # B29 — same reasoning (bug fix, 17 Jul 2026)
       zakat_rebate_applied      = _parse_amount(form_b_record.zakat_rebate)
+      aggregate_total_income    = fb_income
       source = "filed_form_b"
       # B25a/B25b aren't stored on a filed Form B (LHDN doesn't retain the
       # bracket-by-bracket split, only the final tax_charged/tax_payable) —
@@ -4176,7 +4177,7 @@ def get_tax_profile_summary(
       "totals": {
         "q1BusinessIncome":          money(total_q1),
         "q2PersonalIncome":          money(total_q2),
-        "totalIncome":               money(fb_income if (source == "filed_form_b" and fb_income) else total_inc),
+        "totalIncome":               money(fb_income if (source == "filed_form_b" and fb_income) else aggregate_total_income),
         "q3Deductions":              money(total_q3),
         "q3CapitalAllowance":        total_capital_allowance,
         "q3CapitalAllowanceAbsorbed": ca_absorbed_total,
@@ -4227,6 +4228,11 @@ def get_tax_profile_summary(
           "childReliefSource":         child_relief_source,
           "childReliefDetail":         h16_schedule["perChild"] if h16_schedule else None,
         },
+        "totalReliefsMyr": (
+          money(fb_income - est_chargeable)
+          if (source == "filed_form_b" and fb_income)
+          else money(individual_relief_applied + total_profile_reliefs + total_q4_capped)
+        ),
         # Business-loss (B5/Part M1) and unabsorbed-capital-allowance (Part
         # M2) carry-forward — Phase 3 (14 Jul 2026), see carryforward.py.
         # Summed across every entity in scope; per-entity detail is in
@@ -4784,13 +4790,14 @@ def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -
   the caller can distinguish "nothing to add" from "profile exists but every
   field happens to be blank" — see the callsite in the chat endpoint.
 
-  Deliberately NOT reusing _serialize_person()'s full field list: this only
-  surfaces fields worth grounding a conversational answer in (name, IC/TIN,
-  contact, marital/dependant status relevant to reliefs, and each entity's
-  business details). Bank account number and full correspondence address are
-  left out — they're the kind of sensitive-but-answer-irrelevant fields that
-  don't need to ride along in every single LLM prompt just because they
-  exist on the record.
+  Surfaces EVERY column on Person and Entity (except password_hash, which
+  is a bcrypt hash with no conversational value and no reason to ever sit
+  in an LLM prompt). Earlier versions of this function only surfaced a
+  curated subset (name, IC/TIN, contact, marital/dependant status, and a
+  few entity fields) — this version includes the full record on file,
+  including bank account details, full correspondence address, and every
+  Entity financial/compliance field, so the chat can ground answers to any
+  profile question, not just the ones the curated list anticipated.
 
   Lists every entity the person owns (a person can have multiple businesses
   registered), not only the one currently selected in the UI — otherwise a
@@ -4813,20 +4820,112 @@ def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -
     return None
 
   lines = ["The following is the user's own profile on file (from their account, not an uploaded document):"]
+
+  # ── Login / identity ──────────────────────────────────────────────────
+  if person.email:
+    lines.append(f"- Email: {person.email}")
   if person.full_name:
     lines.append(f"- Full name: {person.full_name}")
   if person.identification_no:
     lines.append(f"- IC/identification no.: {person.identification_no}")
+  if person.passport_no:
+    lines.append(f"- Passport no.: {person.passport_no}")
+  if person.passport_no_lhdnm:
+    lines.append(f"- Passport no. registered with LHDNM: {person.passport_no_lhdnm}")
   if person.personal_tin:
     lines.append(f"- Personal TIN: {person.personal_tin}")
+  if person.citizenship:
+    lines.append(f"- Citizenship: {person.citizenship}")
+  if person.gender:
+    lines.append(f"- Gender: {person.gender}")
+  if person.date_of_birth:
+    lines.append(f"- Date of birth: {person.date_of_birth}")
+
+  # ── Marital status & dependants ─────────────────────────────────────────
   if person.marital_status:
     lines.append(f"- Marital status: {person.marital_status}")
-    if person.marital_status != "single" and person.spouse_name:
-      lines.append(f"- Spouse name: {person.spouse_name}")
+  if person.marital_event_date:
+    lines.append(f"- Marital event date: {person.marital_event_date}")
+  if person.spouse_name:
+    lines.append(f"- Spouse name: {person.spouse_name}")
+  if person.spouse_id_no:
+    lines.append(f"- Spouse IC/identification no.: {person.spouse_id_no}")
+  if person.spouse_passport_no:
+    lines.append(f"- Spouse passport no.: {person.spouse_passport_no}")
+  if person.spouse_dob:
+    lines.append(f"- Spouse date of birth: {person.spouse_dob}")
+  if person.assessment_type:
+    lines.append(f"- Assessment type: {person.assessment_type}")
   if person.number_of_children:
-    lines.append(f"- Number of children: {person.number_of_children}")
+    lines.append(f"- Number of children (flat count): {person.number_of_children}")
+  if person.is_disabled_self:
+    lines.append(f"- Disabled (self): {person.is_disabled_self}")
+  if person.spouse_is_disabled:
+    lines.append(f"- Spouse disabled: {person.spouse_is_disabled}")
+  if person.alimony_paid_myr is not None:
+    lines.append(f"- Alimony paid (MYR): {person.alimony_paid_myr}")
+  if person.spouse_total_income_myr is not None:
+    lines.append(f"- Spouse total income (MYR): {person.spouse_total_income_myr}")
+  if person.spouse_foreign_income_myr is not None:
+    lines.append(f"- Spouse foreign-sourced income (MYR): {person.spouse_foreign_income_myr}")
+
+  # ── Per-child records ────────────────────────────────────────────────
+  if person.children:
+    lines.append(f"- Children on file ({len(person.children)} total):")
+    for child in person.children:
+      lines.append(
+        f"  - {child.name} — DOB: {child.date_of_birth}, IC/passport: "
+        f"{child.identification_no or 'n/a'}, disabled: {child.is_disabled}, "
+        f"full-time student: {child.is_full_time_student}, higher education: "
+        f"{child.is_higher_education}, eligibility: {child.eligibility_pct}%, "
+        f"own income (MYR): {child.own_income_myr if child.own_income_myr is not None else 'n/a'}"
+        f"{' (exempt-type)' if child.own_income_is_exempt_type else ''}"
+      )
+
+  # ── Contact & refund details ────────────────────────────────────────────
+  if person.phone:
+    lines.append(f"- Phone: {person.phone}")
+  if person.correspondence_address:
+    lines.append(f"- Correspondence address: {person.correspondence_address}")
+  if person.correspondence_postcode:
+    lines.append(f"- Correspondence postcode: {person.correspondence_postcode}")
   if person.correspondence_city or person.correspondence_state:
     lines.append(f"- Location: {person.correspondence_city or ''} {person.correspondence_state or ''}".strip())
+  if person.refund_method:
+    lines.append(f"- Refund method: {person.refund_method}")
+  if person.bank_name:
+    lines.append(f"- Bank name: {person.bank_name}")
+  if person.bank_account_no:
+    lines.append(f"- Bank account no.: {person.bank_account_no}")
+  if person.duitnow_id_type:
+    lines.append(f"- DuitNow ID type: {person.duitnow_id_type}")
+
+  # ── Other particulars (Form B Part D) ───────────────────────────────────
+  if person.employer_tin:
+    lines.append(f"- Employer TIN: {person.employer_tin}")
+  if person.tax_borne_by_employer:
+    lines.append(f"- Tax borne by employer: {person.tax_borne_by_employer}")
+  if person.carries_on_ecommerce:
+    lines.append(f"- Carries on e-commerce: {person.carries_on_ecommerce}")
+  if person.ecommerce_model:
+    lines.append(f"- E-commerce model: {person.ecommerce_model}")
+
+  # ── LHDN compliance flags ───────────────────────────────────────────────
+  lines.append(f"- Record keeping compliant: {person.record_keeping}")
+  lines.append(f"- Has foreign accounts: {person.has_foreign_accounts}")
+  lines.append(f"- RPGT disposal: {person.rpgt_disposal}")
+  if person.rpgt_disposal:
+    lines.append(f"- Disposal declared: {person.disposal_declared}")
+
+  # ── Relief category flags ───────────────────────────────────────────────
+  lines.append(f"- Has dependent parents: {person.has_dependent_parents}")
+  lines.append(f"- Has EPF/life insurance: {person.has_epf_life_insurance}")
+  lines.append(f"- Has education/medical insurance: {person.has_education_medical_insurance}")
+  lines.append(f"- Has lifestyle purchases: {person.has_lifestyle_purchases}")
+  lines.append(f"- Has SSPN/EV/other reliefs: {person.has_sspn_ev_other}")
+
+  if person.created_at:
+    lines.append(f"- Profile created at: {person.created_at}")
 
   # List every entity the person owns, not just the one currently selected —
   # a person can register multiple businesses (see models.Entity.person_id
@@ -4839,12 +4938,42 @@ def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -
       is_active = entity_id is not None and entity.id == entity_id
       marker = " [currently active in this conversation]" if is_active else ""
       lines.append(f"  - {entity.name or '(unnamed)'} — type: {entity.entity_type}{marker}")
+      if entity.business_code:
+        lines.append(f"    Business code: {entity.business_code}")
       if entity.business_activity:
         lines.append(f"    Business activity: {entity.business_activity}")
       if entity.ssm_no:
         lines.append(f"    SSM registration no.: {entity.ssm_no}")
       if entity.tin:
         lines.append(f"    Business TIN: {entity.tin}")
+      if entity.address:
+        lines.append(f"    Address: {entity.address}")
+      if entity.postcode:
+        lines.append(f"    Postcode: {entity.postcode}")
+      if entity.city or entity.state:
+        lines.append(f"    Location: {entity.city or ''} {entity.state or ''}".strip())
+      if entity.sales_turnover is not None:
+        lines.append(f"    Sales turnover (MYR): {entity.sales_turnover}")
+      if entity.total_expenditure is not None:
+        lines.append(f"    Total expenditure (MYR): {entity.total_expenditure}")
+      if entity.net_profit_loss is not None:
+        lines.append(f"    Net profit/loss (MYR): {entity.net_profit_loss}")
+      if entity.total_assets is not None:
+        lines.append(f"    Total assets (MYR): {entity.total_assets}")
+      if entity.total_liabilities is not None:
+        lines.append(f"    Total liabilities (MYR): {entity.total_liabilities}")
+      if entity.monthly_income is not None:
+        lines.append(f"    Monthly income (MYR): {entity.monthly_income}")
+      if entity.annual_income is not None:
+        lines.append(f"    Annual income (MYR): {entity.annual_income}")
+      if entity.opening_unabsorbed_business_loss_myr is not None:
+        lines.append(f"    Opening unabsorbed business loss (MYR): {entity.opening_unabsorbed_business_loss_myr}")
+      if entity.opening_unabsorbed_capital_allowance_myr is not None:
+        lines.append(f"    Opening unabsorbed capital allowance (MYR): {entity.opening_unabsorbed_capital_allowance_myr}")
+      if entity.opening_balance_year is not None:
+        lines.append(f"    Opening balance year: {entity.opening_balance_year}")
+      if entity.created_at:
+        lines.append(f"    Entity created at: {entity.created_at}")
 
   # lines always has at least the header — that alone isn't useful context,
   # so require at least one real fact before returning a block.
@@ -5238,7 +5367,7 @@ def _get_tax_summary_context(
     ),
     f"- Total income before deductions (B18/B22): RM {_fmt_amt(totals.get('totalIncome'))}.",
     f"- Total business deductions (Q3): RM {_fmt_amt(totals.get('q3TotalDeductions'))}.",
-    f"- Total personal reliefs (B23): RM {_fmt_amt((totals.get('profileReliefs') or {}).get('totalMyr'))}.",
+    f"- Total personal reliefs (B23): RM {_fmt_amt(totals.get('totalReliefsMyr'))}.",
     f"- Approved donations claimed (Part G): RM {_fmt_amt(totals.get('approvedDonationsMyr'))}.",
   ]
   if cy.get("documentCount") is not None:
