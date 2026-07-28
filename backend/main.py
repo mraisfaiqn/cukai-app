@@ -5558,6 +5558,38 @@ def _get_tax_summary_context(
       n = 0.0
     return f"{round(n):,}"
 
+  # ── Part H figures, computed FIRST ───────────────────────────────────────
+  # Bug fix: formB.js's own B23 ("Total relief") is NEVER sourced from the
+  # backend's totals.totalReliefsMyr at all — it's always reliefTotal, a
+  # frontend-side sum of the individual H-line items (H1/H4/H14/H15/H16 +
+  # every document-derived H-line), computed independently in JS regardless
+  # of whether a backend summary exists. Using totals.totalReliefsMyr for
+  # B23 here was reading from a DIFFERENT computation than what Generate
+  # Forms actually displays — exactly the "two implementations that can
+  # drift apart" problem this codebase has hit before (see the "Bug fix (14
+  # Jul 2026)" note on get_tax_profile_summary itself). Fixed by computing
+  # the total the SAME way the frontend does: summing the exact H-line rows
+  # below, so B23 can never disagree with what's printed under Part H.
+  h1_amt = totals.get("individualSelfRelief") or Decimal("0")
+  pr = totals.get("profileReliefs") or {}
+  h4_amt = pr.get("h4DisabledIndividualMyr") or Decimal("0")
+  h14_amt = pr.get("h14SpouseOrAlimonyMyr") or Decimal("0")
+  h15_amt = pr.get("h15DisabledSpouseMyr") or Decimal("0")
+  h16a_amt = pr.get("h16aMyr") or Decimal("0")
+  h16b_amt = pr.get("h16bMyr") or Decimal("0")
+  h16c_amt = pr.get("h16cMyr") or Decimal("0")
+  breakdown_by_category = {row.get("category"): row for row in (totals.get("q4ReliefsBreakdown") or [])}
+  h_document_rows = []
+  for category, h_code in Q4_CATEGORY_TO_H_LINE.items():
+    row = breakdown_by_category.get(category)
+    capped = Decimal(str(row.get("cappedTotal"))) if row and row.get("cappedTotal") is not None else Decimal("0")
+    h_document_rows.append((category, h_code, row, capped))
+  b23_computed = money(
+    Decimal(str(h1_amt)) + Decimal(str(h4_amt)) + Decimal(str(h14_amt)) + Decimal(str(h15_amt))
+    + Decimal(str(h16a_amt)) + Decimal(str(h16b_amt)) + Decimal(str(h16c_amt))
+    + sum((r[3] for r in h_document_rows), Decimal("0"))
+  )
+
   lines = [
     f"The following is a deterministic tax computation for YA{year_of_assessment}, computed the "
     "SAME way as the user's own Generate Forms / Form B draft (Postgres calculation, not a "
@@ -5598,7 +5630,7 @@ def _get_tax_summary_context(
   else:
     lines.append("- B21 Spouse income transferred: not applicable — no joint-assessment election is on file (this line is blank on the real form too, not merely untracked, for a filer who isn't jointly assessed).")
   lines.append(f"- Part G8 Approved donations (see Part G breakdown below): RM {_fmt_amt(totals.get('approvedDonationsMyr'))}.")
-  lines.append(f"- B23 Total personal reliefs claimed (Part H total, see breakdown below): RM {_fmt_amt(totals.get('totalReliefsMyr'))}.")
+  lines.append(f"- B23 Total personal reliefs claimed (sum of every Part H line below — H1+H4+H14+H15+H16a-c+every document-derived H-line): RM {_fmt_amt(b23_computed)}.")
   lines.append(f"- B24 Chargeable income: RM {_fmt_amt(totals.get('estimatedChargeableIncome'))}.")
   bb = totals.get("bracketBreakdown") or {}
   lines.append(
@@ -5641,16 +5673,14 @@ def _get_tax_summary_context(
   lines.append(f"- G8 Total approved donations claimed: RM {_fmt_amt(dbl.get('g8'))}.")
 
   # ── Part H — personal reliefs, every H-code always shown ────────────────
+  # Reuses the exact same h1_amt/h4_amt/.../h_document_rows computed above
+  # for b23_computed, so B23 and the sum of these individual lines can
+  # never disagree with each other.
   lines.append("Part H — Personal reliefs (every line always shown, RM0 included if no qualifying document/profile fact applies — each capped per Schedule 9 ITA 1967):")
-  lines.append(f"- {H_LINE_LABELS['H1']}: RM {_fmt_amt(totals.get('individualSelfRelief'))}.")
-  pr = totals.get("profileReliefs") or {}
-  lines.append(f"- {H_LINE_LABELS['H4']}: RM {_fmt_amt(pr.get('h4DisabledIndividualMyr'))}.")
+  lines.append(f"- {H_LINE_LABELS['H1']}: RM {_fmt_amt(h1_amt)}.")
+  lines.append(f"- {H_LINE_LABELS['H4']}: RM {_fmt_amt(h4_amt)}.")
   for h_code, breakdown in (
-    ("H14", pr.get("h14SpouseOrAlimonyMyr")),
-    ("H15", pr.get("h15DisabledSpouseMyr")),
-    ("H16a", pr.get("h16aMyr")),
-    ("H16b", pr.get("h16bMyr")),
-    ("H16c", pr.get("h16cMyr")),
+    ("H14", h14_amt), ("H15", h15_amt), ("H16a", h16a_amt), ("H16b", h16b_amt), ("H16c", h16c_amt),
   ):
     lines.append(f"- {H_LINE_LABELS[h_code]}: RM {_fmt_amt(breakdown)}.")
   # Document-derived H-lines: q4ReliefsBreakdown only ever contains a row for
@@ -5661,13 +5691,10 @@ def _get_tax_summary_context(
   # set of categories this app supports (Q4_CATEGORY_TO_H_LINE) instead of
   # only what's present in the breakdown, defaulting an absent category to
   # a real RM0 row rather than omitting it.
-  breakdown_by_category = {row.get("category"): row for row in (totals.get("q4ReliefsBreakdown") or [])}
-  for category, h_code in Q4_CATEGORY_TO_H_LINE.items():
+  for category, h_code, row, capped in h_document_rows:
     label = H_LINE_LABELS.get(h_code, category)
-    row = breakdown_by_category.get(category)
     raw = row.get("rawTotal") if row else Decimal("0")
     cap = row.get("cap") if row else None
-    capped = row.get("cappedTotal") if row else Decimal("0")
     cap_str = f"RM {_fmt_amt(cap)}" if cap is not None else "uncapped"
     flags = []
     if row and row.get("wasCapped"):
@@ -5792,7 +5819,7 @@ def _get_tax_summary_context(
     lines.append(f"- N10 Dividend income: RM {_fmt_amt(n10)}{pl_note}.")
     lines.append(f"- N11 Interest income (business bank account): RM {_fmt_amt(n11)}.")
     lines.append(f"- N12 Rents/royalties/premiums: RM {_fmt_amt(n12)}{pl_note}.")
-    lines.append(f"- N13 Other income not otherwise categorised: RM 0 (no source category maps to this line — always 0).")
+    lines.append("- N13 Other income not otherwise categorised: RM 0 (no source category maps to this line — always 0).")
     lines.append(f"- N14 Total other income (N9-N13): RM {_fmt_amt(n14)}.")
     for code, val, label, pl_sourced in (
       ("N15", n15, "Interest expense", False), ("N16", n16, "Wages/salaries/EPF/SOCSO", False),
