@@ -5572,12 +5572,24 @@ def _get_tax_summary_context(
   # below, so B23 can never disagree with what's printed under Part H.
   h1_amt = totals.get("individualSelfRelief") or Decimal("0")
   pr = totals.get("profileReliefs") or {}
-  h4_amt = pr.get("h4DisabledIndividualMyr") or Decimal("0")
-  h14_amt = pr.get("h14SpouseOrAlimonyMyr") or Decimal("0")
-  h15_amt = pr.get("h15DisabledSpouseMyr") or Decimal("0")
-  h16a_amt = pr.get("h16aMyr") or Decimal("0")
-  h16b_amt = pr.get("h16bMyr") or Decimal("0")
-  h16c_amt = pr.get("h16cMyr") or Decimal("0")
+  # Bug fix: formB.js's buildProfileReliefItems() returns an EMPTY array
+  # entirely (`if (bpr && bpr.appliedToChargeableIncome === false) return
+  # []`) whenever this year is sourced from a previously filed Form B — that
+  # year's chargeable income is LHDN's own filed figure, which never had
+  # these flat profile-toggle estimates subtracted from it, so including
+  # them here would misrepresent what B23 actually includes for that year.
+  # Without this gate, chat could tell the user "H4 = RM6,000" for a filed
+  # year when the real B23 total doesn't contain that RM6,000 at all.
+  filed_year_excludes_profile_reliefs = pr.get("appliedToChargeableIncome") is False
+  if filed_year_excludes_profile_reliefs:
+    h4_amt = h14_amt = h15_amt = h16a_amt = h16b_amt = h16c_amt = Decimal("0")
+  else:
+    h4_amt = pr.get("h4DisabledIndividualMyr") or Decimal("0")
+    h14_amt = pr.get("h14SpouseOrAlimonyMyr") or Decimal("0")
+    h15_amt = pr.get("h15DisabledSpouseMyr") or Decimal("0")
+    h16a_amt = pr.get("h16aMyr") or Decimal("0")
+    h16b_amt = pr.get("h16bMyr") or Decimal("0")
+    h16c_amt = pr.get("h16cMyr") or Decimal("0")
   breakdown_by_category = {row.get("category"): row for row in (totals.get("q4ReliefsBreakdown") or [])}
   h_document_rows = []
   for category, h_code in Q4_CATEGORY_TO_H_LINE.items():
@@ -5608,47 +5620,127 @@ def _get_tax_summary_context(
   # which is exactly the bug that made CukaiBot answer "not tracked" for a
   # real (zero) N4/opening-stock figure — every value below is a definite
   # answer, not a maybe.
+  #
+  # Bug fix: B1-B22 are computed here bottom-up (B1→B4→B5→B6→B7/8/9→B11→
+  # B13→B14→B15→B18→B20→B21→B22), the EXACT SAME chain formB.js's
+  # buildFormData() uses to derive what's actually printed on Generate
+  # Forms — NOT the backend's totals.totalIncome, which is a SEPARATELY
+  # derived aggregate that can disagree (e.g. whenever a filed Form B
+  # record exists for this year, totals.totalIncome may be sourced from
+  # that record's own aggregate_income instead of freshly recomputed —
+  # formB.js's B-line chain never does that substitution). This is the
+  # same class of "two independent implementations of the same figure"
+  # bug already fixed once for B23 (see the note above b23_computed) — B22
+  # had the identical issue and is fixed the same way: recompute bottom-up
+  # from the same raw components (B1, B5 absorbed, B7/8/9, B14 APPLIED —
+  # not the raw pre-cap loss, which was also wrong here — donations, B21)
+  # so this can never disagree with what's actually displayed.
   q2_by_bline: dict[str, Decimal] = {}
   for e in (cy.get("q2PersonalIncome") or []):
     bline = Q2_CATEGORY_TO_B_LINE.get(e.get("category"))
     if bline:
       q2_by_bline[bline] = q2_by_bline.get(bline, Decimal("0")) + Decimal(str(e.get("amountNumeric") or 0))
 
-  lines.append("Part B — Computation of income tax (every line below is a definite figure, RM0 included — RM0 means this app computed it and it genuinely is zero, not that it's untracked):")
-  lines.append(f"- B1 Statutory business income (after capital allowance/carry-forward): RM {_fmt_amt(totals.get('businessIncomeB1Myr'))}.")
-  lines.append(f"- B14 Current-year business loss: RM {_fmt_amt(totals.get('currentYearBusinessLossMyr'))}.")
-  for bline, label in (("B7", "Employment income"), ("B8", "Rental income"), ("B9", "Dividend/interest/royalty/pension/other income")):
-    lines.append(f"- {bline} {label}: RM {_fmt_amt(q2_by_bline.get(bline, Decimal('0')))}.")
-  lines.append(f"- B18/B22 Total/aggregate income (before donations): RM {_fmt_amt(totals.get('totalIncome'))}.")
   ja = totals.get("jointAssessment") or {}
+  b1 = Decimal(str(totals.get("businessIncomeB1Myr") or 0))
+  b5 = Decimal(str((totals.get("businessLossCarryforward") or {}).get("absorbedMyr") or 0))
+  b6 = max(Decimal("0"), b1 - b5)
+  b7, b8, b9 = (q2_by_bline.get(c, Decimal("0")) for c in ("B7", "B8", "B9"))
+  b11 = b6 + b7 + b8 + b9
+  # B14 must be the APPLIED loss (capped at available income), NOT the raw
+  # pre-cap current-year loss — formB.js reads currentYearBusinessLossAppliedMyr
+  # specifically; using the raw figure here was a second bug (distinct from
+  # the B22 aggregation bug) that could overstate B14/understate B15.
+  b14 = Decimal(str(totals.get("currentYearBusinessLossAppliedMyr") or 0))
+  b15 = max(Decimal("0"), b11 - b14)
+  donations_g8 = Decimal(str(totals.get("approvedDonationsMyr") or 0))
+  b18 = max(Decimal("0"), b15 - donations_g8)
+  b20 = b18
+  b21 = Decimal(str(ja.get("spouseIncomeTransferredMyr") or 0))
+  b22 = b20 + b21
+
+  is_filed_year = totals.get("sourceOfEstimate") == "filed_form_b"
+  lines.append("Part B — Computation of income tax (every line below is a definite figure, RM0 included — RM0 means this app computed it and it genuinely is zero, not that it's untracked):")
+  if is_filed_year:
+    lines.append(
+      "- Note: this year's B24 (chargeable income) and B26 (tax charged) come from a previously "
+      "FILED Form B on file for this exact year — LHDN's own ground-truth figures, not "
+      "re-estimated from documents. Several rebate lines (B27i/ii/iii, and the individual/spouse/ "
+      "profile reliefs feeding H4/H14/H15/H16) are correctly RM0 for this reason, not because "
+      "they're untracked — see the Part H note below."
+    )
+  lines.append(f"- B1/B4 Statutory business income (after capital allowance/carry-forward): RM {_fmt_amt(b1)}.")
+  lines.append(f"- B5 Business loss brought forward, absorbed this year: RM {_fmt_amt(b5)}.")
+  lines.append(f"- B6 Business income after brought-forward loss: RM {_fmt_amt(b6)}.")
+  for bline, val, label in (("B7", b7, "Employment income"), ("B8", b8, "Rental income"), ("B9", b9, "Dividend/interest/royalty/pension/other income")):
+    lines.append(f"- {bline} {label}: RM {_fmt_amt(val)}.")
+  lines.append(f"- B11/B13 Aggregate statutory income (B6+B7+B8+B9): RM {_fmt_amt(b11)}.")
+  lines.append(f"- B14 Current-year business loss (as actually applied/absorbed against income, not the raw loss): RM {_fmt_amt(b14)}.")
+  lines.append(f"- B15 Aggregate income after current-year loss: RM {_fmt_amt(b15)}.")
+  lines.append(f"- B18/B20 Total income after approved donations: RM {_fmt_amt(b18)}.")
   if ja.get("isJointElection"):
     _ja_who = "this return aggregates" if ja.get("isAggregatingThisReturn") else "spouse's return aggregates instead"
     lines.append(
-      f"- B21 Spouse income transferred (joint assessment): RM {_fmt_amt(ja.get('spouseIncomeTransferredMyr'))} "
+      f"- B21 Spouse income transferred (joint assessment): RM {_fmt_amt(b21)} "
       f"({_ja_who})."
     )
   else:
     lines.append("- B21 Spouse income transferred: not applicable — no joint-assessment election is on file (this line is blank on the real form too, not merely untracked, for a filer who isn't jointly assessed).")
-  lines.append(f"- Part G8 Approved donations (see Part G breakdown below): RM {_fmt_amt(totals.get('approvedDonationsMyr'))}.")
+  lines.append(f"- B22 Aggregate of total income (B20 + B21): RM {_fmt_amt(b22)}.")
+  lines.append(f"- Part G8 Approved donations (see Part G breakdown below): RM {_fmt_amt(donations_g8)}.")
   lines.append(f"- B23 Total personal reliefs claimed (sum of every Part H line below — H1+H4+H14+H15+H16a-c+every document-derived H-line): RM {_fmt_amt(b23_computed)}.")
   lines.append(f"- B24 Chargeable income: RM {_fmt_amt(totals.get('estimatedChargeableIncome'))}.")
   bb = totals.get("bracketBreakdown") or {}
   lines.append(
     f"- B25a Tax on the first RM {_fmt_amt(bb.get('b25aLowerBoundMyr'))}: RM {_fmt_amt(bb.get('b25aTaxMyr'))}; "
-    f"B25b Tax on the balance of RM {_fmt_amt(bb.get('b25bAmountMyr'))} at {bb.get('b25bRatePct', 0)}%: RM {_fmt_amt(bb.get('b25bTaxMyr'))}."
+    f"B25b Tax on the balance of RM {_fmt_amt(bb.get('b25bAmountMyr'))} at {bb.get('b25bRatePct', 0)}%: RM {_fmt_amt(bb.get('b25bTaxMyr'))}"
+    + (
+      " (this breakdown is RECOMPUTED against the filed chargeable income for display — LHDN's "
+      "own filed return doesn't retain a band-by-band split, so this is this app's best "
+      "reconstruction, not a confirmed filed figure)." if bb.get("isRecomputedFromFiledFigure") else "."
+    )
   )
   lines.append(f"- B26 Total tax charged: RM {_fmt_amt(totals.get('taxChargedMyr'))}.")
-  lines.append(f"- B27(i) Self tax rebate: RM {_fmt_amt(totals.get('lowIncomeRebate'))}.")
-  lines.append(f"- B27(ii) Husband/wife tax rebate: RM {_fmt_amt(totals.get('spouseRebate'))}.")
-  lines.append(f"- B27(iii) Departure levy rebate: RM {_fmt_amt(totals.get('departureLevyRebateMyr'))}.")
-  lines.append(f"- B27(iv)/B28 Zakat/fitrah rebate: RM {_fmt_amt(totals.get('zakatRebate'))}.")
-  lines.append(f"- B29 Section 110 tax deduction (others): RM {_fmt_amt(totals.get('section110RebateMyr'))}.")
+  low_income_rebate = Decimal(str(totals.get("lowIncomeRebate") or 0))
+  spouse_rebate = Decimal(str(totals.get("spouseRebate") or 0))
+  departure_levy_rebate = Decimal(str(totals.get("departureLevyRebateMyr") or 0))
+  zakat_rebate = Decimal(str(totals.get("zakatRebate") or 0))
+  lines.append(f"- B27(i) Self tax rebate: RM {_fmt_amt(low_income_rebate)}.")
+  lines.append(f"- B27(ii) Husband/wife tax rebate: RM {_fmt_amt(spouse_rebate)}.")
+  lines.append(f"- B27(iii) Departure levy rebate: RM {_fmt_amt(departure_levy_rebate)}.")
+  lines.append(f"- B27(iv) Zakat/fitrah rebate: RM {_fmt_amt(zakat_rebate)}.")
+  # B27 = sum of all four rebate sub-lines above (formB.js's own b27), a
+  # DIFFERENT figure from B26 or any single sub-line — must be computed as
+  # their sum here, never read from a single backend field, since no such
+  # combined field exists.
+  b27_total = low_income_rebate + spouse_rebate + departure_levy_rebate + zakat_rebate
+  lines.append(f"- B27 Total rebates (sum of i-iv): RM {_fmt_amt(b27_total)}.")
+  b26 = Decimal(str(totals.get("taxChargedMyr") or 0))
+  b28 = max(Decimal("0"), b26 - b27_total)
+  lines.append(f"- B28 Tax charged after rebates: RM {_fmt_amt(b28)}.")
+  b29 = Decimal(str(totals.get("section110RebateMyr") or 0))
+  lines.append(f"- B29 Section 110 tax deduction (others): RM {_fmt_amt(b29)}.")
   lines.append(f"- B31 Tax payable: RM {_fmt_amt(totals.get('estimatedTaxPayable'))}.")
-  lines.append(f"- B33(i) CP500 instalments paid: RM {_fmt_amt(totals.get('cp500Paid'))}.")
-  lines.append(f"- B33(ii) Section 107D withholding: RM {_fmt_amt(totals.get('section107dWithheldMyr'))}.")
-  lines.append(f"- B33(iii) MTD/PCB withheld by employer: RM {_fmt_amt(totals.get('mtdWithheldMyr'))}.")
+  # B32 = max(0, B29-B28) — formB.js's own formula; genuinely 0 in the
+  # ordinary case (B29 is usually much smaller than B28), shown anyway so
+  # a direct "what's my B32" question always gets a real number.
+  b32 = max(Decimal("0"), b29 - b28)
+  lines.append(f"- B32 (max(0, B29 − B28)): RM {_fmt_amt(b32)}.")
+  cp500_paid = Decimal(str(totals.get("cp500Paid") or 0))
+  section107d = Decimal(str(totals.get("section107dWithheldMyr") or 0))
+  mtd_withheld = Decimal(str(totals.get("mtdWithheldMyr") or 0))
+  lines.append(f"- B33(i) CP500 instalments paid: RM {_fmt_amt(cp500_paid)}.")
+  lines.append(f"- B33(ii) Section 107D withholding: RM {_fmt_amt(section107d)}.")
+  lines.append(f"- B33(iii) MTD/PCB withheld by employer: RM {_fmt_amt(mtd_withheld)}.")
+  # Bug fix: B33 itself is the SUM of the three payment/withholding
+  # sub-lines above (mtd + cp500 + section107d) — it is NOT the final
+  # balance payable/refundable. That figure is B34. Earlier this function
+  # mislabeled totals.balancePayableMyr as "B33", which would have answered
+  # a direct "what's my B33?" question with what's actually the B34 value.
+  b33_total = mtd_withheld + cp500_paid + section107d
+  lines.append(f"- B33 Total instalments/deductions paid (i+ii+iii): RM {_fmt_amt(b33_total)}.")
   lines.append(
-    f"- B33 Balance payable/refundable: RM {_fmt_amt(totals.get('balancePayableMyr'))} "
+    f"- B34 Balance of tax payable/(overpaid): RM {_fmt_amt(totals.get('balancePayableMyr'))} "
     "(negative means a refund is due)."
   )
 
@@ -5670,6 +5762,8 @@ def _get_tax_summary_context(
   for gcode, label in g_labels.items():
     d = dbl.get(gcode) or {}
     lines.append(f"- {label}: raw RM {_fmt_amt(d.get('rawMyr'))}, allowed after cap RM {_fmt_amt(d.get('cappedMyr'))}.")
+    if gcode == "g2d":
+      lines.append(f"- G2 Subtotal (G2a+G2b+G2c+G2d): RM {_fmt_amt(dbl.get('g2Subtotal'))}.")
   lines.append(f"- G8 Total approved donations claimed: RM {_fmt_amt(dbl.get('g8'))}.")
 
   # ── Part H — personal reliefs, every H-code always shown ────────────────
@@ -5677,6 +5771,13 @@ def _get_tax_summary_context(
   # for b23_computed, so B23 and the sum of these individual lines can
   # never disagree with each other.
   lines.append("Part H — Personal reliefs (every line always shown, RM0 included if no qualifying document/profile fact applies — each capped per Schedule 9 ITA 1967):")
+  if filed_year_excludes_profile_reliefs:
+    lines.append(
+      "- Note: H4/H14/H15/H16 show RM0 below because this year is sourced from a previously "
+      "FILED Form B — its chargeable income (B24) is LHDN's own filed figure, which never had "
+      "these profile-toggle estimates subtracted from it, so they're correctly excluded from "
+      "this year's B23 rather than double-counted. This is not a data gap."
+    )
   lines.append(f"- {H_LINE_LABELS['H1']}: RM {_fmt_amt(h1_amt)}.")
   lines.append(f"- {H_LINE_LABELS['H4']}: RM {_fmt_amt(h4_amt)}.")
   for h_code, breakdown in (
