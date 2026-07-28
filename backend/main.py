@@ -3941,7 +3941,6 @@ def get_tax_profile_summary(
       departure_levy_rebate_applied = None   # B27iii — not recomputed for a filed-Form-B year (bug fix, 17 Jul 2026)
       section110_rebate_applied     = None   # B29 — same reasoning (bug fix, 17 Jul 2026)
       zakat_rebate_applied      = _parse_amount(form_b_record.zakat_rebate)
-      aggregate_total_income    = fb_income
       source = "filed_form_b"
       # B25a/B25b aren't stored on a filed Form B (LHDN doesn't retain the
       # bracket-by-bracket split, only the final tax_charged/tax_payable) —
@@ -4177,7 +4176,7 @@ def get_tax_profile_summary(
       "totals": {
         "q1BusinessIncome":          money(total_q1),
         "q2PersonalIncome":          money(total_q2),
-        "totalIncome":               money(fb_income if (source == "filed_form_b" and fb_income) else aggregate_total_income),
+        "totalIncome":               money(fb_income if (source == "filed_form_b" and fb_income) else total_inc),
         "q3Deductions":              money(total_q3),
         "q3CapitalAllowance":        total_capital_allowance,
         "q3CapitalAllowanceAbsorbed": ca_absorbed_total,
@@ -4228,11 +4227,6 @@ def get_tax_profile_summary(
           "childReliefSource":         child_relief_source,
           "childReliefDetail":         h16_schedule["perChild"] if h16_schedule else None,
         },
-        "totalReliefsMyr": (
-          money(fb_income - est_chargeable)
-          if (source == "filed_form_b" and fb_income)
-          else money(individual_relief_applied + total_profile_reliefs + total_q4_capped)
-        ),
         # Business-loss (B5/Part M1) and unabsorbed-capital-allowance (Part
         # M2) carry-forward — Phase 3 (14 Jul 2026), see carryforward.py.
         # Summed across every entity in scope; per-entity detail is in
@@ -4725,15 +4719,46 @@ separate deductions, so a document counted as one must never be included when
 answering a question about the other, even though both reduce the user's tax
 bill.
 
+If the CONTEXT contains a STATIC Form B coverage catalog (a line starting
+with "The following is a STATIC catalog..."), use it to answer a
+capability/meta question — "what values/fields do you track?", "what's in
+Form B that you support?", "do you track H10?" — with the FULL list of
+lines this app supports, regardless of whether this particular user
+currently has a figure for each one. Do NOT answer a capability question by
+listing only the lines that happen to appear in the deterministic tax
+computation block below — that block is intentionally filtered to lines
+with a real, non-zero figure for THIS user this year, so using it to
+answer "what do you track" would under-report real capabilities just
+because this user hasn't claimed every relief yet. Conversely, for a
+question about the user's OWN actual value ("what's my H10?", "what's my
+B33?"), use the deterministic tax computation block, not the catalog — the
+catalog has no per-user numbers in it at all.
+
 If the CONTEXT contains a deterministic tax computation (a line starting
-with "The following is a deterministic tax computation..."), treat its
-chargeable income/tax payable/relief/balance-due figures as authoritative
-for any part of the question asking about the user's estimated tax
-position — it comes from the same computation the Generate Forms panel
-uses, not from document-search citations, which can only ever show
-individual receipts, never the computed total. Combine it with document/
-reference search results when the question also needs something the tax
-computation doesn't cover.
+with "The following is a deterministic tax computation..."), treat every
+figure in it as authoritative for that specific Form B line — this now
+covers the full computation the Generate Forms panel shows, including
+individual Part H reliefs by their real H-code (e.g. H10, H16a), Part G
+donations by G-code, Part M carry-forward, and every Part B computation
+line, not just chargeable income/tax payable/balance due. It comes from
+the same computation the Generate Forms panel uses, not from document-
+search citations, which can only ever show individual receipts, never a
+computed total or cap. Combine it with document/reference search results
+when the question also needs something the tax computation doesn't cover.
+If the user asks about a specific line/code (e.g. "what's my H10?" or
+"what's my B33?") and it genuinely isn't in this block, check the block's
+own "NOT computed by this app" note before answering — if it's listed
+there, say plainly that this app doesn't compute or track that figure yet
+and suggest checking LHDN's own form/guidance or a licensed tax agent for
+it, rather than saying you have no information at all or guessing a
+number. Never claim a real, computed Form B line "isn't on file" just
+because it wasn't the exact wording you expected — check the whole block
+for its H/G/B/M/N code first. If the user asks about a code that appears
+NOWHERE in the CONTEXT at all — not in the tax computation, not in the
+coverage catalog, not in the "NOT computed" note — do not guess a value
+and do not assume it's automatically out of scope either: say plainly that
+you haven't confirmed a mapping for that exact code, and offer the nearest
+field you do have or suggest checking the official form directly.
 
 Rules:
 - Be concise and specific. Reference concrete figures/dates from the context when relevant.
@@ -4773,39 +4798,42 @@ additional objects inside it.
 def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -> Optional[str]:
   """
   Fetch the user's own Postgres profile (Person) and, if one is active, their
-  business Entity, and format it as a short block of facts the chat LLM can
-  answer identity/profile questions from (e.g. "what is my name?", "what's my
-  TIN?", "what's my business's SSM number?").
+  business Entity, and format it as a block of Form B Part A (Basic
+  Particulars) / Part C (Particulars of Husband/Wife) / Part D (Other
+  Particulars) facts the chat LLM can answer identity/profile questions
+  from directly (e.g. "what is my name?", "what's my TIN?", "what's my
+  A7?", "what's my business's SSM number?").
 
   This exists because _generate_chat_answer_with_retrieval's CONTEXT was
-  built *only* from mongo.vector_search() results — the user's uploaded documents and tax-law
-  reference chunks. That's the right source for "how much did I earn from
-  MIXTURE OF EXPERTS", but a Form EA or bank statement chunk has no reason to
-  contain the user's name, so a question like "what is my name?" always came
-  back empty even though the name is sitting right there in Postgres. This
-  queries the same Person/Entity tables _serialize_person()/_serialize_entity()
-  already expose over the REST API, just reused here for the chat prompt.
+  built *only* from mongo.vector_search() results — the user's uploaded
+  documents and tax-law reference chunks. That's the right source for "how
+  much did I earn from MIXTURE OF EXPERTS", but a Form EA or bank statement
+  chunk has no reason to contain the user's name, so a question like "what
+  is my name?" always came back empty even though the name is sitting
+  right there in Postgres. This queries the same Person/Entity tables
+  _serialize_person()/_serialize_entity() already expose over the REST
+  API, just reused here for the chat prompt.
 
   Returns None (not an empty string) when there's no Person row at all, so
   the caller can distinguish "nothing to add" from "profile exists but every
   field happens to be blank" — see the callsite in the chat endpoint.
 
-  Surfaces EVERY column on Person and Entity (except password_hash, which
-  is a bcrypt hash with no conversational value and no reason to ever sit
-  in an LLM prompt). Earlier versions of this function only surfaced a
-  curated subset (name, IC/TIN, contact, marital/dependant status, and a
-  few entity fields) — this version includes the full record on file,
-  including bank account details, full correspondence address, and every
-  Entity financial/compliance field, so the chat can ground answers to any
-  profile question, not just the ones the curated list anticipated.
+  Surfaces every column on Person and Entity (except password_hash, which
+  is a bcrypt hash with no conversational value), labeled with its actual
+  Form B field code (A1-A9, C1-C5, D1-D12) so a code-specific question
+  ("what's my A7?") answers exactly the same way as a plain-English one
+  ("what's my assessment type?") — mirroring how the tax-computation block
+  in _get_tax_summary_context labels every B/G/H/M line the same way.
 
   Lists every entity the person owns (a person can have multiple businesses
   registered), not only the one currently selected in the UI — otherwise a
   question like "what businesses do I have?" or "how many entities do I
-  own?" has no way to be answered, the same gap "what is my name?" had
-  before this function existed. The currently-active entity_id (if any) is
-  still flagged separately so the model can tell "my businesses in general"
-  apart from "the business I'm currently looking at".
+  own?" has no way to be answered. The currently-active entity_id (if any)
+  is still flagged separately so the model can tell "my businesses in
+  general" apart from "the business I'm currently looking at". Part N
+  (business financial particulars) itself is NOT built here — it's
+  year-scoped (P&L/balance sheet figures differ by YA), so it lives in
+  _get_tax_summary_context alongside the rest of the year's computation.
   """
   # Cast to int for the query — user_id arrives as a string from the request
   # body (see _verify_entity_owned's docstring on the same int/str mismatch),
@@ -4819,113 +4847,111 @@ def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -
   if not person:
     return None
 
-  lines = ["The following is the user's own profile on file (from their account, not an uploaded document):"]
+  lines = [
+    "The following is the user's own profile on file (Form B Parts A/C/D — "
+    "from their account, not an uploaded document). Each fact is labeled "
+    "with its real Form B field code so a question about a specific code "
+    "(e.g. \"what's my A7?\") and a plain-English question (\"what's my "
+    "assessment type?\") both answer from the same line below:"
+  ]
 
-  # ── Login / identity ──────────────────────────────────────────────────
-  if person.email:
-    lines.append(f"- Email: {person.email}")
+  # ── Part A — Basic particulars ──────────────────────────────────────────
   if person.full_name:
-    lines.append(f"- Full name: {person.full_name}")
+    lines.append(f"- A1 Name: {person.full_name}")
   if person.identification_no:
-    lines.append(f"- IC/identification no.: {person.identification_no}")
+    lines.append(f"- A2(a) Identification no.: {person.identification_no}")
   if person.passport_no:
-    lines.append(f"- Passport no.: {person.passport_no}")
+    lines.append(f"- A2(b) Passport no.: {person.passport_no}")
   if person.passport_no_lhdnm:
-    lines.append(f"- Passport no. registered with LHDNM: {person.passport_no_lhdnm}")
+    lines.append(f"- A2(c) Passport no. registered with LHDNM: {person.passport_no_lhdnm}")
   if person.personal_tin:
-    lines.append(f"- Personal TIN: {person.personal_tin}")
+    lines.append(f"- A3 Tax Identification No. (TIN): {person.personal_tin}")
   if person.citizenship:
-    lines.append(f"- Citizenship: {person.citizenship}")
+    lines.append(f"- A5 Citizenship: {person.citizenship}")
   if person.gender:
-    lines.append(f"- Gender: {person.gender}")
+    lines.append(f"- A6 Gender: {person.gender}")
   if person.date_of_birth:
-    lines.append(f"- Date of birth: {person.date_of_birth}")
-
-  # ── Marital status & dependants ─────────────────────────────────────────
+    lines.append(f"- A4 Date of birth: {person.date_of_birth}")
   if person.marital_status:
-    lines.append(f"- Marital status: {person.marital_status}")
+    lines.append(f"- A7 Status as at 31 December: {person.marital_status}")
   if person.marital_event_date:
-    lines.append(f"- Marital event date: {person.marital_event_date}")
-  if person.spouse_name:
-    lines.append(f"- Spouse name: {person.spouse_name}")
-  if person.spouse_id_no:
-    lines.append(f"- Spouse IC/identification no.: {person.spouse_id_no}")
-  if person.spouse_passport_no:
-    lines.append(f"- Spouse passport no.: {person.spouse_passport_no}")
-  if person.spouse_dob:
-    lines.append(f"- Spouse date of birth: {person.spouse_dob}")
+    lines.append(f"- A7(a) Date of marriage/divorce/death: {person.marital_event_date}")
   if person.assessment_type:
-    lines.append(f"- Assessment type: {person.assessment_type}")
+    lines.append(f"- A8 Type of assessment: {person.assessment_type}")
+  lines.append(f"- A9 Record keeping: {person.record_keeping}")
+
+  # ── Dependants / disability flags feeding H4/H15/H16 ────────────────────
   if person.number_of_children:
-    lines.append(f"- Number of children (flat count): {person.number_of_children}")
+    lines.append(f"- Number of children (flat count, feeds H16 if no per-child records): {person.number_of_children}")
   if person.is_disabled_self:
-    lines.append(f"- Disabled (self): {person.is_disabled_self}")
+    lines.append(f"- Disabled (self, feeds H4): {person.is_disabled_self}")
   if person.spouse_is_disabled:
-    lines.append(f"- Spouse disabled: {person.spouse_is_disabled}")
+    lines.append(f"- Spouse disabled (feeds H15): {person.spouse_is_disabled}")
   if person.alimony_paid_myr is not None:
-    lines.append(f"- Alimony paid (MYR): {person.alimony_paid_myr}")
+    lines.append(f"- Alimony paid to former wife (feeds H14): RM {person.alimony_paid_myr}")
   if person.spouse_total_income_myr is not None:
-    lines.append(f"- Spouse total income (MYR): {person.spouse_total_income_myr}")
+    lines.append(f"- Spouse total income (feeds B21/B22 joint assessment): RM {person.spouse_total_income_myr}")
   if person.spouse_foreign_income_myr is not None:
-    lines.append(f"- Spouse foreign-sourced income (MYR): {person.spouse_foreign_income_myr}")
+    lines.append(f"- Spouse foreign-sourced income (may disqualify H14): RM {person.spouse_foreign_income_myr}")
 
   # ── Per-child records ────────────────────────────────────────────────
   if person.children:
-    lines.append(f"- Children on file ({len(person.children)} total):")
+    lines.append(f"- Children on file, feeding H16 ({len(person.children)} total):")
     for child in person.children:
       lines.append(
-        f"  - {child.name} — DOB: {child.date_of_birth}, IC/passport: "
-        f"{child.identification_no or 'n/a'}, disabled: {child.is_disabled}, "
+        f"  - {child.name} — DOB: {child.date_of_birth}, disabled: {child.is_disabled}, "
         f"full-time student: {child.is_full_time_student}, higher education: "
-        f"{child.is_higher_education}, eligibility: {child.eligibility_pct}%, "
-        f"own income (MYR): {child.own_income_myr if child.own_income_myr is not None else 'n/a'}"
-        f"{' (exempt-type)' if child.own_income_is_exempt_type else ''}"
+        f"{child.is_higher_education}, eligibility: {child.eligibility_pct}%"
       )
 
-  # ── Contact & refund details ────────────────────────────────────────────
+  # ── Part C — Particulars of husband/wife ────────────────────────────────
+  if person.marital_status == "married":
+    if person.spouse_name:
+      lines.append(f"- C1 Spouse's name: {person.spouse_name}")
+    if person.spouse_id_no:
+      lines.append(f"- C2(a) Spouse's identification no.: {person.spouse_id_no}")
+    if person.spouse_passport_no:
+      lines.append(f"- C2(b) Spouse's passport no.: {person.spouse_passport_no}")
+    if person.spouse_dob:
+      lines.append(f"- C3 Spouse's date of birth: {person.spouse_dob}")
+
+  # ── Part D — Other particulars ──────────────────────────────────────────
   if person.phone:
-    lines.append(f"- Phone: {person.phone}")
-  if person.correspondence_address:
-    lines.append(f"- Correspondence address: {person.correspondence_address}")
-  if person.correspondence_postcode:
-    lines.append(f"- Correspondence postcode: {person.correspondence_postcode}")
-  if person.correspondence_city or person.correspondence_state:
-    lines.append(f"- Location: {person.correspondence_city or ''} {person.correspondence_state or ''}".strip())
-  if person.refund_method:
-    lines.append(f"- Refund method: {person.refund_method}")
-  if person.bank_name:
-    lines.append(f"- Bank name: {person.bank_name}")
-  if person.bank_account_no:
-    lines.append(f"- Bank account no.: {person.bank_account_no}")
-  if person.duitnow_id_type:
-    lines.append(f"- DuitNow ID type: {person.duitnow_id_type}")
-
-  # ── Other particulars (Form B Part D) ───────────────────────────────────
+    lines.append(f"- D1 Telephone no.: {person.phone}")
+  if person.email:
+    lines.append(f"- D2 Email: {person.email}")
+  correspondence = ", ".join(filter(None, [
+    person.correspondence_address,
+    " ".join(filter(None, [person.correspondence_postcode, person.correspondence_city])),
+    person.correspondence_state,
+  ]))
+  if correspondence:
+    lines.append(f"- D2 Correspondence address: {correspondence}")
   if person.employer_tin:
-    lines.append(f"- Employer TIN: {person.employer_tin}")
-  if person.tax_borne_by_employer:
-    lines.append(f"- Tax borne by employer: {person.tax_borne_by_employer}")
-  if person.carries_on_ecommerce:
-    lines.append(f"- Carries on e-commerce: {person.carries_on_ecommerce}")
-  if person.ecommerce_model:
-    lines.append(f"- E-commerce model: {person.ecommerce_model}")
-
-  # ── LHDN compliance flags ───────────────────────────────────────────────
-  lines.append(f"- Record keeping compliant: {person.record_keeping}")
-  lines.append(f"- Has foreign accounts: {person.has_foreign_accounts}")
-  lines.append(f"- RPGT disposal: {person.rpgt_disposal}")
+    lines.append(f"- D3 Employer's TIN: {person.employer_tin}")
+    lines.append(f"- D4 Tax borne by employer: {person.tax_borne_by_employer}")
+  lines.append(f"- D5 Has foreign bank accounts (out of scope, always blank on the generated form): {person.has_foreign_accounts}")
+  lines.append(f"- D6a Carries on e-commerce: {person.carries_on_ecommerce}")
+  if person.carries_on_ecommerce and person.ecommerce_model:
+    lines.append(f"- D6b E-commerce business model: {person.ecommerce_model}")
+  lines.append(f"- D9 Refund method: {person.refund_method}")
+  if person.refund_method == "bank":
+    if person.bank_name:
+      lines.append(f"- D10a Bank name: {person.bank_name}")
+    if person.bank_account_no:
+      lines.append(f"- D10b Bank account no.: {person.bank_account_no}")
+  elif person.refund_method == "duitnow" and person.duitnow_id_type:
+    lines.append(f"- D11a DuitNow identification type: {person.duitnow_id_type}")
+  lines.append(f"- D12a RPGT/property disposal this year: {person.rpgt_disposal}")
   if person.rpgt_disposal:
-    lines.append(f"- Disposal declared: {person.disposal_declared}")
+    lines.append(f"- D12b Disposal declared: {person.disposal_declared}")
 
-  # ── Relief category flags ───────────────────────────────────────────────
-  lines.append(f"- Has dependent parents: {person.has_dependent_parents}")
-  lines.append(f"- Has EPF/life insurance: {person.has_epf_life_insurance}")
-  lines.append(f"- Has education/medical insurance: {person.has_education_medical_insurance}")
-  lines.append(f"- Has lifestyle purchases: {person.has_lifestyle_purchases}")
-  lines.append(f"- Has SSPN/EV/other reliefs: {person.has_sspn_ev_other}")
-
-  if person.created_at:
-    lines.append(f"- Profile created at: {person.created_at}")
+  # ── Relief-eligibility toggles (used alongside document evidence for H-lines) ──
+  lines.append(f"- Has dependent parents (feeds H2, alongside documents): {person.has_dependent_parents}")
+  lines.append(f"- Has EPF/life insurance (feeds H17, alongside documents): {person.has_epf_life_insurance}")
+  lines.append(f"- Has education/medical insurance (feeds H19, alongside documents): {person.has_education_medical_insurance}")
+  lines.append(f"- Has lifestyle purchases (feeds H9, alongside documents): {person.has_lifestyle_purchases}")
+  lines.append(f"- Has SSPN/EV/other reliefs (feeds H13/H21, alongside documents): {person.has_sspn_ev_other}")
 
   # List every entity the person owns, not just the one currently selected —
   # a person can register multiple businesses (see models.Entity.person_id
@@ -4933,13 +4959,13 @@ def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -
   # questions about all of them, not only whichever one happens to be active
   # in the UI right now.
   if person.entities:
-    lines.append(f"- Businesses/entities on file ({len(person.entities)} total):")
+    lines.append(f"- Businesses/entities on file, feeding Part N ({len(person.entities)} total):")
     for entity in person.entities:
       is_active = entity_id is not None and entity.id == entity_id
       marker = " [currently active in this conversation]" if is_active else ""
       lines.append(f"  - {entity.name or '(unnamed)'} — type: {entity.entity_type}{marker}")
       if entity.business_code:
-        lines.append(f"    Business code: {entity.business_code}")
+        lines.append(f"    Business code (MSIC): {entity.business_code}")
       if entity.business_activity:
         lines.append(f"    Business activity: {entity.business_activity}")
       if entity.ssm_no:
@@ -4947,33 +4973,8 @@ def _person_context_block(db: Session, user_id: str, entity_id: Optional[int]) -
       if entity.tin:
         lines.append(f"    Business TIN: {entity.tin}")
       if entity.address:
-        lines.append(f"    Address: {entity.address}")
-      if entity.postcode:
-        lines.append(f"    Postcode: {entity.postcode}")
-      if entity.city or entity.state:
-        lines.append(f"    Location: {entity.city or ''} {entity.state or ''}".strip())
-      if entity.sales_turnover is not None:
-        lines.append(f"    Sales turnover (MYR): {entity.sales_turnover}")
-      if entity.total_expenditure is not None:
-        lines.append(f"    Total expenditure (MYR): {entity.total_expenditure}")
-      if entity.net_profit_loss is not None:
-        lines.append(f"    Net profit/loss (MYR): {entity.net_profit_loss}")
-      if entity.total_assets is not None:
-        lines.append(f"    Total assets (MYR): {entity.total_assets}")
-      if entity.total_liabilities is not None:
-        lines.append(f"    Total liabilities (MYR): {entity.total_liabilities}")
-      if entity.monthly_income is not None:
-        lines.append(f"    Monthly income (MYR): {entity.monthly_income}")
-      if entity.annual_income is not None:
-        lines.append(f"    Annual income (MYR): {entity.annual_income}")
-      if entity.opening_unabsorbed_business_loss_myr is not None:
-        lines.append(f"    Opening unabsorbed business loss (MYR): {entity.opening_unabsorbed_business_loss_myr}")
-      if entity.opening_unabsorbed_capital_allowance_myr is not None:
-        lines.append(f"    Opening unabsorbed capital allowance (MYR): {entity.opening_unabsorbed_capital_allowance_myr}")
-      if entity.opening_balance_year is not None:
-        lines.append(f"    Opening balance year: {entity.opening_balance_year}")
-      if entity.created_at:
-        lines.append(f"    Entity created at: {entity.created_at}")
+        loc = ", ".join(filter(None, [entity.address, entity.postcode, entity.city, entity.state]))
+        lines.append(f"    Business address: {loc}")
 
   # lines always has at least the header — that alone isn't useful context,
   # so require at least one real fact before returning a block.
@@ -5249,6 +5250,210 @@ def _get_classification_counts_context(
   return "\n".join(lines)
 
 
+# ── Q4 category → Part H line mapping, for CukaiBot's chat context ─────────
+# Direct Python port of frontend/src/data/formB.js's Q4_TO_H_LINE +
+# H_LINE_LABELS. Kept here (not shared as a single source of truth with the
+# frontend, since they're different languages/files) so
+# _get_tax_summary_context can label totals.q4ReliefsBreakdown's rows with
+# the SAME H-line codes the Generate Forms tab shows — without this,
+# CukaiBot could only see the raw internal category name ("Q4 — Sports
+# Equipment") and a question like "what's my H10 value?" had no way to be
+# answered at all, even though the underlying figure was already being
+# computed and displayed on the user's own account.
+# ⚠️ MUST be kept in sync with formB.js's Q4_TO_H_LINE — a category renamed
+# or reassigned to a different H-line on one side and not the other will
+# make CukaiBot's answer disagree with what the user actually sees on their
+# Form B draft.
+Q4_CATEGORY_TO_H_LINE = {
+  "Q4 — Life Insurance & Takaful Relief":       "H17i",
+  "Q4 — EPF Personal Contribution":             "H17ii",
+  "Q4 — Education Relief (Non-Postgraduate)":   "H5i",
+  "Q4 — Education Relief (Postgraduate)":       "H5ii",
+  "Q4 — Upskilling / Self-Enhancement Course":  "H5iii",
+  "Q4 — Books & Publications":                  "H9i",
+  "Q4 — Personal Computer & Devices":           "H9ii",
+  "Q4 — Internet Subscription":                 "H9iii",
+  "Q4 — Personal Enrichment Course":            "H9iv",
+  "Q4 — Medical Equipment Relief":              "H3",
+  "Q4 — Private Retirement Scheme (PRS)":       "H18",
+  "Q4 — SOCSO Personal Contribution":           "H20",
+  "Q4 — EV Charging Equipment":                 "H21",
+  "Q4 — Parent Medical Care":                   "H2i",
+  "Q4 — Parent Medical Care (Complete Examination)": "H2ii",
+  "Q4 — Serious Disease Treatment":             "H6i",
+  "Q4 — Fertility Treatment":                   "H6ii",
+  "Q4 — Vaccination":                           "H6iii",
+  "Q4 — Dental Examination & Treatment":        "H6iv",
+  "Q4 — Complete Medical Examination":          "H7i",
+  "Q4 — COVID-19 Detection Test":               "H7ii",
+  "Q4 — Mental Health Examination":             "H7iii",
+  "Q4 — Learning Disability Diagnosis":         "H8i",
+  "Q4 — Learning Disability Early Intervention": "H8ii",
+  "Q4 — Childcare Fees":                        "H12",
+  "Q4 — SSPN Net Deposit":                      "H13",
+  "Q4 — Education & Medical Insurance":         "H19",
+  "Q4 — Sports Equipment":                      "H10i",
+  "Q4 — Sports Facility Fee":                   "H10ii",
+  "Q4 — Sports Competition Fee":                "H10iii",
+  "Q4 — Gym & Sports Training":                 "H10iv",
+  "Q4 — Breastfeeding Equipment":               "H11",
+}
+
+H_LINE_LABELS = {
+  "H1":    "H1  Individual & dependant relatives (automatic self relief)",
+  "H2i":   "H2(i) Medical/dental treatment, special needs or carer (parents)",
+  "H2ii":  "H2(ii) Complete medical examination (parents)",
+  "H3":    "H3  Basic supporting equipment (disabled self/spouse/child/parent)",
+  "H4":    "H4  Disabled individual",
+  "H5i":   "H5(i) Non-postgraduate course fees (self)",
+  "H5ii":  "H5(ii) Postgraduate (Master's/Doctorate) course fees (self)",
+  "H5iii": "H5(iii) Upskilling / self-enhancement course (self)",
+  "H6i":   "H6(i) Serious disease treatment (self, spouse or child)",
+  "H6ii":  "H6(ii) Fertility treatment (self or spouse)",
+  "H6iii": "H6(iii) Vaccination (self, spouse or child)",
+  "H6iv":  "H6(iv) Dental examination and treatment (self, spouse or child)",
+  "H7i":   "H7(i) Complete medical examination (self, spouse or child)",
+  "H7ii":  "H7(ii) COVID-19 detection test (self, spouse or child)",
+  "H7iii": "H7(iii) Mental health examination or consultation (self, spouse or child)",
+  "H8i":   "H8(i) Learning disability diagnosis assessment (child ≤18)",
+  "H8ii":  "H8(ii) Learning disability early intervention/rehabilitation (child ≤18)",
+  "H9i":   "H9(i) Books, journals, magazines, newspapers (self, spouse or child)",
+  "H9ii":  "H9(ii) Personal computer, smartphone or tablet (self, spouse or child)",
+  "H9iii": "H9(iii) Internet subscription (self, spouse or child)",
+  "H9iv":  "H9(iv) Personal enrichment / hobby course (self, spouse or child)",
+  "H10i":   "H10(i) Sports equipment (self, spouse or child)",
+  "H10ii":  "H10(ii) Sports facility rental / entrance fee (self, spouse or child)",
+  "H10iii": "H10(iii) Sports competition registration fee (self, spouse or child)",
+  "H10iv":  "H10(iv) Gym membership / sports training fee (self, spouse or child)",
+  "H11":   "H11 Breastfeeding equipment (once every 2 YAs)",
+  "H12":   "H12 Childcare fees (child aged 6 and below)",
+  "H13":   "H13 SSPN net deposit",
+  "H14":   "H14 Husband/wife (living together) or alimony to former wife",
+  "H15":   "H15 Disabled husband/wife",
+  "H16a":  "H16(a) Child — under 18",
+  "H16b":  "H16(b) Child — 18+ and studying",
+  "H16c":  "H16(c) Child — disabled",
+  "H17i":  "H17(i)  Life insurance / EPF (voluntary)",
+  "H17ii": "H17(ii) EPF (voluntary or compulsory)",
+  "H18":   "H18 Private retirement scheme",
+  "H19":   "H19 Education & medical insurance",
+  "H20":   "H20 SOCSO contribution",
+  "H21":   "H21 EV charging equipment",
+}
+
+# Q2 category → Part B statutory-income line (B7 employment, B8 rents,
+# B9 interest/discounts/royalties/pensions/other) — same port reasoning as
+# Q4_CATEGORY_TO_H_LINE above, mirroring formB.js's Q2_TO_B_LINE.
+Q2_CATEGORY_TO_B_LINE = {
+  "Q2 — Employment Income (s.4b)":     "B7",
+  "Q2 — Passive Rental Income (s.4d)": "B8",
+  "Q2 — Royalty Income (s.4d)":        "B9",
+  "Q2 — Dividend Income (s.4c)":       "B9",
+  "Q2 — Investment Interest (s.4c)":   "B9",
+  "Q2 — Pension & Annuity (s.4e)":     "B9",
+  "Q2 — Casual & Other Income (s.4f)": "B9",
+}
+
+# Q1 business income → Part N statement-of-profit-or-loss lines. Direct port
+# of formB.js's Q1_TO_N_LINE — N3 = turnover, N11 = business bank interest.
+Q1_CATEGORY_TO_N_LINE = {
+  "Q1 — Sales & Service Revenue":    "N3",
+  "Q1 — e-Invoice / LHDN Validated": "N3",
+  "Q1 — Business Bank Interest":    "N11",
+}
+
+# Q3 business expense → Part N expenditure lines (N15-N24). Direct port of
+# formB.js's Q3_TO_N_LINE — everything not individually broken out on the
+# real form falls into N24 "Other expenses".
+Q3_CATEGORY_TO_N_LINE = {
+  "Q3 — Cost of Goods Sold":                "N5",
+  "Q3 — Business Loan Interest":            "N15",
+  "Q3 — Payroll & Statutory Contributions": "N16",
+  "Q3 — Business Premises Rent":            "N17",
+  "Q3 — CP58 Agent Commission":             "N19",
+  "Q3 — Transport & Logistics":             "N21",
+  "Q3 — Mixed-Use Vehicle Expenses":        "N21",
+  "Q3 — Revenue Repairs & Maintenance":     "N22",
+  "Q3 — Marketing & Advertising":           "N23",
+  "Q3 — Business Utilities":                "N24",
+  "Q3 — Professional & Legal Fees":         "N24",
+  "Q3 — Office & Admin Supplies":           "N24",
+  "Q3 — Business Insurance":                "N24",
+  "Q3 — Staff Welfare & Benefits":          "N24",
+  "Q3 — Client Entertainment (50% cap)":    "N24",
+  "Q3 — Client & Corporate Gifts":          "N24",
+  "Q3 — Hire Purchase & Leased Assets":     "N24",
+}
+
+# Categories whose N-line contribution uses the APPORTIONED (deductible)
+# amount rather than the full gross amount when computing N27 — same set
+# formB.js's apportionedCategories uses for the N26/N27 reconciliation.
+N_APPORTIONED_CATEGORIES = {
+  "Q3 — Client Entertainment (50% cap)",
+  "Q3 — Client & Corporate Gifts",
+  "Q3 — Mixed-Use Vehicle Expenses",
+  "Q3 — Hire Purchase & Leased Assets",
+}
+
+
+
+# ── Static Form B coverage catalog for CukaiBot ──────────────────────────
+# Answers a genuinely different question from _get_tax_summary_context below:
+# "what Form B lines does this app track/compute at all?" vs. "what's MY
+# value for line X?". The tax-summary block only ever lists lines that
+# currently have a non-zero/real figure for THIS user this year (correct
+# for "what's my B33?", since a relief the user hasn't claimed shouldn't be
+# listed as if it were RM0-and-relevant) — but that same filtering means a
+# capability/meta question like "what values are you tracking?" only ever
+# saw whatever happened to be populated, silently omitting every line this
+# app is fully capable of computing but this particular user has no figure
+# for yet (e.g. H10 Sports & Fitness, if they never uploaded a gym receipt).
+#
+# This catalog is a plain, static list — no DB query, no per-user
+# filtering — built once from the same H_LINE_LABELS/Q4_CATEGORY_TO_H_LINE
+# tables the real computation uses, so it can never drift out of sync with
+# what get_tax_profile_summary() is actually capable of producing. Folded
+# into person_context unconditionally (see post_chat_message) since it's
+# free to compute and small enough to always include.
+def _form_b_coverage_catalog() -> str:
+  h_codes_ordered = [
+    "H1", "H2i", "H2ii", "H3", "H4", "H5i", "H5ii", "H5iii",
+    "H6i", "H6ii", "H6iii", "H6iv", "H7i", "H7ii", "H7iii", "H8i", "H8ii",
+    "H9i", "H9ii", "H9iii", "H9iv", "H10i", "H10ii", "H10iii", "H10iv",
+    "H11", "H12", "H13", "H14", "H15", "H16a", "H16b", "H16c",
+    "H17i", "H17ii", "H18", "H19", "H20", "H21",
+  ]
+  h_line_list = "; ".join(H_LINE_LABELS[c] for c in h_codes_ordered)
+  return (
+    "The following is a STATIC catalog of every Form B line this app is capable of computing "
+    "at all (not filtered to this particular user's current figures) — use this to answer a "
+    "capability/meta question like \"what values/fields do you track?\" or \"what's in Form B "
+    "that you support?\". For a question about the user's OWN actual value for a specific line, "
+    "use the deterministic tax computation block instead (which only lists lines with a real "
+    "figure for this user this year — a line absent there simply means this user has RM0/no "
+    "claim for it yet, not that it's unsupported):\n"
+    "- Part A/C/D — Basic particulars, spouse particulars, other particulars (identity, marital "
+    "status, contact, bank/DuitNow refund details, e-commerce, RPGT disposal).\n"
+    "- Part B — B1 (business income), B7/B8/B9 (employment/rental/other statutory income), "
+    "B14 (current-year business loss), B18/B21/B22 (aggregate income incl. joint assessment), "
+    "B23 (total reliefs), B24 (chargeable income), B25a/B25b/B26 (tax charged), B27(i)-(iv) and "
+    "B28/B29 (self/spouse/departure-levy/zakat rebates, Section 110 deduction), B31 (tax "
+    "payable), B33(i)/(ii)/(iii) and B33 (CP500/Section 107D/MTD offsets and final balance).\n"
+    "- Part G — G1, G2(a)-(d) and G2 subtotal, G3, G4, G5, G6, G7, G8 (approved donations, "
+    "each with its own statutory cap).\n"
+    f"- Part H — every personal relief line: {h_line_list}.\n"
+    "- Part M — M1 (business loss carry-forward, up to 10 years) and M2 (unabsorbed capital "
+    "allowance carry-forward, no expiry).\n"
+    "- Part N — business turnover, expenditure, net profit/loss, assets/liabilities, P&L and "
+    "balance sheet extracts, and capital allowance (Schedule 3) claimed/absorbed — including "
+    "every individual N3-N50 line, computed the same way as the Generate Forms tab.\n"
+    "NOT tracked/computed by this app at all: Part F (foreign-source income), Part J (incentive "
+    "claims — removed by product decision), Part K disclosures beyond basic flags, N13 (no source "
+    "category maps to it, always 0), and two Part D toggles (passport no. registered with LHDNM, "
+    "foreign bank accounts declaration)."
+  )
+
+
 def _get_tax_summary_context(
   db: Session, user_id: str, entity_id: Optional[int], year_of_assessment: Optional[int] = None,
 ) -> Optional[str]:
@@ -5356,20 +5561,297 @@ def _get_tax_summary_context(
   lines = [
     f"The following is a deterministic tax computation for YA{year_of_assessment}, computed the "
     "SAME way as the user's own Generate Forms / Form B draft (Postgres calculation, not a "
-    "document search) — treat these figures as authoritative for questions about the user's "
-    "estimated tax position:",
-    f"- Estimated chargeable income (B24): RM {_fmt_amt(totals.get('estimatedChargeableIncome'))}.",
-    f"- Estimated tax charged (B25): RM {_fmt_amt(totals.get('taxChargedMyr'))}.",
-    f"- Estimated tax payable (B31): RM {_fmt_amt(totals.get('estimatedTaxPayable'))}.",
-    (
-      f"- Balance payable/refundable (B33): RM {_fmt_amt(totals.get('balancePayableMyr'))} "
-      "(negative means a refund is due)."
-    ),
-    f"- Total income before deductions (B18/B22): RM {_fmt_amt(totals.get('totalIncome'))}.",
-    f"- Total business deductions (Q3): RM {_fmt_amt(totals.get('q3TotalDeductions'))}.",
-    f"- Total personal reliefs (B23): RM {_fmt_amt(totals.get('totalReliefsMyr'))}.",
-    f"- Approved donations claimed (Part G): RM {_fmt_amt(totals.get('approvedDonationsMyr'))}.",
+    "document search) — treat every figure below as authoritative for its corresponding Form B "
+    "line, whether the user asks about a B/G/H/M code directly (e.g. \"what's my H10?\", "
+    "\"what's my B33?\") or describes it in plain words. This covers every Form B line this app "
+    "currently computes — if a line the user asks about is NOT listed here, see the 'NOT "
+    "computed by this app' note at the end for how to answer instead of guessing.",
   ]
+
+  # ── Part B — computation of income tax ──────────────────────────────────
+  # Every line below is ALWAYS emitted, even when the value is exactly RM0 —
+  # a line this app genuinely computes must never be silently omitted just
+  # because it happens to be zero for this user this year. Omitting a
+  # zero-value line is indistinguishable from "not tracked" to the LLM,
+  # which is exactly the bug that made CukaiBot answer "not tracked" for a
+  # real (zero) N4/opening-stock figure — every value below is a definite
+  # answer, not a maybe.
+  q2_by_bline: dict[str, Decimal] = {}
+  for e in (cy.get("q2PersonalIncome") or []):
+    bline = Q2_CATEGORY_TO_B_LINE.get(e.get("category"))
+    if bline:
+      q2_by_bline[bline] = q2_by_bline.get(bline, Decimal("0")) + Decimal(str(e.get("amountNumeric") or 0))
+
+  lines.append("Part B — Computation of income tax (every line below is a definite figure, RM0 included — RM0 means this app computed it and it genuinely is zero, not that it's untracked):")
+  lines.append(f"- B1 Statutory business income (after capital allowance/carry-forward): RM {_fmt_amt(totals.get('businessIncomeB1Myr'))}.")
+  lines.append(f"- B14 Current-year business loss: RM {_fmt_amt(totals.get('currentYearBusinessLossMyr'))}.")
+  for bline, label in (("B7", "Employment income"), ("B8", "Rental income"), ("B9", "Dividend/interest/royalty/pension/other income")):
+    lines.append(f"- {bline} {label}: RM {_fmt_amt(q2_by_bline.get(bline, Decimal('0')))}.")
+  lines.append(f"- B18/B22 Total/aggregate income (before donations): RM {_fmt_amt(totals.get('totalIncome'))}.")
+  ja = totals.get("jointAssessment") or {}
+  if ja.get("isJointElection"):
+    _ja_who = "this return aggregates" if ja.get("isAggregatingThisReturn") else "spouse's return aggregates instead"
+    lines.append(
+      f"- B21 Spouse income transferred (joint assessment): RM {_fmt_amt(ja.get('spouseIncomeTransferredMyr'))} "
+      f"({_ja_who})."
+    )
+  else:
+    lines.append("- B21 Spouse income transferred: not applicable — no joint-assessment election is on file (this line is blank on the real form too, not merely untracked, for a filer who isn't jointly assessed).")
+  lines.append(f"- Part G8 Approved donations (see Part G breakdown below): RM {_fmt_amt(totals.get('approvedDonationsMyr'))}.")
+  lines.append(f"- B23 Total personal reliefs claimed (Part H total, see breakdown below): RM {_fmt_amt(totals.get('totalReliefsMyr'))}.")
+  lines.append(f"- B24 Chargeable income: RM {_fmt_amt(totals.get('estimatedChargeableIncome'))}.")
+  bb = totals.get("bracketBreakdown") or {}
+  lines.append(
+    f"- B25a Tax on the first RM {_fmt_amt(bb.get('b25aLowerBoundMyr'))}: RM {_fmt_amt(bb.get('b25aTaxMyr'))}; "
+    f"B25b Tax on the balance of RM {_fmt_amt(bb.get('b25bAmountMyr'))} at {bb.get('b25bRatePct', 0)}%: RM {_fmt_amt(bb.get('b25bTaxMyr'))}."
+  )
+  lines.append(f"- B26 Total tax charged: RM {_fmt_amt(totals.get('taxChargedMyr'))}.")
+  lines.append(f"- B27(i) Self tax rebate: RM {_fmt_amt(totals.get('lowIncomeRebate'))}.")
+  lines.append(f"- B27(ii) Husband/wife tax rebate: RM {_fmt_amt(totals.get('spouseRebate'))}.")
+  lines.append(f"- B27(iii) Departure levy rebate: RM {_fmt_amt(totals.get('departureLevyRebateMyr'))}.")
+  lines.append(f"- B27(iv)/B28 Zakat/fitrah rebate: RM {_fmt_amt(totals.get('zakatRebate'))}.")
+  lines.append(f"- B29 Section 110 tax deduction (others): RM {_fmt_amt(totals.get('section110RebateMyr'))}.")
+  lines.append(f"- B31 Tax payable: RM {_fmt_amt(totals.get('estimatedTaxPayable'))}.")
+  lines.append(f"- B33(i) CP500 instalments paid: RM {_fmt_amt(totals.get('cp500Paid'))}.")
+  lines.append(f"- B33(ii) Section 107D withholding: RM {_fmt_amt(totals.get('section107dWithheldMyr'))}.")
+  lines.append(f"- B33(iii) MTD/PCB withheld by employer: RM {_fmt_amt(totals.get('mtdWithheldMyr'))}.")
+  lines.append(
+    f"- B33 Balance payable/refundable: RM {_fmt_amt(totals.get('balancePayableMyr'))} "
+    "(negative means a refund is due)."
+  )
+
+  # ── Part G — approved donations, every G-line always shown ──────────────
+  dbl = totals.get("donationsByLine") or {}
+  lines.append("Part G — Approved donations (every line always shown, RM0 included if no qualifying document was uploaded):")
+  g_labels = {
+    "g1": "G1 Gift of money to the Government/State/Local Authority",
+    "g2a": "G2(a) Gift of money to approved institution/organisation",
+    "g2b": "G2(b) Gift of money for approved sports activity",
+    "g2c": "G2(c) Gift of money for projects of national interest",
+    "g2d": "G2(d) Gift of money/cost of contribution in kind for any approved wakaf/endowment",
+    "g3": "G3 Gift of artefacts/manuscripts/paintings",
+    "g4": "G4 Gift of money for library facilities/libraries (max RM20,000)",
+    "g5": "G5 Gift of money/cost of contribution in kind for facilities for disabled persons",
+    "g6": "G6 Gift of money for approved sports activity/programme organised by an approved body (max RM20,000)",
+    "g7": "G7 Gift of paintings to the National Art Gallery/State Art Gallery",
+  }
+  for gcode, label in g_labels.items():
+    d = dbl.get(gcode) or {}
+    lines.append(f"- {label}: raw RM {_fmt_amt(d.get('rawMyr'))}, allowed after cap RM {_fmt_amt(d.get('cappedMyr'))}.")
+  lines.append(f"- G8 Total approved donations claimed: RM {_fmt_amt(dbl.get('g8'))}.")
+
+  # ── Part H — personal reliefs, every H-code always shown ────────────────
+  lines.append("Part H — Personal reliefs (every line always shown, RM0 included if no qualifying document/profile fact applies — each capped per Schedule 9 ITA 1967):")
+  lines.append(f"- {H_LINE_LABELS['H1']}: RM {_fmt_amt(totals.get('individualSelfRelief'))}.")
+  pr = totals.get("profileReliefs") or {}
+  lines.append(f"- {H_LINE_LABELS['H4']}: RM {_fmt_amt(pr.get('h4DisabledIndividualMyr'))}.")
+  for h_code, breakdown in (
+    ("H14", pr.get("h14SpouseOrAlimonyMyr")),
+    ("H15", pr.get("h15DisabledSpouseMyr")),
+    ("H16a", pr.get("h16aMyr")),
+    ("H16b", pr.get("h16bMyr")),
+    ("H16c", pr.get("h16cMyr")),
+  ):
+    lines.append(f"- {H_LINE_LABELS[h_code]}: RM {_fmt_amt(breakdown)}.")
+  # Document-derived H-lines: q4ReliefsBreakdown only ever contains a row for
+  # a category that had AT LEAST ONE document this year — a category with
+  # zero documents doesn't get a row at all (not a row with 0 in it), which
+  # is exactly what silently dropped H10/etc. from the catalog entirely
+  # whenever a user had no matching receipts. Iterate over the FULL, fixed
+  # set of categories this app supports (Q4_CATEGORY_TO_H_LINE) instead of
+  # only what's present in the breakdown, defaulting an absent category to
+  # a real RM0 row rather than omitting it.
+  breakdown_by_category = {row.get("category"): row for row in (totals.get("q4ReliefsBreakdown") or [])}
+  for category, h_code in Q4_CATEGORY_TO_H_LINE.items():
+    label = H_LINE_LABELS.get(h_code, category)
+    row = breakdown_by_category.get(category)
+    raw = row.get("rawTotal") if row else Decimal("0")
+    cap = row.get("cap") if row else None
+    capped = row.get("cappedTotal") if row else Decimal("0")
+    cap_str = f"RM {_fmt_amt(cap)}" if cap is not None else "uncapped"
+    flags = []
+    if row and row.get("wasCapped"):
+      flags.append("capped down from the raw amount")
+    if row and row.get("lapsedForYear"):
+      flags.append("this relief has LAPSED for this year of assessment — RM0 allowed regardless of documents")
+    flag_str = f" ({'; '.join(flags)})" if flags else ""
+    lines.append(f"- {label}: raw RM {_fmt_amt(raw)}, cap {cap_str}, allowed RM {_fmt_amt(capped)}{flag_str}.")
+  h11 = cy.get("breastfeedingRelief") or {}
+  if h11.get("needsReview") and h11.get("note"):
+    lines.append(f"- H11 caveat: {h11['note']}")
+
+  # ── Part N — business financial particulars (N3-N50) ────────────────────
+  # Reconstructs the SAME N3-N50 figures formB.js builds for Generate Forms,
+  # from the same source data (cy["q1BusinessIncome"]/cy["q3Deductions"] for
+  # N3-N27, the FinancialStatementProfile P&L/BS halves for whichever lines
+  # only a real financial statement can supply). Matches formB.js's exact
+  # formulas (Q1_CATEGORY_TO_N_LINE / Q3_CATEGORY_TO_N_LINE / N26 / N27 /
+  # N32 / N40 / N41 / N45 / N50) so a number quoted here never disagrees
+  # with what the user sees on their own Generate Forms tab. Unlike the
+  # frontend, this does NOT restrict to one "main" entity when no entity_id
+  # was supplied — it reflects whatever scope (one entity, or combined) the
+  # rest of this chat turn's totals already use, and says so explicitly.
+  if entity_id is not None:
+    entities_for_n = [db.query(models.Entity).filter(models.Entity.id == entity_id).first()]
+  else:
+    entities_for_n = db.query(models.Entity).filter(models.Entity.person_id == person_id).all()
+  entities_for_n = [e for e in entities_for_n if e]
+  fsp_list = cy.get("financialStatements") or []
+  # Pick one entity's P&L/BS to source the P&L-only lines (N4/N6/N9/N10/N12/
+  # N18/N20) and balance sheet (N28-N50) from — the highest-turnover entity
+  # when several exist, mirroring formB.js's own "main business" choice.
+  fsp = None
+  if entity_id is not None and fsp_list:
+    fsp = next((f for f in fsp_list if f.get("entityId") == entity_id), fsp_list[0])
+  elif fsp_list:
+    main_entity = max(entities_for_n, key=lambda e: (e.sales_turnover or 0), default=None)
+    fsp = next((f for f in fsp_list if main_entity and f.get("entityId") == main_entity.id), fsp_list[0])
+  pl, bs = (fsp.get("pl") or {}) if fsp else {}, (fsp.get("bs") or {}) if fsp else {}
+
+  def _n(v):
+    return Decimal(str(v)) if v is not None else Decimal("0")
+
+  q1_by_nline: dict[str, Decimal] = {}
+  for e in (cy.get("q1BusinessIncome") or []):
+    nline = Q1_CATEGORY_TO_N_LINE.get(e.get("category"))
+    if nline:
+      q1_by_nline[nline] = q1_by_nline.get(nline, Decimal("0")) + Decimal(str(e.get("amountNumeric") or 0))
+  q3_by_nline: dict[str, Decimal] = {}
+  n27_apportionment_gap = Decimal("0")
+  for e in (cy.get("q3Deductions") or []):
+    nline = Q3_CATEGORY_TO_N_LINE.get(e.get("category"))
+    gross = Decimal(str(e.get("amountNumeric") or 0))
+    if nline:
+      q3_by_nline[nline] = q3_by_nline.get(nline, Decimal("0")) + gross
+    if e.get("category") in N_APPORTIONED_CATEGORIES:
+      n27_apportionment_gap += gross - Decimal(str(e.get("deductibleNumeric") or 0))
+
+  n3, n11 = q1_by_nline.get("N3", Decimal("0")), q1_by_nline.get("N11", Decimal("0"))
+  n4, n6 = _n(pl.get("openingInventoryMyr")), _n(pl.get("closingInventoryMyr"))
+  n5 = q3_by_nline.get("N5", Decimal("0"))
+  n7 = n4 + n5 - n6
+  n8 = n3 - n7
+  n9, n10, n12 = _n(pl.get("otherBusinessIncomeMyr")), _n(pl.get("dividendsMyr")), _n(pl.get("rentsRoyaltiesPremiumsMyr"))
+  n14 = n9 + n10 + n11 + n12  # N13 (other income) has no mapped category — always 0
+  n15, n16, n17, n19 = (q3_by_nline.get(c, Decimal("0")) for c in ("N15", "N16", "N17", "N19"))
+  n21, n22, n23, n24 = (q3_by_nline.get(c, Decimal("0")) for c in ("N21", "N22", "N23", "N24"))
+  n18, n20 = _n(pl.get("contractSubcontractsMyr")), _n(pl.get("badDebtsMyr"))
+  n25 = n15 + n16 + n17 + n18 + n19 + n20 + n21 + n22 + n23 + n24
+  n26 = n8 + n14 - n25
+  n27 = n27_apportionment_gap
+  n28, n29, n30, n31 = (_n(bs.get(k)) for k in ("landBuildingsMyr", "plantMachineryMyr", "motorVehiclesMyr", "otherNonCurrentAssetsMyr"))
+  n32 = n28 + n29 + n30 + n31
+  n33, n34, n35, n36 = (_n(bs.get(k)) for k in ("investmentsMyr", "inventoryMyr", "tradeDebtorsMyr", "sundryDebtorsMyr"))
+  n37, n38, n39 = (_n(bs.get(k)) for k in ("cashInHandMyr", "cashAtBankMyr", "otherCurrentAssetsMyr"))
+  n40 = n34 + n35 + n36 + n37 + n38 + n39
+  n41 = n32 + n33 + n40
+  n42, n43, n44 = (_n(bs.get(k)) for k in ("loansOverdraftsMyr", "tradeCreditorsMyr", "sundryCreditorsMyr"))
+  n45 = n42 + n43 + n44
+  n46, n47, n49 = _n(bs.get("capitalAccountMyr")), _n(bs.get("currentAccountBfMyr")), _n(bs.get("drawingsAdvanceNetMyr"))
+  n48 = n26
+  n50 = n47 + n48 - n49
+
+  if entities_for_n:
+    scope_note = (
+      f"for {entities_for_n[0].name or 'this business'}" if entity_id is not None
+      else f"combined across all {len(entities_for_n)} of your businesses (the real form shows one 'main business' only — ask to narrow to one entity for an exact match)" if len(entities_for_n) > 1
+      else f"for {entities_for_n[0].name or 'your business'}"
+    )
+    lines.append(f"Part N — Business financial particulars ({scope_note}):")
+    # N1/N2 — business identification particulars (name, registration no.,
+    # MSIC code, address), which precede the financial figures on the real
+    # form. Not derived from any Q1/Q3 document — sourced straight from the
+    # Entity record, same as businessName/businessRegNo/businessCode/
+    # businessAddress in formB.js's buildFormData().
+    _n_main = entities_for_n[0] if entity_id is not None or len(entities_for_n) == 1 else max(
+      entities_for_n, key=lambda e: (e.sales_turnover or 0), default=entities_for_n[0]
+    )
+    lines.append(f"- N1 Business name: {_n_main.name or 'not set'}.")
+    n2_parts = []
+    if _n_main.ssm_no:
+      n2_parts.append(f"SSM registration no. {_n_main.ssm_no}")
+    if _n_main.business_code:
+      n2_parts.append(f"MSIC business code {_n_main.business_code}")
+    if _n_main.business_activity:
+      n2_parts.append(f"activity '{_n_main.business_activity}'")
+    if n2_parts:
+      lines.append(f"- N2 Business registration/classification: {'; '.join(n2_parts)}.")
+    if _n_main.address:
+      addr = ", ".join(filter(None, [_n_main.address, _n_main.postcode, _n_main.city, _n_main.state]))
+      lines.append(f"- N2 Business address: {addr}.")
+    lines.append(f"- N3 Business turnover/sales: RM {_fmt_amt(n3)}.")
+    pl_uploaded = pl.get("sourceDocumentId") is not None
+    bs_uploaded = bs.get("sourceDocumentId") is not None
+    pl_note = " (from your uploaded P&L)" if pl_uploaded else " (no P&L uploaded for this year yet — defaults to RM0 until one is)"
+    lines.append(f"- N4 Opening stock: RM {_fmt_amt(n4)}{pl_note}.")
+    lines.append(f"- N5 Purchases/cost of goods sold: RM {_fmt_amt(n5)}.")
+    lines.append(f"- N6 Closing stock: RM {_fmt_amt(n6)}{pl_note}.")
+    lines.append(f"- N7 Cost of sales: RM {_fmt_amt(n7)}.")
+    lines.append(f"- N8 Gross profit: RM {_fmt_amt(n8)}.")
+    lines.append(f"- N9 Other business income: RM {_fmt_amt(n9)}{pl_note}.")
+    lines.append(f"- N10 Dividend income: RM {_fmt_amt(n10)}{pl_note}.")
+    lines.append(f"- N11 Interest income (business bank account): RM {_fmt_amt(n11)}.")
+    lines.append(f"- N12 Rents/royalties/premiums: RM {_fmt_amt(n12)}{pl_note}.")
+    lines.append(f"- N13 Other income not otherwise categorised: RM 0 (no source category maps to this line — always 0).")
+    lines.append(f"- N14 Total other income (N9-N13): RM {_fmt_amt(n14)}.")
+    for code, val, label, pl_sourced in (
+      ("N15", n15, "Interest expense", False), ("N16", n16, "Wages/salaries/EPF/SOCSO", False),
+      ("N17", n17, "Rental of premises", False), ("N18", n18, "Contract/subcontract payments", True),
+      ("N19", n19, "Commission", False), ("N20", n20, "Bad debts", True),
+      ("N21", n21, "Transport/travelling", False), ("N22", n22, "Repairs and maintenance", False),
+      ("N23", n23, "Advertising/promotion", False), ("N24", n24, "Other expenses", False),
+    ):
+      note = pl_note if pl_sourced else ""
+      lines.append(f"- {code} {label}: RM {_fmt_amt(val)}{note}.")
+    lines.append(f"- N25 Total expenditure: RM {_fmt_amt(n25)}.")
+    lines.append(f"- N26 Net profit/(loss): RM {_fmt_amt(n26)}.")
+    lines.append(f"- N27 Non-deductible portion of apportioned expenses (add-back): RM {_fmt_amt(n27)}.")
+    bs_note = " (from your uploaded Balance Sheet)" if bs_uploaded else " (no Balance Sheet uploaded for this year yet — defaults to RM0 until one is)"
+    lines.append(f"- N28-N31 Non-current assets (land/buildings, plant/machinery, vehicles, other), N32 total: RM {_fmt_amt(n32)}{bs_note}.")
+    lines.append(f"- N33 Investments: RM {_fmt_amt(n33)}{bs_note}.")
+    lines.append(f"- N40 Total current assets (stock, debtors, cash, other): RM {_fmt_amt(n40)}{bs_note}.")
+    lines.append(f"- N41 Total assets: RM {_fmt_amt(n41)}{bs_note}.")
+    lines.append(f"- N42-N44 Liabilities (loans/overdrafts, trade/sundry creditors), N45 total: RM {_fmt_amt(n45)}{bs_note}.")
+    lines.append(
+      f"- N46 Capital account: RM {_fmt_amt(n46)}; N47 Current account b/f: RM {_fmt_amt(n47)}; "
+      f"N48 Current year profit/(loss): RM {_fmt_amt(n48)}; N49 Drawings: RM {_fmt_amt(n49)}; "
+      f"N50 Current account c/f: RM {_fmt_amt(n50)}{bs_note}."
+    )
+    lines.append(
+      f"- Capital allowance (Schedule 3, all entities combined) claimed this year: "
+      f"RM {_fmt_amt(totals.get('q3CapitalAllowance'))}, of which "
+      f"RM {_fmt_amt(totals.get('q3CapitalAllowanceAbsorbed'))} was actually absorbed against income this year."
+    )
+
+  # ── Part M — business loss (M1) & unabsorbed capital allowance (M2) ─────
+  blc = totals.get("businessLossCarryforward") or {}
+  lines.append(
+    "Part M — Carry-forward: "
+    f"M1 business losses brought forward RM {_fmt_amt(blc.get('broughtForwardMyr'))}, "
+    f"absorbed this year RM {_fmt_amt(blc.get('absorbedMyr'))}, "
+    f"carried forward RM {_fmt_amt(blc.get('carriedForwardMyr'))} "
+    f"(max {blc.get('maxCarryforwardYears', 10)} years each); "
+    f"M2 unabsorbed capital allowance carried forward RM {_fmt_amt(totals.get('unabsorbedCapitalAllowanceMyr'))} (no expiry)."
+  )
+
+  lines.append(
+    "NOT computed by this app (out of scope): Part F foreign-source income, Part J incentive "
+    "claims (removed by product decision), Part K disclosures beyond what's listed above, B2/B3 "
+    "(partnership statutory income), B10/B12/B16/B19 (additional statutory income sources not "
+    "modeled — always 0 for a sole proprietorship), and a few Part D toggles intentionally left "
+    "blank (e.g. passport no. registered with LHDNM, foreign bank accounts declaration). N13 "
+    "(other business income not otherwise categorised) has no source category mapped to it and is "
+    "always 0. Every other N-line above (N3-N50) IS computed — if a specific N-code isn't listed, "
+    "it simply evaluates to 0 for this year, not 'not tracked'. If the user asks about something "
+    "in this NOT-computed list, say plainly that this app doesn't compute or track that figure "
+    "yet, rather than guessing a number or refusing with no explanation — and suggest they check "
+    "the relevant LHDN form/Public Ruling or a licensed tax agent directly for it. If the user "
+    "asks about a Form B line/code that does NOT appear ANYWHERE in this context (not in this "
+    "list either) — an obscure or mis-typed code — do not guess a value and do not assume it's "
+    "out of scope: say plainly this app hasn't confirmed a mapping for that exact code, and offer "
+    "to help with the nearest field you do have (or suggest checking the official form directly)."
+  )
+
   if cy.get("documentCount") is not None:
     lines.append(
       f"(Based on {cy['documentCount']} document(s) on file for this year; this is an ESTIMATE "
@@ -5651,7 +6133,9 @@ If the question is specifically "did I upload this before?" / "is this already i
 
 If the question asks about the user's own spending totals, biggest/largest/most expensive purchase, top expenses, or spending broken down by category, and the CONTEXT below already contains a line starting with "The following is a deterministic spending summary...", answer directly from those figures — do NOT set needs_document_search true just to double-check a number that CONTEXT already computed. Mongo's document search finds text that resembles the question, it cannot sum, rank, or take a max over the user's documents, so it is never the right tool for this kind of question even if needs_document_search would otherwise seem plausible. If the question also asks something the spending summary doesn't cover — e.g. "is my biggest expense deductible under the law?" — still answer the spending-figures part directly from CONTEXT, but DO set needs_reference_search (or needs_document_search, if it needs a specific receipt's other details) true for the remaining part; the two are not mutually exclusive.
 
-If the question asks about the user's estimated chargeable income, tax charged/payable, total relief, or refund/balance due, and the CONTEXT below already contains a line starting with "The following is a deterministic tax computation...", answer directly from those figures — do NOT set needs_document_search true to try to re-derive them from citations. These figures already went through the full bracket/relief/carryforward computation; document search can only surface individual receipts, never the computed result. As with the spending summary, if part of the question needs something else too (e.g. "why is my relief lower than last year?" needing specific documents), set the relevant search flag true for that part while still answering the figures directly.
+If the question is a capability/meta question about the app itself — "what values/fields do you track?", "what's in Form B that you support?", "do you track H10?" (asked generically, not "what's MY H10") — and the CONTEXT below contains a line starting with "The following is a STATIC catalog...", answer directly from that catalog listing the FULL set of supported lines — do NOT set needs_document_search true, and do NOT answer using only whatever happens to appear in the deterministic tax computation block (that block is filtered to this user's own non-zero figures and would under-report real capabilities).
+
+If the question asks about the user's estimated chargeable income, tax charged/payable, total relief (including any specific Part H relief by its H-code, e.g. "H10", "H16"), any Part G donation line, Part M carry-forward, or refund/balance due, and the CONTEXT below already contains a line starting with "The following is a deterministic tax computation...", answer directly from those figures — do NOT set needs_document_search true to try to re-derive them from citations. This block now covers the full Form B computation the Generate Forms panel shows (every B/G/H/M line this app computes), not just a handful of headline figures, so check it fully for the exact code asked about before concluding it isn't there. These figures already went through the full bracket/relief/carryforward computation; document search can only surface individual receipts, never the computed result or a cap. If the specific line genuinely isn't in the block, it will say so explicitly under "NOT computed by this app" — answer using that guidance (say plainly it isn't tracked yet, suggest LHDN/a tax agent) rather than setting needs_document_search true to go looking for it elsewhere. As with the spending summary, if part of the question needs something else too (e.g. "why is my relief lower than last year?" needing specific documents), set the relevant search flag true for that part while still answering the figures directly.
 
 When uncertain, prefer setting a flag to true rather than false — a citation the user didn't strictly need is a much smaller problem than answering a real tax question with no grounding at all.
 
@@ -6820,6 +7304,7 @@ def post_chat_message(
   _fold_in_context("Spending aggregation", lambda: _get_spending_context(db, user_id, entity_id))
   _fold_in_context("Classification counts", lambda: _get_classification_counts_context(db, user_id, entity_id))
   _fold_in_context("Tax summary", lambda: _get_tax_summary_context(db, user_id, entity_id))
+  _fold_in_context("Form B coverage catalog", lambda: _form_b_coverage_catalog())
   if attachments:
     _fold_in_context("Upload-history", lambda: _check_upload_history(db, user_id, attachments))
 
