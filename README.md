@@ -77,7 +77,7 @@ A rule engine + LLM continuously re-evaluates a user's full document history to 
 ### Prerequisites
 
 - Node.js (for the Vite/React frontend)
-- Python 3.11 (matches the production Docker image)
+- Python 3.12
 - A PostgreSQL database (Google Cloud SQL or local)
 - A MongoDB Atlas cluster with a vector search index configured
 - A Google Gemini API key
